@@ -97,3 +97,18 @@ test.describe("workspace", () => {
     await page.getByRole("menuitem", { name: "Copy reference" }).or(page.getByRole("menuitem", { name: "Copy stable name" })).first().isVisible();
   });
 });
+
+test("a left click ends a right-drag orbit", async ({ page, user }) => {
+  void user;
+  await openExample(page, "bracket", ["bracket"]);
+  const p = await viewportPoint(page, 0.2, 0.2);
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(p.x + 40, p.y + 10, { steps: 4 });
+  await page.mouse.down({ button: "left" });
+  const before = await wsEval<string>(page, "JSON.stringify(ws.viewer.cameraState().position)");
+  await page.mouse.move(p.x + 140, p.y + 60, { steps: 4 });
+  expect(await wsEval<string>(page, "JSON.stringify(ws.viewer.cameraState().position)")).toBe(before);
+  await page.mouse.up({ button: "left" });
+  await page.mouse.up({ button: "right" });
+});
