@@ -135,3 +135,15 @@ test("pack/unpack round-trips a regeneration result", async () => {
   const k2 = await derivedKey({ part: "bracket", scripts: { "parts/a.ts": "x" }, overrides: { w: 2 }, build: "b" });
   expect(k1).not.toBe(k2);
 });
+
+test("describeAll, interference, exports", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: docFrom("enclosure") });
+  e.regenerate("body");
+  e.regenerate("lid");
+  const d = e.describeAll("body");
+  expect(d.faces.length).toBeGreaterThan(10);
+  expect(d.faces[0].createdBy?.source?.file).toBe("parts/body.ts");
+  expect(e.interference("body", "lid")).toBeGreaterThanOrEqual(0);
+  for (const f of ["step", "stl", "3mf"] as const) expect(e.exportPart("body", f).byteLength).toBeGreaterThan(100);
+});

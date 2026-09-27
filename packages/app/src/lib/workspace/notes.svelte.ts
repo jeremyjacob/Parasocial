@@ -160,7 +160,7 @@ export class NotesController {
 			if (run !== this.resolving) return; // a newer resolution started
 			const orphaned = status === 'orphaned';
 			if (status !== 'unknown' && orphaned !== n.orphaned && partOk) ws.zero.mutate(mutators.note.setOrphaned({ noteID: n.id, orphaned }));
-			const agent = (n as any).authorAgent;
+			const agent = (n as any).authorAgent ?? (n.authorAgentID ? ws.agents.find((a) => a.id === n.authorAgentID) : null);
 			pins.push({
 				noteID: n.id,
 				number: this.numberOf(n.id),

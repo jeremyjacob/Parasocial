@@ -36,7 +36,7 @@
 		const msgs = note.messages ?? [];
 		const out: NoteMessageData[] = [];
 		for (const m of msgs) {
-			const agent = (m as any).authorAgent;
+			const agent = (m as any).authorAgent ?? (m.authorAgentID ? ws.agents.find((a) => a.id === m.authorAgentID) ?? { clientName: 'Agent' } : null);
 			const author = agent ? { name: `${agent.clientName}${agent.label ? ` (${agent.label})` : ''}`, kind: 'agent' as const } : { name: (m as any).authorUser?.name ?? (m.authorUserID === ws.userID ? ws.userName : 'Someone'), kind: 'human' as const };
 			if (m.kind === 'activity') {
 				// activity entries fold into the agent's previous message (or start a log)

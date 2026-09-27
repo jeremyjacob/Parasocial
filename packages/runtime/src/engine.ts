@@ -1,11 +1,12 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Material, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
+import { zipSync, strToU8 } from "fflate";
 
 export type DocumentState = {
   scripts: Record<string, string>;
@@ -276,6 +277,39 @@ export class Engine {
     return nameIndex(this.need(part), kind).get(name) ?? [];
   }
 
+  /** Every face and edge of a part, described (describe_model). */
+  describeAll(part: string): { faces: EntityDescription[]; edges: EntityDescription[] } {
+    const rec = this.need(part);
+    const strip = (d: EntityDescription) => ({ ...d, neighbors: d.kind === "edge" ? d.neighbors : [] });
+    return {
+      faces: rec.topo.faces.items.map((_, i) => strip(this.describe(part, "face", i))),
+      edges: rec.topo.edges.items.flatMap((_, i) => (isSeamEdge(rec, i) ? [] : [strip(this.describe(part, "edge", i))])),
+    };
+  }
+
+  /** Volume shared by two parts (0 when they don't interfere). */
+  interference(a: string, b: string): number {
+    const A = this.need(a),
+      B = this.need(b);
+    try {
+      const r = kBoolean("intersect", A.shape, B.shape);
+      r.maker?.delete?.();
+      const v = massProps(r.shape).volume;
+      r.shape.delete?.();
+      return v;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Export a part as STEP, STL or 3MF bytes. */
+  exportPart(part: string, format: "step" | "stl" | "3mf"): Uint8Array {
+    const rec = this.need(part);
+    if (format === "step") return exportSTEP(rec.shape);
+    if (format === "stl") return exportSTL(rec.shape);
+    return export3MF(this.regenerate(part, "fine"));
+  }
+
   /** Closest point on an entity to `p` (pins follow their geometry across regenerations). */
   closestPoint(part: string, kind: EntityKind, index: number, p: Vec3): Vec3 {
     const rec = this.need(part);
@@ -315,3 +349,19 @@ function scriptProblem(e: unknown, part: string, file: string): Problem {
 }
 
 export { compound };
+
+/** Minimal 3MF (core spec): one mesh object per part, millimeters. */
+function export3MF(r: PartResult): Uint8Array {
+  
+  const m = r.mesh!;
+  const v: string[] = [];
+  for (let i = 0; i < m.positions.length; i += 3) v.push(`<vertex x="${m.positions[i]}" y="${m.positions[i + 1]}" z="${m.positions[i + 2]}"/>`);
+  const t: string[] = [];
+  for (let i = 0; i < m.indices.length; i += 3) t.push(`<triangle v1="${m.indices[i]}" v2="${m.indices[i + 1]}" v3="${m.indices[i + 2]}"/>`);
+  const model = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" name="${r.name.replace(/[<&"]/g, "")}" type="model"><mesh><vertices>${v.join("")}</vertices><triangles>${t.join("")}</triangles></mesh></object></resources><build><item objectid="1"/></build></model>`;
+  return zipSync({
+    "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`),
+    "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`),
+    "3D/3dmodel.model": strToU8(model),
+  });
+}

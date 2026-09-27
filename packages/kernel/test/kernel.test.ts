@@ -69,3 +69,13 @@ test("circle and arc edges; tessellation groups map to faces/edges", () => {
   for (let i = 0; i < t.edges.size; i++) expect(m.edgeRanges[i * 2 + 1]).toBeGreaterThan(0);
   expect(m.indices.length).toBe(36);
 });
+
+test("STEP and STL export", async () => {
+  const { exportSTEP, exportSTL } = await import("../src/io");
+  const { face } = rectFace(10, 10);
+  const pr = prism(face, [0, 0, 5]);
+  const step = new TextDecoder().decode(exportSTEP(pr.shape));
+  expect(step.startsWith("ISO-10303-21")).toBe(true);
+  const stl = exportSTL(pr.shape);
+  expect(stl.byteLength).toBeGreaterThan(84);
+});

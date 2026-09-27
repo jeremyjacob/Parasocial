@@ -242,7 +242,19 @@
 		}
 	]);
 
-	const agentPeople = $derived<Person[]>(ws.agents.filter((a) => a.status !== 'disconnected').map((a) => ({ name: `${a.clientName}${a.label ? ` (${a.label})` : ''}`, kind: 'agent', status: (a.status === 'disconnected' ? 'idle' : a.status) as any })));
+	// one avatar per agent (client + label); stale connections of the same agent collapse
+	const liveAgents = $derived.by(() => {
+		const byKey = new Map<string, (typeof ws.agents)[number]>();
+		for (const a of ws.agents) {
+			if (a.status === 'disconnected') continue;
+			const k = `${a.clientName}\u0000${a.label ?? ''}`;
+			const cur = byKey.get(k);
+			const rank = (x: typeof a) => (x.status === 'working' || x.status === 'writing' ? 1 : 0) * 1e15 + x.lastSeenAt;
+			if (!cur || rank(a) > rank(cur)) byKey.set(k, a);
+		}
+		return [...byKey.values()];
+	});
+	const agentPeople = $derived<Person[]>(liveAgents.map((a) => ({ name: `${a.clientName}${a.label ? ` (${a.label})` : ''}`, kind: 'agent', status: a.status as any })));
 	const configItems = $derived([{ value: 'default', label: 'Default' }, ...ws.configurations.map((c) => ({ value: c.id, label: c.name }))]);
 	let configValue = $state('default');
 	$effect(() => {
@@ -304,7 +316,7 @@
 		<TopBar document={ws.doc?.name ?? ''} configurations={configItems} bind:configuration={configValue} bind:mode={ws.mode} agents={agentPeople} user={{ name: user.name, kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
 			{#snippet presence()}
 				{#if agentPeople.length}
-					<Tooltip label={ws.agents.map((a) => `${a.clientName}${a.label ? ` (${a.label})` : ''}: ${a.status}`).join('\n')}>
+					<Tooltip label={liveAgents.map((a) => `${a.clientName}${a.label ? ` (${a.label})` : ''}: ${a.status}`).join('\n')}>
 						{#snippet trigger(props)}
 							<span {...props} class="mr-1 flex items-center gap-1.5" data-testid="agent-presence">
 								<AvatarStack people={agentPeople} size={24} />

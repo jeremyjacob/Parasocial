@@ -80,7 +80,7 @@ export const queries = defineQueries({
         .whereExists("document", inMemberDoc(ctx));
       if (!args.includeRemoved) q = q.where("removedAt", "IS", null);
       return q
-        .related("messages", (m) => m.orderBy("createdAt", "asc"))
+        .related("messages", (m) => m.orderBy("createdAt", "asc").related("authorUser").related("authorAgent"))
         .related("strokes")
         .related("claimant")
         .related("authorUser")

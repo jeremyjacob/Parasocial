@@ -1,0 +1,655 @@
+// MCP tools (§7). Every tool takes a `document` (defaulting to the session's). Writes go
+// through the shared mutators as this agent session; geometry questions run in the engine pool
+// (the same engine build the browser runs), so agents see exactly what the human sees.
+import { z } from "zod";
+import { createHash } from "node:crypto";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { mutators, newID } from "@parasocial/sync";
+import { runMutator, readVersion, exportDocument, importDocument, buildDocumentZip, parseDocumentZip, signBlobURL, type Db, type BlobStore } from "@parasocial/sync/server";
+import type { PoolClient } from "@parasocial/engine-pool/client";
+import { loadDoc, partsOf, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
+
+export type Session = {
+  id: string;
+  userID: string;
+  clientID: string;
+  clientName: string;
+  label?: string;
+  defaultDocument?: string;
+  /** active configuration per document (null = Default) */
+  activeConfig: Map<string, string | null>;
+  /** latest version this session created, per document (linked by replies) */
+  lastVersion: Map<string, string>;
+  calls: number[];
+};
+
+export type ToolDeps = { db: Db; pool: PoolClient; store: BlobStore; config: { appOrigin: string; secret: string } };
+
+type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+type ToolResult = { content: Content[]; isError?: boolean };
+
+class ToolError extends Error {
+  constructor(
+    message: string,
+    public data?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] });
+const round = (x: number, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
+const vec = (v?: number[]) => v?.map((x) => round(x, 4));
+
+const LIMIT_PER_MIN = 240;
+
+export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
+  const { db, pool } = deps;
+  const ctx = () => ({ userID: s.userID, agentSessionID: s.id });
+
+  const docID = (d?: string) => {
+    const id = d ?? s.defaultDocument;
+    if (!id) throw new ToolError("No document given and this session has no default. Pass `document` (see list_documents).");
+    return id;
+  };
+
+  async function mutate(mr: any) {
+    const r = await runMutator(db, mr, ctx());
+    if (!r.ok) throw new ToolError(r.message, r.details);
+  }
+
+  async function setStatus(status: "idle" | "working" | "writing", documentID?: string, detail?: Record<string, unknown> | null) {
+    await runMutator(db, mutators.agent.setStatus({ id: s.id, status, documentID: documentID ?? null, ...(detail !== undefined ? { detail } : {}) } as any), ctx()).catch(() => {});
+  }
+
+  /** Append an activity-log entry to every note this session has claimed in the document. */
+  async function activity(documentID: string, line: string) {
+    const claimed = await db.sql`SELECT id FROM notes WHERE document_id = ${documentID} AND claimed_by = ${s.id} AND removed_at IS NULL`;
+    for (const n of claimed) await runMutator(db, mutators.note.reply({ id: newID(), noteID: n.id, text: line, kind: "activity" } as any), ctx()).catch(() => {});
+  }
+
+  function configOf(d: DocState) {
+    const c = s.activeConfig.get(d.id) ?? null;
+    return d.configurations.some((x) => x.id === c) ? c : null;
+  }
+
+  /** Run engine ops against the document's current state (active configuration of this session). */
+  async function engine(d: DocState, ops: { op: string; [k: string]: unknown }[]) {
+    const res = await pool.run({ document: `${d.id}:${configOf(d) ?? "default"}`, scripts: scriptMap(d), overrides: overridesFor(d, configOf(d)), units: d.units, ops });
+    return res.map((r: any, i: number) => {
+      if (!r.ok) throw new ToolError(r.error, { op: ops[i].op });
+      return r.value;
+    });
+  }
+
+  /** Regenerate parts; compact results in the shape the UI shows (§8 Errors). */
+  async function regen(d: DocState, parts = partsOf(d)) {
+    const out = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
+    return out.map((r: any) => summarize(r));
+  }
+
+  function summarize(r: any) {
+    if (!r) return null;
+    return {
+      part: r.part,
+      name: r.name,
+      ok: r.ok,
+      showingLastGoodGeometry: r.partial && !r.empty ? true : undefined,
+      problems: r.problems.map((p: any) => ({ severity: p.severity, kind: p.kind, message: p.message, source: p.source, op: p.op, highlight: p.highlight })),
+      faces: r.faces.length,
+      edges: r.edges.length,
+      bbox: r.bbox ? { min: vec(r.bbox.min), max: vec(r.bbox.max) } : undefined,
+      volume: r.mass ? round(r.mass.volume, 2) : undefined,
+      timingsMs: { total: round(r.timings.total, 1), ops: round(r.timings.ops, 1) },
+    };
+  }
+
+  function describeEntity(e: any) {
+    const measure = e.kind === "face" ? { area: round(e.area), normal: vec(e.normal), radius: e.radius && round(e.radius), axis: vec(e.axis) } : e.kind === "edge" ? { length: round(e.length), radius: e.radius && round(e.radius), direction: vec(e.axis) } : { point: vec(e.center) };
+    return {
+      part: e.part,
+      kind: e.kind,
+      type: e.type,
+      name: e.name,
+      ...measure,
+      center: vec(e.center),
+      createdBy: e.createdBy && {
+        operation: e.createdBy.id,
+        tag: e.createdBy.tag,
+        type: e.createdBy.type,
+        source: e.createdBy.source && `${e.createdBy.source.file}:${e.createdBy.source.line}`,
+        callChain: e.createdBy.chain?.map((c: any) => `${c.fn && !c.fn.startsWith("<") && c.fn !== "Object.eval [as body]" ? c.fn + "() at " : ""}${c.file}:${c.line}`),
+      },
+      neighbors: e.neighbors?.length ? e.neighbors : undefined,
+    };
+  }
+
+  /** Resolve a stable name (or selector) on a part to entity indices. */
+  async function resolveName(d: DocState, part: string, name: string, kind?: "face" | "edge" | "vertex") {
+    const kinds = kind ? [kind] : (["face", "edge", "vertex"] as const);
+    for (const k of kinds) {
+      const [idx] = await engine(d, [{ op: "indexOfName", part, kind: k, name }]);
+      if ((idx as number[]).length) return { kind: k, indices: idx as number[] };
+    }
+    for (const k of kinds) {
+      try {
+        const [q] = await engine(d, [{ op: "query", part, expr: name, kind: k }]);
+        if ((q as number[]).length) return { kind: k, indices: q as number[] };
+      } catch {}
+    }
+    throw new ToolError(`No entity named or matching "${name}" on ${part}. Names come from list_notes, describe_model or query.`);
+  }
+
+  async function describeTargets(d: DocState, targets: any[]) {
+    const out = [];
+    for (const t of targets) {
+      const part = t.part ?? partsOf(d)[0];
+      if (t.kind === "part" || t.kind === "point") {
+        out.push({ kind: t.kind, part, point: vec(t.point) });
+        continue;
+      }
+      try {
+        const [res] = await engine(d, [{ op: "resolve", part, targets: [{ kind: t.kind, name: t.name, query: t.query, point: t.point, normal: t.normal }] }]);
+        const r = (res as any[])[0];
+        if (r.status === "orphaned") {
+          out.push({ kind: t.kind, part, name: t.name, status: "orphaned", point: vec(t.point), hint: "The geometry this note pointed at is gone. Use the point and the snapshot to understand intent." });
+          continue;
+        }
+        const idx = r.indices.length > 1 ? (await engine(d, [{ op: "resolveOne", part, kind: t.kind, candidates: r.indices, point: t.point }]))[0] : r.indices[0];
+        const [desc] = await engine(d, [{ op: "describe", part, kind: t.kind, index: idx }]);
+        out.push({ ...describeEntity(desc), resolvedBy: r.status, splitInto: r.indices.length > 1 ? r.indices.length : undefined, notePoint: vec(t.point) });
+      } catch (e) {
+        out.push({ kind: t.kind, part, name: t.name, status: "unresolved", error: (e as Error).message });
+      }
+    }
+    return out;
+  }
+
+  async function noteView(documentID: string, n: any, d: DocState) {
+    const messages = await db.sql`SELECT m.kind, m.text, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ${n.id} ORDER BY m.created_at`;
+    const strokes = await db.sql`SELECT part, points, color FROM markup_strokes WHERE note_id = ${n.id}`;
+    const numberRows = await db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`;
+    return {
+      id: n.id,
+      number: numberRows.findIndex((r: any) => r.id === n.id) + 1,
+      status: n.status,
+      orphaned: n.orphaned,
+      removed: !!n.removed_at,
+      claimedBy: n.claimed_by ?? undefined,
+      author: n.author_agent_id ? "agent" : "human",
+      targets: await describeTargets(d, n.anchor.targets),
+      view: { camera: n.anchor.camera, configuration: n.anchor.configuration, render: `render({ view: "note:${n.id}" })` },
+      markup: strokes.length ? strokes.map((st: any) => ({ part: st.part, color: st.color, points: st.points.length, from: vec(st.points[0]), to: vec(st.points[st.points.length - 1]) })) : undefined,
+      snapshot: n.snapshot_hash ? signBlobURL(deps.config, { hash: n.snapshot_hash, documentID, basePath: "/api/blobs" }) : undefined,
+      messages: messages.map((m: any) => ({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, at: new Date(Number(m.created_at)).toISOString(), version: m.version_id ?? undefined })),
+    };
+  }
+
+  async function latestVersion(documentID: string) {
+    const [v] = await db.sql`SELECT id, number, message FROM versions WHERE document_id = ${documentID} ORDER BY number DESC LIMIT 1`;
+    return v ? { id: v.id as string, number: Number(v.number), message: v.message as string } : null;
+  }
+
+  async function storeFile(documentID: string, bytes: Uint8Array, contentType: string) {
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    if (!(await deps.store.has(hash))) await deps.store.put(hash, bytes, contentType);
+    await db.sql`INSERT INTO blobs (hash, size, content_type, uploaded_by) VALUES (${hash}, ${bytes.length}, ${contentType}, ${s.userID}) ON CONFLICT (hash) DO NOTHING`;
+    return signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs", ttlSeconds: 3600 });
+  }
+
+  /** Wrap a tool: rate limit, error shaping, last-seen. */
+  function tool<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.infer<z.ZodObject<S>>) => Promise<ToolResult>, annotations?: Record<string, boolean>) {
+    server.registerTool(name, { description, inputSchema: shape as any, annotations }, (async (args: any) => {
+      const now = Date.now();
+      s.calls = s.calls.filter((t) => now - t < 60_000);
+      if (s.calls.length >= LIMIT_PER_MIN) return { isError: true, content: [{ type: "text", text: "Rate limit: too many calls this minute. Slow down and batch work." }] };
+      s.calls.push(now);
+      try {
+        return await fn(args);
+      } catch (e) {
+        const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
+        const data = e instanceof ToolError ? e.data : undefined;
+        return { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data, null, 2)}` : msg }] };
+      }
+    }) as any);
+  }
+
+  const document = z.string().optional().describe("Document id (defaults to this session's document)");
+
+  // ---------------- documents ----------------
+  tool("list_documents", "Documents you can access.", {}, async () => {
+    const rows = await db.sql`SELECT d.id, d.name, d.updated_at, d.head_version, m.role FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${s.userID} ORDER BY d.updated_at DESC`;
+    return text({ default: s.defaultDocument, documents: rows.map((r: any) => ({ id: r.id, name: r.name, role: r.role, version: Number(r.head_version), updated: new Date(Number(r.updated_at)).toISOString() })) });
+  });
+
+  tool("create_document", "Create an empty document (then write parts/<name>.ts).", { name: z.string().min(1).max(200) }, async ({ name }) => {
+    const id = newID();
+    await mutate(mutators.document.create({ id, name }));
+    s.defaultDocument ??= id;
+    return text({ id, name });
+  });
+
+  // ---------------- notes ----------------
+  tool(
+    "list_notes",
+    "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link.",
+    { document, status: z.enum(["Open", "AgentWorking", "AwaitingReview", "Resolved", "all"]).optional(), part: z.string().optional() },
+    async ({ document: dd, status, part }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      const rows = await db.sql`SELECT * FROM notes WHERE document_id = ${documentID} AND removed_at IS NULL ORDER BY created_at`;
+      const want = rows.filter((n: any) => (!status || status === "all" ? n.status !== "Resolved" : n.status === status) && (!part || n.anchor.targets.some((t: any) => t.part === part)));
+      const out = [];
+      for (const n of want) out.push(await noteView(documentID, n, d));
+      return text({ notes: out });
+    },
+    { readOnlyHint: true },
+  );
+
+  tool("get_note", "One note thread, described like list_notes.", { document, id: z.string() }, async ({ document: dd, id }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    const [n] = await db.sql`SELECT * FROM notes WHERE id = ${id} AND document_id = ${documentID}`;
+    if (!n) throw new ToolError(`No note ${id} in this document.`);
+    return text(await noteView(documentID, n, d));
+  });
+
+  tool(
+    "reply_to_note",
+    "Reply on a note thread. Links the version you created (default: your latest write) and moves the note to Awaiting review.",
+    { document, id: z.string(), text: z.string().min(1), version: z.string().optional().describe("version id to link (default: your latest)"), status: z.enum(["AwaitingReview", "Open"]).optional().describe("default AwaitingReview") },
+    async ({ document: dd, id, text: body, version, status }) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID);
+      let versionID = version ?? s.lastVersion.get(documentID);
+      if (!versionID) {
+        // a previous connection of this agent made the change
+        const [v] = await db.sql`SELECT id FROM versions WHERE document_id = ${documentID} AND author_agent_id = ${s.id} ORDER BY number DESC LIMIT 1`;
+        versionID = v?.id;
+      }
+      // status first: it fails (with the holder) if another agent has the note, and then nothing is posted
+      await mutate(mutators.note.setStatus({ noteID: id, status: status ?? "AwaitingReview" }));
+      await mutate(mutators.note.reply({ id: newID(), noteID: id, text: body, versionID } as any));
+      const [n] = await db.sql`SELECT claimed_by FROM notes WHERE id = ${id}`;
+      if (n?.claimed_by === s.id) await mutate(mutators.note.release({ noteID: id }));
+      await setStatus("idle", documentID, null);
+      return text({ ok: true, linkedVersion: versionID ?? null, status: status ?? "AwaitingReview" });
+    },
+  );
+
+  tool("claim_note", "Claim a note for this session before working on it. Fails with the holder's name if another session has it.", { document, id: z.string() }, async ({ document: dd, id }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID);
+    await mutate(mutators.note.claim({ noteID: id }));
+    return text({ ok: true, claimed: id });
+  });
+
+  tool("release_note", "Release a note you claimed (e.g. if you stop working on it).", { document, id: z.string() }, async ({ document: dd, id }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID);
+    await mutate(mutators.note.release({ noteID: id }));
+    await setStatus("idle", documentID, null);
+    return text({ ok: true });
+  });
+
+  tool("set_note_status", "Set a note's status.", { document, id: z.string(), status: z.enum(["Open", "AwaitingReview", "Resolved"]) }, async ({ document: dd, id, status }) => {
+    await requireMember(db, s.userID, docID(dd));
+    await mutate(mutators.note.setStatus({ noteID: id, status }));
+    return text({ ok: true });
+  });
+
+  tool("delete_note", "Remove a finished note (soft delete; humans can restore it).", { document, id: z.string() }, async ({ document: dd, id }) => {
+    await requireMember(db, s.userID, docID(dd));
+    await mutate(mutators.note.remove({ noteID: id }));
+    return text({ ok: true });
+  });
+
+  tool("get_selection", "The human's current selection in the workspace, described like note targets.", { document }, async ({ document: dd }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    const [p] = await db.sql`SELECT selection FROM presence WHERE document_id = ${documentID} AND user_id = ${s.userID} AND agent_session_id IS NULL ORDER BY updated_at DESC LIMIT 1`;
+    const sel = (p?.selection ?? []) as any[];
+    if (!sel.length) return text({ selection: [], hint: "Nothing is selected in the workspace." });
+    return text({ selection: await describeTargets(d, sel.map((e) => ({ ...e, point: [0, 0, 0] }))) });
+  }, { readOnlyHint: true });
+
+  // ---------------- scripts ----------------
+  tool("list_scripts", "Scripts with their content and current version.", { document }, async ({ document: dd }) => {
+    const d = await loadDoc(db, s.userID, docID(dd));
+    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, content: x.content })) });
+  }, { readOnlyHint: true });
+
+  tool("read_script", "One script's content and version (pass the version back as baseVersion when writing).", { document, path: z.string() }, async ({ document: dd, path }) => {
+    const d = await loadDoc(db, s.userID, docID(dd));
+    const sc = d.scripts.find((x) => x.path === path);
+    if (!sc) throw new ToolError(`No script at ${path}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
+    return text({ path, version: sc.version, content: sc.content });
+  }, { readOnlyHint: true });
+
+  async function afterWrite(documentID: string, label: string) {
+    const v = await latestVersion(documentID);
+    if (v) s.lastVersion.set(documentID, v.id);
+    const d = await loadDoc(db, s.userID, documentID);
+    const results = await regen(d);
+    await activity(documentID, `${label}${v ? ` (v${v.number})` : ""}${results.some((r) => r && !r.ok) ? " — regeneration failed" : ""}`);
+    await setStatus((await db.sql`SELECT 1 FROM notes WHERE claimed_by = ${s.id} AND removed_at IS NULL`).length ? "working" : "idle", documentID);
+    return { version: v, regeneration: results };
+  }
+
+  tool(
+    "write_script",
+    "Create or replace a script (parts/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version and returns the regeneration result.",
+    { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional().describe("note id this change answers") },
+    async ({ document: dd, path, content, baseVersion, message, note }) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID, "editor");
+      await setStatus("writing", documentID, { path });
+      await mutate(mutators.script.write({ documentID, path, content, baseVersion, message, noteID: note, versionID: newID() } as any));
+      return text(await afterWrite(documentID, `write ${path}`));
+    },
+  );
+
+  tool(
+    "edit_script",
+    "Search/replace edits on a script (each search must match exactly once unless all: true). Pass baseVersion. Creates a version and returns the regeneration result.",
+    { document, path: z.string(), edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1), baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional() },
+    async ({ document: dd, path, edits, baseVersion, message, note }) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID, "editor");
+      await setStatus("writing", documentID, { path });
+      await mutate(mutators.script.edit({ documentID, path, edits, baseVersion, message, noteID: note, versionID: newID() } as any));
+      return text(await afterWrite(documentID, `edit ${path}`));
+    },
+  );
+
+  tool("delete_script", "Delete a script. Pass baseVersion.", { document, path: z.string(), baseVersion: z.number().int() }, async ({ document: dd, path, baseVersion }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID, "editor");
+    await mutate(mutators.script.delete({ documentID, path, baseVersion, versionID: newID() } as any));
+    return text(await afterWrite(documentID, `delete ${path}`));
+  });
+
+  // ---------------- geometry ----------------
+  const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right"] as const;
+  tool(
+    "render",
+    'PNG of the model. view: "iso" | "top" | "front" | … or "note:<id>" for a note\'s own view; or a custom camera. highlight: stable names or selectors to mark in orange.',
+    {
+      document,
+      view: z.string().optional(),
+      camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional() }).optional(),
+      highlight: z.array(z.object({ part: z.string(), name: z.string() })).optional(),
+      parts: z.array(z.string()).optional(),
+      style: z.enum(["shaded", "shadedEdges", "wireframe", "hiddenLine"]).optional(),
+      width: z.number().int().min(128).max(2048).optional(),
+      height: z.number().int().min(128).max(2048).optional(),
+    },
+    async ({ document: dd, view, camera, highlight, parts, style, width, height }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      await regen(d, parts ?? partsOf(d));
+      let cam = camera as any;
+      let v: string | undefined = view ?? "iso";
+      if (view?.startsWith("note:")) {
+        const [n] = await db.sql`SELECT anchor FROM notes WHERE id = ${view.slice(5)} AND document_id = ${documentID}`;
+        if (!n) throw new ToolError(`No note ${view.slice(5)}.`);
+        cam = n.anchor.camera;
+        v = undefined;
+        highlight ??= n.anchor.targets.filter((t: any) => t.kind !== "point" && t.kind !== "part").map((t: any) => ({ part: t.part, name: t.name }));
+      } else if (v && !VIEWS.includes(v as any)) throw new ToolError(`Unknown view "${v}". Use ${VIEWS.join(", ")} or note:<id>.`);
+      const refs: any[] = [];
+      for (const h of highlight ?? []) {
+        try {
+          const r = await resolveName(d, h.part, h.name);
+          for (const index of r.indices) refs.push({ part: h.part, kind: r.kind, index });
+        } catch {}
+      }
+      const [img] = await engine(d, [{ op: "render", view: v, camera: cam && { ...cam, up: cam.up ?? [0, 0, 1] }, highlight: refs, parts, style, width: width ?? 1024, height: height ?? 768 }]);
+      await activity(documentID, `render ${view ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
+      return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
+    },
+    { readOnlyHint: true },
+  );
+
+  tool(
+    "describe_model",
+    "Parts with bounding boxes, volume/area/mass; then every face and edge with name, type, area/length, normal/axis and source location.",
+    { document, part: z.string().optional(), entities: z.boolean().optional().describe("include faces and edges (default true when part is given)") },
+    async ({ document: dd, part, entities }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      const parts = part ? [part] : partsOf(d);
+      const results = await engine(d, parts.map((p) => ({ op: "regenerate", part: p })));
+      const out: any[] = [];
+      for (const r of results as any[]) {
+        const entry: any = { ...summarize(r), material: r.material, mass: r.mass && { volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), massGrams: round(r.mass.mass, 2), centroid: vec(r.mass.centroid) }, params: r.params.map((p: any) => ({ name: p.name, value: p.value, unit: p.unit, overridden: p.overridden })) };
+        if ((entities ?? !!part) && !r.empty) {
+          const [all] = await engine(d, [{ op: "describeAll", part: r.part }]);
+          entry.faces = (all as any).faces.map(describeEntity);
+          entry.edges = (all as any).edges.map(describeEntity);
+        }
+        out.push(entry);
+      }
+      await activity(documentID, `describe_model${part ? ` ${part}` : ""}`);
+      return text({ document: d.name, units: d.units, configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default", parts: out });
+    },
+    { readOnlyHint: true },
+  );
+
+  tool(
+    "query",
+    'Evaluate a selector against the live model and return matching entities, e.g. ">Z", "base.side & |Z", "%circle", "bore".',
+    { document, expr: z.string(), part: z.string().optional(), kind: z.enum(["face", "edge", "vertex"]).optional() },
+    async ({ document: dd, expr, part, kind }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      const p = part ?? partsOf(d)[0];
+      if (!p) throw new ToolError("This document has no parts.");
+      await regen(d, [p]);
+      const k = kind ?? "face";
+      const [idx] = await engine(d, [{ op: "query", part: p, expr, kind: k }]);
+      const descs = await engine(d, (idx as number[]).slice(0, 100).map((index) => ({ op: "describe", part: p, kind: k, index })));
+      return text({ part: p, kind: k, count: (idx as number[]).length, entities: descs.map(describeEntity), truncated: (idx as number[]).length > 100 || undefined });
+    },
+    { readOnlyHint: true },
+  );
+
+  const ref = z.object({ part: z.string(), name: z.string().optional().describe("stable name or selector; omit for the whole part") });
+  tool("measure", "Distance, angle or minimum clearance between two entities or parts.", { document, a: ref, b: ref }, async ({ document: dd, a, b }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    await regen(d, [...new Set([a.part, b.part])]);
+    const toRef = async (x: { part: string; name?: string }) => {
+      if (!x.name) return { part: x.part, kind: "part" as const };
+      const r = await resolveName(d, x.part, x.name);
+      return { part: x.part, kind: r.kind, index: r.indices[0] };
+    };
+    const A = await toRef(a),
+      B = await toRef(b);
+    const [m] = await engine(d, [{ op: "measure", a: A, b: B }]);
+    const out: any = { distance: round((m as any).distance, 4), pointA: vec((m as any).a), pointB: vec((m as any).b) };
+    if (A.kind !== "part" && B.kind !== "part") {
+      const [da, db2] = await engine(d, [
+        { op: "describe", ...A },
+        { op: "describe", ...B },
+      ]);
+      const na = (da as any).normal ?? (da as any).axis,
+        nb = (db2 as any).normal ?? (db2 as any).axis;
+      if (na && nb) {
+        const dot = Math.abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]);
+        out.angleDeg = round((Math.acos(Math.min(1, dot)) * 180) / Math.PI, 3);
+      }
+    }
+    if (A.kind === "part" && B.kind === "part" && A.part !== B.part) {
+      const [v] = await engine(d, [{ op: "interference", a: A.part, b: B.part }]);
+      out.interferenceVolume = round(v as number, 3);
+    }
+    await activity(documentID, `measure ${a.part}${a.name ? ` · ${a.name}` : ""} ↔ ${b.part}${b.name ? ` · ${b.name}` : ""}: ${out.distance}`);
+    return text(out);
+  }, { readOnlyHint: true });
+
+  // ---------------- params & configurations ----------------
+  tool("get_params", "Each param's code default, override (if any) and effective value, per part.", { document, configuration: z.string().optional() }, async ({ document: dd, configuration }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
+    const results = await engine(d, partsOf(d).map((part) => ({ op: "regenerate", part })));
+    return text({
+      configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default",
+      parts: (results as any[]).map((r) => ({ part: r.part, params: r.params.map((p: any) => ({ name: p.name, codeDefault: p.default, override: p.overridden ? p.expression : undefined, effective: p.value, unit: p.unit, min: p.min, max: p.max, step: p.step, options: p.options, source: p.source && `${p.source.file}:${p.source.line}`, error: p.error })) })),
+    });
+  }, { readOnlyHint: true });
+
+  function findConfig(d: DocState, nameOrID: string): string | null {
+    if (nameOrID.toLowerCase() === "default") return null;
+    const c = d.configurations.find((x) => x.id === nameOrID || x.name.toLowerCase() === nameOrID.toLowerCase());
+    if (!c) throw new ToolError(`No configuration "${nameOrID}". Configurations: Default, ${d.configurations.map((x) => x.name).join(", ")}`);
+    return c.id;
+  }
+
+  async function ensureConfig(d: DocState): Promise<string> {
+    const c = configOf(d);
+    if (c) return c;
+    // Default is exactly the code; overrides live in a named configuration for this agent
+    const name = s.label ? `${s.clientName} (${s.label})` : s.clientName;
+    const existing = d.configurations.find((x) => x.name === name);
+    const id = existing?.id ?? newID();
+    if (!existing) await mutate(mutators.configuration.create({ id, documentID: d.id, name, overrides: [] }));
+    s.activeConfig.set(d.id, id);
+    return id;
+  }
+
+  tool(
+    "set_param",
+    "Override a param in your active configuration (creates one named after you if you're on Default). Never edits source. Returns the regeneration result.",
+    { document, part: z.string(), name: z.string(), value: z.union([z.number(), z.string()]).describe('number in the param\'s unit, or an expression like "=width/2" or "1/4 in"'), configuration: z.string().optional() },
+    async ({ document: dd, part, name, value, configuration }) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID, "editor");
+      let d = await loadDoc(db, s.userID, documentID);
+      if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
+      const configurationID = await ensureConfig(d);
+      await mutate(mutators.param.set({ documentID, configurationID, part, name, expression: String(value), value: typeof value === "number" ? value : Number.isFinite(+value) ? +value : String(value), versionID: newID() } as any));
+      d = await loadDoc(db, s.userID, documentID);
+      const [r] = await regen(d, [part]);
+      const v = await latestVersion(documentID);
+      if (v) s.lastVersion.set(documentID, v.id);
+      await activity(documentID, `set ${part}.${name} = ${value}`);
+      return text({ configuration: d.configurations.find((c) => c.id === configurationID)?.name, regeneration: r });
+    },
+  );
+
+  tool("reset_param", "Clear an override (back to the code default) in your active configuration.", { document, part: z.string(), name: z.string(), configuration: z.string().optional() }, async ({ document: dd, part, name, configuration }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID, "editor");
+    let d = await loadDoc(db, s.userID, documentID);
+    if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
+    const configurationID = configOf(d);
+    if (!configurationID) throw new ToolError("You're on Default, which has no overrides.");
+    await mutate(mutators.param.reset({ documentID, configurationID, part, name, versionID: newID() } as any));
+    d = await loadDoc(db, s.userID, documentID);
+    const [r] = await regen(d, [part]);
+    return text({ regeneration: r });
+  });
+
+  tool("list_configurations", "Configurations (named sets of overrides) and this session's active one.", { document }, async ({ document: dd }) => {
+    const d = await loadDoc(db, s.userID, docID(dd));
+    return text({ active: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default", configurations: [{ name: "Default", overrides: [] }, ...d.configurations.map((c) => ({ id: c.id, name: c.name, overrides: c.overrides.map((o) => ({ part: o.part, name: o.name, expression: o.expression })) }))] });
+  }, { readOnlyHint: true });
+
+  tool("set_configuration", "Switch this session's active configuration (each session and user has its own).", { document, name: z.string() }, async ({ document: dd, name }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    s.activeConfig.set(documentID, findConfig(d, name));
+    return text({ active: name });
+  });
+
+  // ---------------- problems & checks ----------------
+  tool(
+    "list_problems",
+    "Current errors and warnings per part, with the version and author that introduced them. Check at the start of a session and after each write.",
+    { document },
+    async ({ document: dd }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      const results = await regen(d);
+      const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
+      const introduced = (file: string | undefined, kind: string) => {
+        // the most recent version that changed this script (or params, for param problems)
+        for (let i = 0; i < versions.length; i++) {
+          const v = versions[i],
+            prev = versions[i + 1];
+          const changed = kind === "param" ? v.kind === "params" : !file || !prev || v.snapshot.scripts[file] !== prev.snapshot.scripts[file];
+          if (changed) return { version: Number(v.number), id: v.id, message: v.message, author: v.client_name ?? v.user_name ?? "someone", at: new Date(Number(v.created_at)).toISOString() };
+        }
+        return undefined;
+      };
+      const problems = results.flatMap((r: any) => r.problems.map((p: any) => ({ part: r.part, ...p, introducedBy: introduced(p.source?.file, p.kind) })));
+      return text({ problems, parts: results.map((r: any) => ({ part: r.part, ok: r.ok })) });
+    },
+    { readOnlyHint: true },
+  );
+
+  tool("check", "Validity (BRepCheck) of each part, and interference between parts.", { document, part: z.string().optional() }, async ({ document: dd, part }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    const parts = part ? [part] : partsOf(d);
+    await regen(d);
+    const checks = await engine(d, parts.map((p) => ({ op: "check", part: p })));
+    const out: any = { validity: parts.map((p, i) => ({ part: p, valid: !(checks[i] as any[]).length, problems: checks[i] })) };
+    const all = partsOf(d);
+    const pairs: any[] = [];
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
+    const vols = await engine(d, pairs.map(([a, b]) => ({ op: "interference", a, b })));
+    out.interference = pairs.map(([a, b], i) => ({ a, b, volume: round(vols[i] as number, 3) })).filter((x) => x.volume > 1e-6);
+    return text(out);
+  }, { readOnlyHint: true });
+
+  // ---------------- versions ----------------
+  tool("list_versions", "Version history (newest first).", { document, limit: z.number().int().min(1).max(200).optional() }, async ({ document: dd, limit }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID);
+    const rows = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.note_id, v.created_at, u.name AS user_name, a.client_name, a.label FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT ${limit ?? 50}`;
+    return text({ versions: rows.map((v: any) => ({ id: v.id, number: Number(v.number), kind: v.kind, message: v.message, note: v.note_id ?? undefined, author: v.client_name ? `${v.client_name}${v.label ? ` (${v.label})` : ""}` : v.user_name, at: new Date(Number(v.created_at)).toISOString() })) });
+  }, { readOnlyHint: true });
+
+  tool("read_version", "Scripts as they were at a version (optionally one path).", { document, id: z.string(), path: z.string().optional() }, async ({ document: dd, id, path }) => {
+    await requireMember(db, s.userID, docID(dd));
+    const v = await readVersion(db, id, s.userID, path).catch((e) => {
+      throw new ToolError((e as Error).message);
+    });
+    return text({ version: v.version.number, message: v.version.message, scripts: v.scripts });
+  }, { readOnlyHint: true });
+
+  tool("restore_version", "Copy a version to the tip as a new version (nothing is overwritten).", { document, id: z.string() }, async ({ document: dd, id }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID, "editor");
+    await mutate(mutators.version.restore({ documentID, versionID: id, newVersionID: newID() } as any));
+    return text(await afterWrite(documentID, `restore version`));
+  });
+
+  // ---------------- export / import ----------------
+  tool("export", "Export a part as STEP, STL or 3MF; returns a signed download URL (valid 1 hour).", { document, part: z.string(), format: z.enum(["step", "stl", "3mf"]) }, async ({ document: dd, part, format }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    await regen(d, [part]);
+    const [f] = await engine(d, [{ op: "export", part, format }]);
+    const bytes = Buffer.from((f as any).base64, "base64");
+    const type = ({ step: "model/step", stl: "model/stl", "3mf": "model/3mf" } as Record<string, string>)[format as string];
+    const url = await storeFile(documentID, new Uint8Array(bytes), type);
+    return text({ url: `${deps.config.appOrigin}${url.startsWith("/") ? "" : "/"}${url.replace(/^https?:\/\/[^/]+/, "").replace(/^\//, "")}`, bytes: bytes.length, format });
+  }, { readOnlyHint: true });
+
+  tool("export_document", "The whole document as the plain-file zip format (base64).", { document, notes: z.boolean().optional() }, async ({ document: dd, notes }) => {
+    const documentID = docID(dd);
+    const payload = await exportDocument(db, documentID, s.userID, { notes: notes ?? true });
+    const zip = buildDocumentZip(payload);
+    return text({ filename: `${payload.manifest.name}.zip`, base64: Buffer.from(zip).toString("base64") });
+  }, { readOnlyHint: true });
+
+  tool("import_document", "Create a document from a plain-file zip (base64).", { zip: z.string().describe("base64 zip"), name: z.string().optional() }, async ({ zip, name }) => {
+    const payload = parseDocumentZip(new Uint8Array(Buffer.from(zip, "base64")));
+    const { documentID } = await importDocument(db, payload, ctx(), { name });
+    return text({ id: documentID, name: name ?? payload.manifest.name });
+  });
+}

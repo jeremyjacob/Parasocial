@@ -12,6 +12,7 @@
     "@parasocial/api": "workspace:*",
     "@parasocial/kernel": "workspace:*",
     "@parasocial/naming": "workspace:*",
+    "fflate": "^0.8.3",
     "replicad-opencascadejs": "1.1.0",
     "sucrase": "3"
   }

@@ -71,6 +71,17 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       return { value: engine.measure(req.a, req.b) };
     case "check":
       return { value: engine.check(req.part) };
+    case "describeAll":
+      return { value: engine.describeAll(req.part) };
+    case "interference":
+      return { value: engine.interference(req.a, req.b) };
+    case "export": {
+      const bytes = engine.exportPart(req.part, req.format);
+      // base64 so it survives JSON (pool) and structured clone alike
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return { value: { base64: btoa(bin), bytes: bytes.length } };
+    }
     case "closestPoint":
       return { value: engine.closestPoint(req.part, req.kind, req.index, req.point) };
     case "regenerateSnapshot": {
