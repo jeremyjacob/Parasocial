@@ -218,6 +218,7 @@
 		if (ws.tool === 'pencil' && e.button === 0 && viewer) {
 			if (nc.eraser) return eraseAt(e);
 			stroke = { points: [], part: null, plane: null, crossed: [], seen: new Set() };
+			nc.holdComposer();
 			host.setPointerCapture(e.pointerId);
 			const pp = penPoint(e);
 			if (pp) stroke.points.push([pp.p.x, pp.p.y, pp.p.z]);
@@ -265,8 +266,9 @@
 			const targets: DraftTarget[] = [{ ref: { part: ref.part, kind: ref.kind, index: ref.index }, point: [point.x, point.y, point.z], normal: hit?.normal ? [hit.normal.x, hit.normal.y, hit.normal.z] : undefined }];
 			if (nc.reanchoring) return void nc.reanchor(nc.reanchoring, targets[0]);
 			// shift adds to the draft's targets (a note can point at many entities)
-			if (e.shiftKey && nc.draft) nc.startFromTargets([...nc.draft.targets, ...targets], { x, y });
-			else nc.startFromTargets(targets, { x, y });
+			const all = e.shiftKey && nc.draft ? [...nc.draft.targets, ...targets] : targets;
+			nc.startFromTargets(all, { x, y });
+			ws.select(all.map((t) => t.ref));
 			return;
 		}
 		// a Tab-cycled preselection is what a click selects
@@ -276,6 +278,15 @@
 			ws.select([ref], e.shiftKey || e.metaKey || e.ctrlKey || ws.tool === 'measure' ? 'toggle' : 'replace');
 			if (ws.tool === 'measure' && ws.selection.length > 2) ws.select(ws.selection.slice(-2));
 		}
+	}
+
+	/** Double-click selects the whole part (body) under the cursor, like Shapr3D. */
+	function onDblClick(e: MouseEvent) {
+		if (ws.tool !== 'select' || e.button !== 0) return;
+		const ref = pickAt(e);
+		if (!ref) return;
+		const part = { part: ref.part, kind: 'part' as any, index: 0 };
+		ws.select([part], e.shiftKey || e.metaKey || e.ctrlKey ? 'add' : 'replace');
 	}
 
 	function updateLabel() {
@@ -354,6 +365,11 @@
 	}
 
 	// ---- section view (S) ----
+	function axisCenter(axis: 'X' | 'Y' | 'Z') {
+		const r = Object.values(ws.results).filter((x) => x.bbox);
+		const k = { X: 0, Y: 1, Z: 2 }[axis];
+		return r.length ? (Math.min(...r.map((x) => x.bbox!.min[k])) + Math.max(...r.map((x) => x.bbox!.max[k]))) / 2 : 0;
+	}
 	const sectionRange = $derived.by(() => {
 		const r = Object.values(ws.results).filter((x) => x.bbox);
 		if (!r.length || !ws.section) return { min: -50, max: 50 };
@@ -367,7 +383,9 @@
 		const n = s.axis === 'X' ? [1, 0, 0] : s.axis === 'Y' ? [0, 1, 0] : [0, 0, 1];
 		const o = n.map((c) => c * s.offset);
 		viewer.setSection({ origin: o, normal: s.flip ? n.map((c) => -c) : n });
+		ws.untracked(() => ws.rememberSection());
 	});
+	$effect(() => viewer?.setHelpers({ grid: ws.showGrid, origin: ws.showOrigin }));
 
 	// ---- markup: drafts, open notes' strokes, and the hovered note's (§8 Pencil) ----
 	function markupFor() {
@@ -515,6 +533,7 @@
 		onpointerleave={onLeave}
 		onpointerdowncapture={onDown}
 		onpointerup={onUp}
+		ondblclick={onDblClick}
 		data-testid="viewport"
 		role="application"
 		aria-label="3D viewport"
@@ -537,7 +556,7 @@
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[108px] right-[22px] z-10">
-			<ViewportControls bind:display={ws.display} bind:ortho={ws.ortho} bind:filters={ws.filters} bind:section={() => !!ws.section, (v) => (ws.section = v ? { axis: 'Z', offset: 0, flip: false } : null)} orientation="vertical" onZoomToFit={() => viewer?.fit()} />
+			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:filters={() => ws.filters, (v) => (ws.filters = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
 
@@ -558,7 +577,7 @@
 	{#if ws.section}
 		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-3 shadow-toolbar" data-testid="section-bar">
 			<span class="text-ui font-medium">Section</span>
-			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }]} onValueChange={(v) => (ws.section = { axis: v as any, offset: 0, flip: false })} class="w-28" />
+			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }]} onValueChange={(v) => (ws.section = { ...ws.section!, axis: v as any, offset: axisCenter(v as any) })} class="w-28" />
 			<Slider value={ws.section.offset} min={sectionRange.min} max={sectionRange.max} step={(sectionRange.max - sectionRange.min) / 200 || 0.1} onValueChange={(v: number) => (ws.section = { ...ws.section!, offset: v })} class="w-40" aria-label="Section offset" />
 			<span class="w-16 text-label text-fg-secondary tabular-nums">{num(ws.section.offset, 1)} mm</span>
 			<IconButton label="Flip" size="sm" onclick={() => (ws.section = { ...ws.section!, flip: !ws.section!.flip })}><FlipVertical2 /></IconButton>
@@ -590,7 +609,7 @@
 	{#if viewer}
 		<Pins {viewer} {nc} onopen={onOpenNote} />
 	{/if}
-	{#if nc.draft}
+	{#if nc.draft && nc.composerShown}
 		<div class="absolute z-20" in:rise={{ y: 4, scale: 0.96, origin: 'top left' }} out:fadeOut style="left:{Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292)}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
 			<NoteComposer {ws} {nc} />
 		</div>

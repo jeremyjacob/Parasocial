@@ -27,6 +27,7 @@
 		<DropdownMenu.CheckboxItem
 			checked={entry.checked}
 			onCheckedChange={entry.onCheckedChange}
+			closeOnSelect={!entry.keepOpen}
 			class={cn(menuItem, 'group/item pl-7')}
 		>
 			{#snippet children({ checked })}

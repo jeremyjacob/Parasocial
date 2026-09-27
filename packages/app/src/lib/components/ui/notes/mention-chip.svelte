@@ -28,7 +28,7 @@
 			: kind === 'entity'
 				? 'bg-active font-mono text-[0.88em] text-fg'
 				: 'bg-accent-subtle text-accent-fg',
-		onclick && 'cursor-pointer hover:brightness-95 focus-ring',
+		onclick && 'cursor-default hover:brightness-95 focus-ring',
 		className
 	)}
 >

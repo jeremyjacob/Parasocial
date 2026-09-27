@@ -140,12 +140,12 @@ export class PartObject {
       uniforms: { slotKind: { value: (KIND_CODE.face << 6) | slot } },
       side: THREE.DoubleSide,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: 4,
+      polygonOffsetUnits: 8,
       toneMapped: false,
       blending: THREE.NoBlending,
     });
-    this.pickEdgeMaterial = new LineMaterial({ vertexColors: true, linewidth: 9, resolution, worldUnits: false, toneMapped: false, blending: THREE.NoBlending });
+    this.pickEdgeMaterial = new LineMaterial({ vertexColors: true, linewidth: 15, resolution, worldUnits: false, toneMapped: false, blending: THREE.NoBlending });
     (this.pickEdgeMaterial as any).fog = false;
     this.build(data);
   }
@@ -350,22 +350,45 @@ export class PartObject {
 
   private cap: THREE.Mesh | null = null;
 
-  /** Section view: clip everything of this part; inside surfaces render flat in `capColor`, reading as a cut. */
-  setClip(planes: THREE.Plane[], capColor: THREE.Color) {
+  /**
+   * Section view: clip everything of this part. Inside (back) faces seen through the cut render as
+   * a flat cap with a screen-space 45° hatch, reading as cut material.
+   */
+  setClip(planes: THREE.Plane[], capColor: THREE.Color, hatchColor = capColor, pixelRatio = 1) {
     const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial] as THREE.Material[];
     for (const m of mats) {
       m.clippingPlanes = planes.length ? planes : null;
       (m as any).clipping = planes.length > 0;
       m.needsUpdate = true;
     }
+    // back faces of the part would cover the cap; while cut, only front faces shade
+    this.faceMaterial.side = planes.length ? THREE.FrontSide : THREE.DoubleSide;
+    // the inverted-hull silhouette would draw over the cap from inside the cut
+    this.silMaterial.visible = !planes.length;
     if (planes.length) {
       if (!this.cap) {
-        this.cap = new THREE.Mesh(this.faceMesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.BackSide, color: capColor, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
+        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, color: capColor, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+        mat.userData.hatch = { hatchColor: { value: new THREE.Color() }, hatchPx: { value: 1 } };
+        mat.onBeforeCompile = (sh) => {
+          Object.assign(sh.uniforms, mat.userData.hatch);
+          sh.fragmentShader = sh.fragmentShader.replace("void main() {", "uniform vec3 hatchColor;\nuniform float hatchPx;\nvoid main() {").replace(
+            "#include <color_fragment>",
+            `#include <color_fragment>
+            float period = 11.0 * hatchPx;
+            float t = mod(gl_FragCoord.x + gl_FragCoord.y, period);
+            float dist = min(t, period - t) / 1.4142;
+            float a = 1.0 - smoothstep(0.45 * hatchPx, 1.15 * hatchPx, dist);
+            diffuseColor.rgb = mix(diffuseColor.rgb, hatchColor, a);`,
+          );
+        };
+        this.cap = new THREE.Mesh(this.faceMesh.geometry, mat);
         this.cap.renderOrder = -0.5;
         this.group.add(this.cap);
       }
       const cm = this.cap.material as THREE.MeshBasicMaterial;
       cm.color.copy(capColor);
+      cm.userData.hatch.hatchColor.value.copy(hatchColor);
+      cm.userData.hatch.hatchPx.value = pixelRatio;
       cm.clippingPlanes = planes;
       cm.needsUpdate = true;
       this.cap.visible = true;

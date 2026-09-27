@@ -39,7 +39,19 @@
 		outline: none;
 	}
 
-	button {
+	/* desktop feel: the arrow everywhere, never the pointing hand */
+	button,
+	a,
+	summary,
+	label,
+	select,
+	[role='button'],
+	[role='tab'],
+	[role='menuitem'],
+	[role='menuitemcheckbox'],
+	[role='option'],
+	[role='switch'],
+	[role='checkbox'] {
 		cursor: default;
 	}
 }

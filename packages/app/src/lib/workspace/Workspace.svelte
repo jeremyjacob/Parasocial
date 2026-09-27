@@ -185,22 +185,19 @@
 		{ id: 'tool.note', label: 'Note', group: 'Tools', keys: ['C'], icon: MessageCircle, run: noteTool },
 		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.dirty.length ? toast('Save to add notes') : (ws.tool = 'pencil')) },
 		{ id: 'tool.measure', label: 'Measure', group: 'Tools', keys: ['M'], icon: Ruler, run: () => (ws.tool = 'measure') },
-		{ id: 'view.fit', label: 'Zoom to fit', group: 'View', keys: ['F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection() : ws.viewer?.fit()) },
+		{ id: 'view.fit', label: 'Zoom to fit', group: 'View', keys: ['F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection() : ws.viewer?.fitOrHome()) },
 		{ id: 'view.iso', label: 'Isometric view', group: 'View', keys: ['0'], run: () => ws.viewer?.setView('iso') },
 		{ id: 'view.front', label: 'Front view', group: 'View', keys: ['alt', 'F'], run: () => ws.viewer?.setView('front') },
 		{ id: 'view.top', label: 'Top view', group: 'View', keys: ['alt', 'T'], run: () => ws.viewer?.setView('top') },
 		{ id: 'view.right', label: 'Right view', group: 'View', keys: ['alt', 'R'], run: () => ws.viewer?.setView('right') },
 		{ id: 'view.ortho', label: 'Toggle orthographic', group: 'View', keys: ['O'], run: () => (ws.ortho = !ws.ortho) },
-		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => (ws.section = ws.section ? null : { axis: 'Z', offset: centerZ(), flip: false }) },
+		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => ws.toggleSection(centerZ()) },
+		{ id: 'view.grid', label: 'Toggle ground grid', group: 'View', keys: ['G'], run: () => ws.setHelpers({ grid: !ws.showGrid }) },
+		{ id: 'view.origin', label: 'Toggle origin', group: 'View', keys: ['shift', 'G'], run: () => ws.setHelpers({ origin: !ws.showOrigin }) },
 		{ id: 'display.shaded', label: 'Display: shaded', group: 'View', keys: ['alt', '1'], icon: Box, run: () => (ws.display = 'shaded') },
 		{ id: 'display.edges', label: 'Display: shaded with edges', group: 'View', keys: ['alt', '2'], icon: Boxes, run: () => (ws.display = 'shaded-edges') },
 		{ id: 'display.wire', label: 'Display: wireframe', group: 'View', keys: ['alt', '3'], icon: Grid3x3, run: () => (ws.display = 'wireframe') },
 		{ id: 'display.hidden', label: 'Display: hidden line', group: 'View', keys: ['alt', '4'], icon: SquareDashed, run: () => (ws.display = 'hidden-line') },
-		{ id: 'filter.face', label: 'Select faces', group: 'Selection', keys: ['1'], run: () => (ws.filters = ['face']) },
-		{ id: 'filter.edge', label: 'Select edges', group: 'Selection', keys: ['2'], run: () => (ws.filters = ['edge']) },
-		{ id: 'filter.vertex', label: 'Select vertices', group: 'Selection', keys: ['3'], run: () => (ws.filters = ['vertex']) },
-		{ id: 'filter.part', label: 'Select parts', group: 'Selection', keys: ['4'], run: () => (ws.filters = ['part']) },
-		{ id: 'filter.all', label: 'Select faces and edges', group: 'Selection', keys: ['5'], run: () => (ws.filters = ['face', 'edge']) },
 		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (nc.draft ? nc.discard() : ws.tool !== 'select' ? (ws.tool = 'select') : ws.clearSelection()) },
 		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => (ws.hidden.forEach((p) => ws.setHidden(p, false)), ws.isolate(null)) },
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
@@ -295,10 +292,7 @@
 	});
 
 	const docMenu = $derived<MenuEntry[]>([
-		{ label: 'All documents', icon: ArrowLeft, onSelect: () => (location.href = '/') },
-		{ type: 'separator' },
 		{ label: 'Export…', icon: Download, shortcut: ['mod', 'shift', 'E'], onSelect: () => (exportOpen = true) },
-		{ label: 'Connect an agent…', icon: Bot, onSelect: () => (connectOpen = true) },
 		{ type: 'separator' },
 		{
 			label: 'Delete document',
@@ -367,7 +361,7 @@
 
 		<div class="grid min-h-0 grid-cols-[240px_minmax(0,1fr)_288px]">
 			<aside class="flex min-h-0 flex-col border-r border-line-subtle bg-panel" aria-label="Document">
-				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line-subtle">
+				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'parts'}<PartsPanel {ws} onAddPart={addPart} />
 						{:else if tab === 'scripts'}<ScriptsPanel {ws} />
@@ -397,7 +391,7 @@
 			</main>
 
 			<aside class="flex min-h-0 flex-col border-l border-line-subtle bg-panel" aria-label="Inspector">
-				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line-subtle">
+				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'properties'}<PropertiesPanel {ws} />
 						{:else if tab === 'params'}<ParamsPanel {ws} />

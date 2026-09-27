@@ -12,7 +12,7 @@
 		const kinds = d.targets.map((t) => t.ref.kind as string);
 		const one = kinds.length === 1 ? kinds[0] : `${kinds.length} items`;
 		const parts = [...new Set(d.targets.map((t) => ws.results[t.ref.part]?.name ?? t.ref.part))];
-		return `${one === 'part' ? 'Part' : one.charAt(0).toUpperCase() + one.slice(1)} · ${parts.join(', ')}${d.strokeIDs.length ? ` · ${d.strokeIDs.length} stroke${d.strokeIDs.length > 1 ? 's' : ''}` : ''}`;
+		return `${one === 'part' ? 'Part' : one.charAt(0).toUpperCase() + one.slice(1)} · ${parts.join(', ')}`;
 	});
 	$effect(() => {
 		d;

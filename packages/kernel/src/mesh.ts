@@ -18,7 +18,7 @@ export type MeshData = {
 
 export function meshTolerances(bboxDiagonal: number, quality: MeshQuality) {
   const base = Math.min(Math.max(bboxDiagonal * 0.0008, 0.005), 0.2);
-  return quality === "fine" ? { tolerance: base, angular: 0.25 } : { tolerance: base * 4, angular: 0.6 };
+  return quality === "fine" ? { tolerance: base, angular: 0.14 } : { tolerance: base * 2, angular: 0.28 };
 }
 
 function heapCopy<T extends Float32Array | Uint32Array | Int32Array>(ctor: { new (b: ArrayBufferLike, o: number, l: number): T; BYTES_PER_ELEMENT: number }, ptr: number, size: number): T {

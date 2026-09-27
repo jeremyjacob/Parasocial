@@ -49,6 +49,9 @@ export class WorkspaceState {
 	openScript = $state<string | null>(null);
 	/** Section view (S): axis, offset along it (mm), flipped. */
 	section = $state<{ axis: 'X' | 'Y' | 'Z'; offset: number; flip: boolean } | null>(null);
+	/** Ground grid and origin triad (G, Shift+G); remembered per browser. */
+	showGrid = $state(pref('parasocial:grid', true));
+	showOrigin = $state(pref('parasocial:origin', true));
 	revealLine = $state<number | null>(null);
 
 	// ---- engine-derived metadata ----
@@ -510,6 +513,34 @@ export class WorkspaceState {
 		this.viewer?.fit(undefined, true);
 	}
 
+	/** Section on/off (S). Turning it on restores the last axis, offset and flip used. */
+	toggleSection(center = 0) {
+		if (this.section) return void (this.section = null);
+		let last: any = null;
+		try {
+			last = JSON.parse(localStorage.getItem('parasocial:section') ?? 'null');
+		} catch {}
+		this.section = last && ['X', 'Y', 'Z'].includes(last.axis) && Number.isFinite(last.offset) ? { axis: last.axis, offset: last.offset, flip: !!last.flip } : { axis: 'Z', offset: center, flip: false };
+	}
+
+	/** Remember section settings (called whenever they change). */
+	rememberSection() {
+		if (!this.section) return;
+		try {
+			localStorage.setItem('parasocial:section', JSON.stringify(this.section));
+		} catch {}
+	}
+
+	setHelpers(o: { grid?: boolean; origin?: boolean }) {
+		if (o.grid !== undefined) this.showGrid = o.grid;
+		if (o.origin !== undefined) this.showOrigin = o.origin;
+		try {
+			localStorage.setItem('parasocial:grid', String(this.showGrid));
+			localStorage.setItem('parasocial:origin', String(this.showOrigin));
+		} catch {}
+		this.viewer?.setHelpers({ grid: this.showGrid, origin: this.showOrigin });
+	}
+
 	/** Recolor viewer parts for a theme change. */
 	retheme(dark: boolean) {
 		for (const p of this.parts) this.viewer?.setPartColor(p, this.partColor(p, dark));
@@ -522,4 +553,13 @@ export class WorkspaceState {
 
 function emptyMeta(part: string): PartMeta {
 	return { part, file: `parts/${part}.ts`, name: part, ok: false, partial: true, empty: true, problems: [], params: [], quality: 'fine', faces: [], edges: [], vertices: [], faceEdges: [], timings: { total: 0, script: 0, ops: 0, mesh: 0, cacheHits: 0, cacheMisses: 0 } };
+}
+
+function pref(key: string, fallback: boolean): boolean {
+	try {
+		const v = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+		return v === null ? fallback : v === 'true';
+	} catch {
+		return fallback;
+	}
 }

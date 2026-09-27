@@ -10,7 +10,7 @@ export type MenuEntry =
 			destructive?: boolean;
 			onSelect?: () => void;
 	  }
-	| { type: 'checkbox'; label: string; checked: boolean; shortcut?: string[]; onCheckedChange?: (v: boolean) => void }
+	| { type: 'checkbox'; label: string; checked: boolean; shortcut?: string[]; onCheckedChange?: (v: boolean) => void; /** stay open after toggling (filters, toggles) */ keepOpen?: boolean }
 	| { type: 'separator' }
 	| { type: 'label'; label: string }
 	| { type: 'sub'; label: string; icon?: LucideIcon; items: MenuEntry[] };

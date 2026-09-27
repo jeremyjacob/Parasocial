@@ -16,6 +16,9 @@ export const STROKE_COLORS = ['#e5484d', '#3e63dd', '#30a46c', '#18181b'] as con
 
 export class NotesController {
 	draft = $state.raw<Draft | null>(null);
+	/** False while the pencil is still drawing: the composer waits for a pause before appearing. */
+	composerShown = $state(true);
+	private composerTimer: ReturnType<typeof setTimeout> | undefined;
 	pins = $state.raw<Pin[]>([]);
 	hovered = $state<string | null>(null);
 	active = $state<string | null>(null);
@@ -40,6 +43,8 @@ export class NotesController {
 	startFromTargets(targets: DraftTarget[], screen: { x: number; y: number }, text?: string) {
 		if (!targets.length) return;
 		this.draft = { targets, strokeIDs: this.draft?.strokeIDs ?? [], screen, text };
+		clearTimeout(this.composerTimer);
+		this.composerShown = true;
 		this.ws.rightTab = 'notes';
 	}
 
@@ -52,11 +57,21 @@ export class NotesController {
 			if (!seen.has(k)) (seen.add(k), targets.push(t));
 		}
 		this.draft = { targets, strokeIDs: [...(cur?.strokeIDs ?? []), strokeID], screen };
+		if (!cur) this.composerShown = false;
+		clearTimeout(this.composerTimer);
+		if (!this.composerShown) this.composerTimer = setTimeout(() => (this.composerShown = true), 900);
+	}
+
+	/** A new pencil stroke started: keep the composer out of the way until the drawing pauses. */
+	holdComposer() {
+		clearTimeout(this.composerTimer);
 	}
 
 	async discard() {
 		const d = this.draft;
 		this.draft = null;
+		clearTimeout(this.composerTimer);
+		this.composerShown = true;
 		// Esc discards the draft: drop its strokes too
 		for (const id of d?.strokeIDs ?? []) this.ws.zero.mutate(mutators.markup.remove({ id }));
 	}

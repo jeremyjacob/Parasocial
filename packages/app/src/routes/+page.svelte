@@ -68,6 +68,38 @@
 		}
 	}
 
+	// ---- Figma-style selection ----
+	let selected = $state(new Set<string>());
+	let anchor = -1;
+	function selectDoc(id: string, i: number, e: MouseEvent) {
+		const next = new Set(selected);
+		if (e.shiftKey && anchor >= 0) {
+			const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
+			for (let k = a; k <= b; k++) next.add(docs[k].id);
+		} else if (e.metaKey || e.ctrlKey) {
+			next.has(id) ? next.delete(id) : next.add(id);
+			anchor = i;
+		} else {
+			next.clear();
+			next.add(id);
+			anchor = i;
+		}
+		selected = next;
+	}
+	async function onGridKey(e: KeyboardEvent) {
+		if (e.key === 'Enter' && selected.size === 1) goto(`/d/${[...selected][0]}`);
+		if (e.key === 'Escape') selected = new Set();
+		if ((e.key === 'Backspace' || e.key === 'Delete') && selected.size) {
+			if (!confirm(`Delete ${selected.size} document${selected.size === 1 ? '' : 's'}? This can't be undone.`)) return;
+			for (const id of selected) zero.mutate(mutators.document.delete({ id }));
+			selected = new Set();
+		}
+		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+			e.preventDefault();
+			selected = new Set(docs.map((d) => d.id));
+		}
+	}
+
 	async function importZip() {
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -84,6 +116,8 @@
 	}
 </script>
 
+<svelte:window onclick={(e) => { if (!(e.target as Element)?.closest?.('[data-testid=document-card]')) selected = new Set(); }} />
+
 <svelte:head><title>Documents · Parasocial</title></svelte:head>
 
 <div class="flex min-h-dvh flex-col bg-canvas">
@@ -96,51 +130,65 @@
 
 	<main class="mx-auto w-full max-w-[1120px] flex-1 px-6 py-8">
 		{#if docs.length === 0}
-			<section class="animate-enter flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
+			<section class="flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
 				<HeroArt name="hero" fit="contain" class="relative h-[300px] w-full max-w-[640px]" />
 				<h1 class="mt-2 text-heading font-semibold">Create your first document</h1>
 				<Button variant="primary" size="lg" class="mt-5" onclick={() => (newOpen = true)}><Plus size={14} /> New document</Button>
 			</section>
 		{:else}
 			<h1 class="mb-4 text-title font-semibold">Documents</h1>
-			<ul class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4" data-testid="document-list">
+			<!-- Figma-style grid: click selects (⌘ toggles, ⇧ extends), double-click opens -->
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+			<ul
+				class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4"
+				role="listbox"
+				aria-multiselectable="true"
+				aria-label="Documents"
+				tabindex="-1"
+				data-testid="document-list"
+				onkeydown={onGridKey}
+			>
 				{#each docs as d, i (d.id)}
-					<li class="animate-enter" style="--ps-delay: {Math.min(i, 8) * 30}ms">
-						<a
-							href="/d/{d.id}"
-							onpointerenter={warmEngine}
-							onfocus={warmEngine}
-							class="focus-ring lift group flex flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel shadow-xs"
-							data-testid="document-card"
-						>
-							<div class="relative grid h-36 place-items-center bg-canvas">
-								<HeroArt name="thumb" fit="contain" class="absolute inset-3 transition-transform duration-[var(--duration-slow)] ease-out group-hover:scale-[1.04]" />
-							</div>
-							<div class="flex h-10 items-center gap-2 border-t border-line-subtle px-3">
-								<FileBox size={14} class="text-fg-tertiary" />
+					<li
+						role="option"
+						aria-selected={selected.has(d.id)}
+						tabindex="0"
+						class="group flex flex-col overflow-hidden rounded-panel border bg-panel outline-none select-none {selected.has(d.id) ? 'border-accent ring-1 ring-accent' : 'border-line-subtle hover:border-line'}"
+						onpointerenter={warmEngine}
+						onfocus={warmEngine}
+						onclick={(e) => selectDoc(d.id, i, e)}
+						ondblclick={() => goto(`/d/${d.id}`)}
+						data-testid="document-card"
+					>
+						<div class="relative grid h-40 place-items-center bg-canvas">
+							<HeroArt name="thumb" fit="contain" class="absolute inset-4" />
+						</div>
+						<div class="flex items-center gap-2.5 border-t border-line-subtle px-3 py-2.5">
+							<span class="grid size-6 shrink-0 place-items-center rounded-control bg-accent text-fg-on-accent"><FileBox size={13} /></span>
+							<span class="flex min-w-0 flex-col">
 								<span class="truncate text-ui font-medium">{d.name}</span>
-								<span class="ml-auto shrink-0 text-label text-fg-tertiary tabular-nums">{relativeTime(d.updatedAt)}</span>
-							</div>
-						</a>
+								<span class="truncate text-label text-fg-tertiary">Edited {relativeTime(d.updatedAt)}</span>
+							</span>
+						</div>
 					</li>
 				{/each}
 			</ul>
 		{/if}
 
 		{#if examples.length}
-			<section class="animate-enter mt-12" style="--ps-delay: 60ms">
+			<section class="mt-12">
 				<h2 class="mb-4 text-ui font-semibold">Examples</h2>
 				<ul class="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3" data-testid="examples">
-					{#each examples as ex, i (ex.slug)}
-						<li class="animate-enter" style="--ps-delay: {Math.min(i, 8) * 30}ms">
+					{#each examples as ex (ex.slug)}
+						<li>
 							<button
-								class="focus-ring lift group flex w-full flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel text-left shadow-xs disabled:opacity-60"
+								class="focus-ring group flex w-full flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel text-left hover:border-line disabled:opacity-60"
 								onpointerenter={warmEngine}
 								onclick={() => openExample(ex)}
 								disabled={!!importing}
 								data-testid="example-{ex.slug}"
 							>
-								<div class="relative h-24 bg-canvas"><HeroArt name={ex.slug} fit="contain" class="absolute inset-2 transition-transform duration-[var(--duration-slow)] ease-out group-hover:scale-[1.05]" /></div>
+								<div class="relative h-24 bg-canvas"><HeroArt name={ex.slug} fit="contain" class="absolute inset-2" /></div>
 								<div class="flex h-10 items-center gap-1.5 border-t border-line-subtle px-3 text-ui font-medium">
 									{#if importing === ex.slug}<LoaderCircle size={12} class="animate-spin" />{/if}
 									{ex.name}

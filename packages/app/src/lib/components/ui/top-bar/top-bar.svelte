@@ -50,13 +50,15 @@
 	)}
 >
 	<div class="flex min-w-0 items-center gap-1">
+		<a href="/" class="grid size-7 shrink-0 place-items-center rounded-control transition-colors-fast hover:bg-hover focus-ring" aria-label="All documents" data-testid="home-logo">
+			<Logo size={20} />
+		</a>
 		<DropdownMenu items={documentMenu}>
 			{#snippet trigger(props)}
 				<button
 					{...props}
-					class="inline-flex h-7 min-w-0 items-center gap-2 rounded-control pr-1.5 pl-2 text-ui font-semibold text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
+					class="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-control pr-1.5 pl-2 text-ui font-semibold text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
 				>
-					<Logo size={20} />
 					<span class="truncate">{docName}</span>
 					<ChevronDown size={12} class="shrink-0 text-fg-tertiary" />
 				</button>

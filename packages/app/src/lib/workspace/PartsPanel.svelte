@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Focus, Plus } from '@lucide/svelte';
+	import { Plus } from '@lucide/svelte';
 	import { ListRow } from '$lib/components/ui/list-row';
 	import { IconButton } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -31,11 +31,11 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col" data-testid="parts-panel">
-	<div class="px-2 pt-2">
+	<div class="border-b border-line p-2">
 		<Input size="sm" placeholder="Filter parts" bind:value={filter} aria-label="Filter parts" />
 	</div>
-	<div class="flex h-8 items-center pr-3 pl-4 text-label text-fg-secondary">
-		<span class="tabular-nums">{ws.parts.length} part{ws.parts.length === 1 ? '' : 's'}</span>
+	<div class="flex h-10 items-center pt-1 pr-2 pl-4">
+		<span class="text-ui font-semibold text-fg">Parts</span>
 		<IconButton label="Add part" size="sm" class="ml-auto" onclick={onAddPart}><Plus /></IconButton>
 	</div>
 	<ul class="flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2">
@@ -50,12 +50,10 @@
 					selected={selectedPart.has(r.id)}
 					visible={!ws.hidden.includes(r.id)}
 					onVisibleChange={(v) => ws.setHidden(r.id, !v)}
+					isolated={ws.isolated[0] === r.id}
+					onIsolateChange={() => ws.isolate(r.id)}
 					onclick={() => ws.select([{ part: r.id, kind: 'part' as any, index: 0 }])}
-				>
-					{#snippet actions()}
-						<IconButton label={ws.isolated[0] === r.id ? 'Show all' : 'Isolate'} size="sm" onclick={(e: MouseEvent) => (e.stopPropagation(), ws.isolate(r.id))}><Focus /></IconButton>
-					{/snippet}
-				</ListRow>
+				/>
 			</li>
 		{/each}
 	</ul>

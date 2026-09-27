@@ -47,7 +47,7 @@ export class Viewer {
   private theme: ViewerTheme;
   private resolution = new THREE.Vector2(1, 1);
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
-  private pickBuf = new Uint8Array(4 * 81);
+  private pickBuf = new Uint8Array(4 * 13 * 13);
   private needsRender = true;
   private raf = 0;
   private useOrtho = false;
@@ -63,6 +63,8 @@ export class Viewer {
   private ghosts = new Map<string, THREE.Group>();
   private blend = 0.5;
   private triad: THREE.Group;
+  private showGrid = true;
+  private showOrigin = true;
   private envTex: THREE.Texture | null = null;
   filter: SelectionFilter = { face: true, edge: true, vertex: false, part: false };
   private listeners: { [k: string]: Set<(e: any) => void> } = {};
@@ -127,6 +129,10 @@ export class Viewer {
     this.controls = new CadControls(canvas, {
       camera: () => this.camera,
       pickPoint: (x, y) => this.pickPoint(x, y)?.point ?? null,
+      sceneCenter: () => {
+        const b = this.bounds();
+        return b.isEmpty() ? null : b.getCenter(new THREE.Vector3());
+      },
       changed: () => this.syncCameras(),
       moving: (on) => {
         this.moving = on;
@@ -208,7 +214,7 @@ export class Viewer {
     if (this.preselect && !valid(this.preselect)) this.preselect = null;
     this.errors = this.errors.filter(valid);
     this.restyle(d.id);
-    if (this.section) p.setClip([this.section], new THREE.Color(this.theme.dark ? "#5a5a60" : "#b9bac0"));
+    if (this.section) this.applyClip(p);
     this.updateGrid();
     this.requestRender();
   }
@@ -336,6 +342,7 @@ export class Viewer {
   setDisplayMode(m: DisplayMode) {
     this.mode = m;
     for (const id of this.parts.keys()) this.restyle(id);
+    if (this.section) for (const p of this.parts.values()) this.applyClip(p);
     this.requestRender();
   }
   getDisplayMode() {
@@ -359,7 +366,7 @@ export class Viewer {
       case "wireframe":
         p.setFaceStyle({ visible: false });
         p.edgeLines.visible = true;
-        p.setEdgeStyle(edge, 1.25);
+        p.setEdgeStyle(t.dark ? new THREE.Color("#f4f4f5") : edge, 1.25);
         break;
       case "hiddenLine":
         p.setFaceStyle({ visible: true, flat: new THREE.Color(t.hiddenLineFill) });
@@ -464,6 +471,20 @@ export class Viewer {
     if (!box.isEmpty()) this.fit(box, animate);
   }
 
+  /** Fit all; if the view is already fitted (nothing would move), go to the default iso view instead. */
+  fitOrHome(animate = true) {
+    const box = this.bounds();
+    if (box.isEmpty()) return;
+    const before = this.controls.state();
+    this.fit(box, false);
+    const after = this.controls.state();
+    this.controls.apply(before);
+    const r = box.getBoundingSphere(new THREE.Sphere()).radius || 1;
+    const same = before.position.distanceTo(after.position) < r * 0.02 && before.target.distanceTo(after.target) < r * 0.02 && Math.abs(before.orthoHeight - after.orthoHeight) < r * 0.02;
+    if (same) this.setView("iso", animate);
+    else this.controls.animateTo(after), this.requestRender();
+  }
+
   setView(name: keyof typeof VIEW_DIRS, animate = true) {
     this.setViewDir(VIEW_DIRS[name].clone(), animate);
   }
@@ -512,9 +533,14 @@ export class Viewer {
   setSection(plane: { origin: number[]; normal: number[] } | null) {
     this.renderer.localClippingEnabled = true;
     this.section = plane ? new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3().fromArray(plane.normal).normalize().negate(), new THREE.Vector3().fromArray(plane.origin)) : null;
-    const cap = new THREE.Color(this.theme.dark ? "#5a5a60" : "#b9bac0");
-    for (const p of this.parts.values()) p.setClip(this.section ? [this.section] : [], cap);
+    for (const p of this.parts.values()) this.applyClip(p);
     this.requestRender();
+  }
+
+  private applyClip(p: PartObject) {
+    const cap = new THREE.Color(this.theme.dark ? "#44444a" : "#d2d3d8");
+    const hatch = new THREE.Color(this.theme.dark ? "#66666e" : "#a2a3aa");
+    p.setClip(this.section ? [this.section] : [], cap, hatch, this.renderer.getPixelRatio());
   }
 
   getSection() {
@@ -621,7 +647,7 @@ export class Viewer {
     const dpr = this.renderer.getPixelRatio();
     const W = this.canvas.width,
       H = this.canvas.height;
-    const R = 4; // 9x9 window
+    const R = 6; // 13x13 window
     const size = R * 2 + 1;
     if (this.pickTarget.width !== size) this.pickTarget.setSize(size, size);
     const px = Math.round(x * dpr),
@@ -644,11 +670,11 @@ export class Viewer {
     this.renderer.toneMapping = prevTM;
     this.scene.background = bg;
     this.scene.environment = env;
-    this.grid.visible = this.triad.visible = true;
+    this.restoreHelpers();
     for (const p of this.parts.values()) p.pickMode(false, false, false);
     cam.clearViewOffset();
     this.renderer.readRenderTargetPixels(this.pickTarget, 0, 0, size, size, this.pickBuf);
-    // an edge within ~3.5 px wins (edges are thin); else whatever is under the cursor
+    // an edge within ~5.5 device px wins (edges are thin); else whatever is under the cursor
     let center: ReturnType<typeof decodeId> = null;
     let bestEdge: { d: number; id: NonNullable<ReturnType<typeof decodeId>> } | null = null;
     let bestAny: { d: number; id: NonNullable<ReturnType<typeof decodeId>> } | null = null;
@@ -659,7 +685,7 @@ export class Viewer {
         if (!id) continue;
         const d = (i - R) ** 2 + (j - R) ** 2;
         if (d === 0) center = id;
-        if (id.kind === "edge" && d <= 12 && (!bestEdge || d < bestEdge.d)) bestEdge = { d, id };
+        if (id.kind === "edge" && d <= 30 && (!bestEdge || d < bestEdge.d)) bestEdge = { d, id };
         if (!bestAny || d < bestAny.d) bestAny = { d, id };
       }
     const best = { id: bestEdge?.id ?? center ?? (bestAny && bestAny.d <= 4 ? bestAny.id : null) };
@@ -747,7 +773,8 @@ export class Viewer {
     this.renderer.toneMapping = tm;
     this.scene.background = bg;
     this.scene.environment = env;
-    this.grid.visible = this.triad.visible = this.markup.visible = true;
+    this.restoreHelpers();
+    this.markup.visible = true;
     for (const p of this.parts.values()) p.pickMode(false, false, false);
     cam.clearViewOffset();
     const buf = new Uint8Array(rw * rh * 4);
@@ -978,7 +1005,7 @@ export class Viewer {
     const t0 = performance.now();
     this.needsRender = false;
     this.viewCube?.update(this.camera);
-    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.useOrtho;
+    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.useOrtho && !this.section;
     if (useAO) {
       const c = this.ensureComposer();
       this.renderPass!.camera = this.camera;
@@ -991,6 +1018,19 @@ export class Viewer {
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
     this.emit("rendered", null);
+  }
+
+  /** Ground grid and origin triad visibility. */
+  setHelpers(o: { grid?: boolean; origin?: boolean }) {
+    if (o.grid !== undefined) this.showGrid = o.grid;
+    if (o.origin !== undefined) this.showOrigin = o.origin;
+    this.restoreHelpers();
+    this.requestRender();
+  }
+
+  private restoreHelpers() {
+    this.grid.visible = this.showGrid;
+    this.triad.visible = this.showOrigin;
   }
 
   private updateGrid() {

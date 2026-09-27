@@ -55,6 +55,7 @@
 			cursorTimer = setTimeout(() => highlightOpAt(e.position.lineNumber), 120);
 		});
 		lineDecos = editor.createDecorationsCollection([]);
+		(globalThis as any).__editor = editor; // test hook
 		loading = false;
 		open(ws.openScript ?? tabs.find((t) => t.startsWith('parts/')) ?? tabs[0]);
 	});

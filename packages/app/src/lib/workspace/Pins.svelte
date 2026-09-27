@@ -114,7 +114,7 @@
 			box-shadow var(--duration-fast) var(--ease-out);
 		/* Drops onto its geometry when it appears (placed, un-occluded, or un-clustered). */
 		animation: pin-drop var(--duration-base) var(--ease-out);
-		cursor: pointer;
+		cursor: default;
 	}
 	.pin:hover,
 	.pin.active {

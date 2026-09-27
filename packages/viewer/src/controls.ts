@@ -10,6 +10,8 @@ export type ControlsHost = {
   camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera;
   /** World point under the screen position, if any geometry is there. */
   pickPoint(x: number, y: number): THREE.Vector3 | null;
+  /** Center of the visible model, if any (orbit pivot depth when the cursor is over nothing). */
+  sceneCenter?(): THREE.Vector3 | null;
   changed(): void;
   /** Called when navigation starts/stops (e.g. drop AO while moving). */
   moving(on: boolean): void;
@@ -104,7 +106,7 @@ export class CadControls {
     this.last.set(e.clientX, e.clientY);
     if (g === "orbit") {
       const r = this.el.getBoundingClientRect();
-      this.pivot.copy(this.host.pickPoint(e.clientX - r.left, e.clientY - r.top) ?? this.target);
+      this.pivot.copy(this.host.pickPoint(e.clientX - r.left, e.clientY - r.top) ?? this.viewCenterPivot());
     }
     this.el.setPointerCapture(e.pointerId);
     this.el.addEventListener("pointermove", this.onMove);
@@ -113,6 +115,20 @@ export class CadControls {
     if (g === "pan") this.el.style.cursor = "grabbing";
     this.host.moving(true);
   };
+
+  /**
+   * Over empty space, orbit about the screen center at the model's depth (Onshape-like): the point
+   * on the view axis nearest the model center. Falls back to the target.
+   */
+  private viewCenterPivot(): THREE.Vector3 {
+    const c = this.host.sceneCenter?.();
+    if (!c) return this.target.clone();
+    const cam = this.host.camera();
+    const fwd = cam.getWorldDirection(new THREE.Vector3());
+    const depth = c.clone().sub(cam.position).dot(fwd);
+    if (depth <= 1e-6) return this.target.clone();
+    return cam.position.clone().add(fwd.multiplyScalar(depth));
+  }
 
   private moved = 0;
   private onMove = (e: PointerEvent) => {
@@ -148,7 +164,9 @@ export class CadControls {
       if (e.shiftKey) this.pan(-e.deltaX * scale, -e.deltaY * scale);
       else this.orbit(-e.deltaX * scale * 0.6, -e.deltaY * scale * 0.6, this.target);
     } else {
-      const d = e.deltaY * scale * (isPinch ? 0.012 : 0.0018);
+      // clamp each event so fast wheels and momentum bursts don't lurch; gentle exponential rate
+      const raw = e.deltaY * scale;
+      const d = isPinch ? THREE.MathUtils.clamp(raw * 0.01, -0.08, 0.08) : THREE.MathUtils.clamp(raw, -50, 50) * 0.0022;
       this.zoomAt(x, y, Math.exp(d));
     }
     this.pulseMoving();

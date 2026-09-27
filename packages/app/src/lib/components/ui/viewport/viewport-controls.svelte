@@ -24,6 +24,8 @@
 	type Props = {
 		display?: DisplayMode;
 		section?: boolean;
+		grid?: boolean;
+		origin?: boolean;
 		ortho?: boolean;
 		filters?: SelectionFilter[];
 		zoom?: number;
@@ -34,6 +36,8 @@
 	let {
 		display = $bindable('shaded-edges'),
 		section = $bindable(false),
+		grid = $bindable(true),
+		origin = $bindable(true),
 		ortho = $bindable(false),
 		filters = $bindable(['face', 'edge', 'vertex', 'part']),
 		zoom = $bindable(100),
@@ -58,17 +62,20 @@
 			checked: display === m,
 			shortcut: ['alt', String(i + 1)],
 			onCheckedChange: () => (display = m)
-		}))
+		})),
+		{ type: 'separator' },
+		{ type: 'checkbox', label: 'Ground grid', checked: grid, shortcut: ['G'], keepOpen: true, onCheckedChange: (v: boolean) => (grid = v) },
+		{ type: 'checkbox', label: 'Origin', checked: origin, shortcut: ['shift', 'G'], keepOpen: true, onCheckedChange: (v: boolean) => (origin = v) }
 	]);
 
 	const filterNames: Record<SelectionFilter, string> = { face: 'Faces', edge: 'Edges', vertex: 'Vertices', part: 'Parts' };
 	const filterItems = $derived<MenuEntry[]>([
 		{ type: 'label', label: 'Selectable' },
-		...(Object.keys(filterNames) as SelectionFilter[]).map((f, i) => ({
+		...(Object.keys(filterNames) as SelectionFilter[]).map((f) => ({
 			type: 'checkbox' as const,
 			label: filterNames[f],
 			checked: filters.includes(f),
-			shortcut: [String(i + 1)],
+			keepOpen: true,
 			onCheckedChange: (v: boolean) => (filters = v ? [...filters, f] : filters.filter((x) => x !== f))
 		}))
 	]);

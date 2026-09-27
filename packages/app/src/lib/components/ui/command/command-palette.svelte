@@ -53,6 +53,8 @@
 	function run(item: CommandItem) {
 		open = false;
 		search = '';
+		// give keyboard focus back to the page so single-key shortcuts work right away
+		(document.activeElement as HTMLElement | null)?.blur?.();
 		item.onSelect?.();
 	}
 </script>

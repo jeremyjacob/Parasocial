@@ -274,7 +274,7 @@
 	--bg-panel: #1b1b1e;
 	--bg-canvas: #141416;
 	--bg-elevated: #252529;
-	--bg-input: #26262a;
+	--bg-input: #303035; /* distinct from elevated (#252529) so fields read inside dialogs */
 	--bg-control: #34343a;
 	--bg-control-hover: #3b3b42;
 	--bg-hover: rgb(255 255 255 / 0.055);
