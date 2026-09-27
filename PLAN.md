@@ -612,6 +612,19 @@ M0 and M1 carry the risk. M2 doesn't depend on naming and can run alongside them
 - **Cross-origin isolation friction.** COEP on both origins affects every asset (fonts, CDN scripts). Serve everything from our own origins with CORP headers.
 - **Open:** nothing blocking. Revisit the license before any hosted offering.
 
+## 14. Deviations
+
+Places where the implementation departs from, or has to interpret, the plan above, and why.
+
+### M2 platform (`packages/sync`, `deploy/`)
+
+- **Zero permissions are synced queries, not permission rules.** §3 says "Zero permission rules". In Zero 1.x (pinned at 1.9.0), `definePermissions` is deprecated. Clients can only sync through named queries, which the app server re-evaluates with the authenticated context. Every query in `packages/sync/src/queries.ts` filters through `document_members`, and every mutator checks membership and role server-side. The guarantee is the same one §3 asks for: membership from day one, and share links later become a new role, not a migration.
+- **Markup is stored as rows.** The strokes in the §6 `NoteAnchor.markup` field live in `markup_strokes`, not inline in `notes.anchor`. Draft strokes need rows before a note exists (the pencil starts a draft note, §8), and ⌘Z undoes individual strokes. The full anchor is `notes.anchor` plus the note's strokes, and zip export writes them together.
+- **A human reply doesn't take a note away from a working agent.** §6 says "A reply moves it back to `Open`". A human reply moves `AwaitingReview` or `Resolved` back to `Open`. On a note that is `AgentWorking`, the claim is kept and the agent sees the reply in its thread. Silently revoking an in-flight claim would let a second agent collide with the first. A human can still take the note back explicitly with release.
+- **A write with identical content creates no version.** §7 says every write creates a version. A write whose content equals the current content is a no-op, so agents retrying or re-saving don't flood History with empty versions. Every write that changes content creates exactly one version.
+- **Configuration changes coalesce with param changes.** §8 coalesces param bursts into one version. Creating, duplicating, renaming and deleting configurations are part of the same param state, so they join the same burst (e.g. "Params: +M3, thickness 3 → 4"). A burst is changes by one author within 10 s, with nothing else committed in between.
+- **Imported notes have no snapshot.** Blobs aren't exported (§3), so `notes.snapshot_hash` is nullable, but only notes arriving through import can have it null. `note.create` still requires an uploaded snapshot.
+
 ---
 
 *Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/*

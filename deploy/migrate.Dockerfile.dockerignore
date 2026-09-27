@@ -1,0 +1,3 @@
+**
+!packages/sync/migrations/**
+!packages/sync/src/server/migrate.ts
