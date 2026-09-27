@@ -84,7 +84,7 @@ test("sweep, loft, shell, draft, thicken, split, offset", async () => {
   const k = await import("../src");
   const circle = (r: number, z: number) => k.wireFromEdges([k.circleEdge([0, 0, z], [0, 0, 1], r)]);
   // sweep a circle along a bent path
-  const path = k.wireFromEdges([k.lineEdge([0, 0, 0], [0, 0, 20]), k.arcEdge3([0, 0, 20], [5, 0, 25], [10, 0, 30])]);
+  const path = k.wireFromEdges([k.lineEdge([0, 0, 0], [0, 0, 20]), k.arcEdge3([0, 0, 20], [2.93, 0, 27.07], [10, 0, 30])]);
   const sw = k.sweep(k.faceFromWires(circle(2, 0)).shape, path);
   expect(k.isValid(sw.shape)).toBe(true);
   expect(k.massProps(sw.shape).volume).toBeGreaterThan(Math.PI * 4 * 20);

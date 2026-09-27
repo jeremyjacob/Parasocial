@@ -1,8 +1,9 @@
 // Sketches: explicit 2D geometry on a plane -> profile faces -> extrude / revolve (PLAN §5).
 // Each segment gets a stable name (`outline/right`, `bore`, `sketch1/line3`) that flows into
 // the names of the faces generated from it.
-import { lineEdge, arcEdge3, circleEdge, splineEdge, wireFromEdges, faceFromWires, compound, prism, revol, edgeInfo, type Vec3, type Built } from "@parasocial/kernel";
-import { entityShape, type OpRecord } from "@parasocial/naming";
+import { lineEdge, arcEdge3, circleEdge, splineEdge, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built } from "@parasocial/kernel";
+import { entityShape, faceOf, type OpRecord } from "@parasocial/naming";
+import { EntitySet } from "./selection";
 import { ctx } from "./context";
 import { runOp, userError } from "./op";
 import { Plane, axisVec, type AxisLike } from "./plane";
@@ -68,7 +69,7 @@ export class Sketch {
   // ---------- closed shapes ----------
 
   /** Rectangle `w` × `h`. Centered on `at` (default origin) unless `center: false` (then `at` is the corner). */
-  rect(w: number, h: number, opts: { center?: boolean; at?: P2; tag?: string } = {}): this {
+  rect(w: number, h: number, opts: { center?: boolean; at?: P2; tag?: string; fillet?: number } = {}): this {
     num(w, "rect width");
     num(h, "rect height");
     if (w <= 0 || h <= 0) userError(`rect needs a positive width and height (got ${w} × ${h})`);
@@ -83,6 +84,11 @@ export class Sketch {
     ];
     const base = opts.tag ?? `${this.prefix()}rect${this.n("rect")}`;
     const sides = ["bottom", "right", "top", "left"];
+    if (opts.fillet) {
+      if (opts.fillet * 2 > Math.min(w, h) + 1e-9) userError(`rect fillet ${opts.fillet} is too large for a ${w} × ${h} rect (max ${Math.min(w, h) / 2})`);
+      this.loops.push({ closed: true, segs: roundedLoop(p, opts.fillet, (i) => `${base}/${sides[i]}`, (i) => `${base}/corner${i + 1}`) });
+      return this;
+    }
     this.loops.push({ closed: true, segs: sides.map((s, i) => ({ kind: "line" as const, a: p[i], b: p[(i + 1) % 4], name: `${base}/${s}` })) });
     return this;
   }
@@ -137,8 +143,15 @@ export class Sketch {
   }
 
   /** Closed polyline through `points`. */
-  polyline(points: P2[], opts: SegOpts & { close?: boolean } = {}): this {
+  polyline(points: P2[], opts: SegOpts & { close?: boolean; fillet?: number } = {}): this {
     if (points.length < 2) userError("polyline needs at least 2 points");
+    if (opts.fillet && opts.close !== false) {
+      // rounded corners (2D fillet)
+      this.checkTag(opts.tag);
+      const base = opts.tag ?? `${this.prefix()}polyline${this.n("polyline")}`;
+      this.loops.push({ closed: true, segs: roundedLoop(points, opts.fillet, (i) => `${base}/side${i + 1}`, (i) => `${base}/corner${i + 1}`) });
+      return this;
+    }
     this.moveTo(points[0]);
     for (let i = 1; i < points.length; i++) this.lineTo(points[i]);
     if (opts.close !== false) this.close(opts);
@@ -273,6 +286,79 @@ export class Sketch {
     return (this._id = `sketch${n}`);
   }
 
+  private offsetBy = 0;
+
+  /** Offset every closed profile outward by `d` (negative shrinks). Corners round. */
+  offset(d: number): this {
+    num(d, "offset");
+    this.offsetBy += d;
+    return this;
+  }
+
+  /** Add a mirrored copy of everything so far across the sketch's local "y" (default) or "x" axis. */
+  mirror(axis: "x" | "y" = "y"): this {
+    this.endPath();
+    const f = (p: P2): P2 => (axis === "y" ? [-p[0], p[1]] : [p[0], -p[1]]);
+    const copy: Loop[] = this.loops.map((l) => ({
+      closed: l.closed,
+      segs: l.segs.map((sg): Seg => {
+        const name = sg.name ? `${sg.name}-m` : undefined;
+        if (sg.kind === "line") return { kind: "line", a: f(sg.a), b: f(sg.b), name };
+        if (sg.kind === "arc") return { kind: "arc", a: f(sg.a), m: f(sg.m), b: f(sg.b), name };
+        if (sg.kind === "circle") return { kind: "circle", c: f(sg.c), r: sg.r, name };
+        return { kind: "spline", pts: sg.pts.map(f), closed: sg.closed, name };
+      }),
+    }));
+    this.loops.push(...copy);
+    return this;
+  }
+
+  /** @internal An open (or closed) path as a named 3D wire, for sweep paths. */
+  pathRecord(): OpRecord {
+    this.endPath();
+    if (this.loops.length !== 1) userError(`a sweep path must be a single path (this sketch has ${this.loops.length}); draw it with moveTo/lineTo/threePointArc`);
+    const pl = this.plane;
+    const loop = this.loops[0];
+    return runOp({
+      type: "path",
+      tag: this.tag,
+      params: { plane: pl.toJSON(), loop },
+      inputs: [],
+      build: () => {
+        const segEdges: { seg: Seg; edge: any }[] = [];
+        const edges = loop.segs.map((sg) => {
+          const e = segEdge(pl, sg);
+          segEdges.push({ seg: sg, edge: e });
+          return e;
+        });
+        return { built: { shape: wireFromEdges(edges), maker: null }, ...namer(segEdges) };
+      },
+    });
+  }
+
+  /** @internal The outer loop of the (single) profile as a wire, for loft sections. */
+  sectionWire(): OpRecord {
+    return this.pathRecord();
+  }
+
+  /** Sweep this profile along `path` (a sketch with one open path, usually on a perpendicular plane). */
+  sweep(path: Sketch, opts: { tag?: string; mode?: "new" | "add" | "remove"; target?: Solid } = {}): Solid {
+    if (!(path instanceof Sketch)) userError("sweep(path) needs a sketch with one path, e.g. sketch(plane.XZ).moveTo([0,0]).lineTo([0,40])");
+    const prof = this.profile();
+    const pth = path.pathRecord();
+    const rec = runOp({
+      type: "sweep",
+      tag: opts.tag,
+      params: {},
+      inputs: [prof, pth],
+      build: () => {
+        const built = sweep(prof.shape, pth.shape);
+        return { built, historyOptions: { generatedFrom: ["edge", "vertex"], noModified: true }, roles: ({ topo, history }) => capRoles(topo, history, built, "side") };
+      },
+    });
+    return combine(new Solid(rec), opts.mode, opts.target);
+  }
+
   // ---------- to 3D ----------
 
   /** @internal Build the profile op (faces with named edges). */
@@ -286,16 +372,62 @@ export class Sketch {
     }
     const pl = offset ? this.plane.offset(offset) : this.plane;
     const loops = this.loops;
-    return runOp({
+    const rec = runOp({
       type: "sketch",
       tag: this.tag,
       params: { plane: pl.toJSON(), loops },
       inputs: [],
       build: () => buildProfile(pl, loops),
     });
+    if (!this.offsetBy) return rec;
+    const d = this.offsetBy;
+    // offset edges are named after the segment they came from: `outline/right+offset`
+    return runOp({
+      type: "offset",
+      params: { d },
+      inputs: [rec],
+      build: () => {
+        const built = offsetFace(rec.shape, d);
+        built.maker?.delete?.();
+        return {
+          built: { shape: built.shape, maker: null },
+          history: (topo) => ({ face: topo.faces.items.map(() => []), edge: topo.edges.items.map(() => []), vertex: topo.vertices.items.map(() => []) }),
+          roles: ({ topo }) => ({
+            edge: topo.edges.items.map((e: any, i: number) => {
+              // nearest source segment by midpoint: offsets keep order and shape
+              const mid = edgeInfo(e).mid;
+              let best = "",
+                bd = Infinity;
+              rec.topo.edges.items.forEach((src: any, j: number) => {
+                const sm = edgeInfo(src).mid;
+                const dd = Math.hypot(sm[0] - mid[0], sm[1] - mid[1], sm[2] - mid[2]);
+                if (dd < bd) (bd = dd), (best = rec.roles.edge?.[j] ?? `edge${j}`);
+              });
+              return `${best}+offset${i ? "" : ""}`;
+            }),
+          }),
+        };
+      },
+    });
   }
 
-  extrude(distance: number, opts: ExtrudeOpts = {}): Solid {
+  extrude(distanceOrOpts: number | (ExtrudeOpts & { upTo: EntitySet }), maybeOpts: ExtrudeOpts = {}): Solid {
+    let distance: number;
+    let opts: ExtrudeOpts;
+    if (typeof distanceOrOpts === "object") {
+      // up to a planar face: distance along the sketch normal to that face's plane
+      opts = distanceOrOpts;
+      const f = distanceOrOpts.upTo;
+      if (!(f instanceof EntitySet) || f.kind !== "face" || f.length !== 1) userError("extrude({ upTo }) needs exactly one face, e.g. { upTo: base.faces(\">Z\") }");
+      const info = faceOf(f.record, f.indices[0]);
+      if (info.surface !== "plane") userError("extrude up to: the target face must be planar");
+      const n = this.plane.normal,
+        o = this.plane.origin;
+      distance = (info.center[0] - o[0]) * n[0] + (info.center[1] - o[1]) * n[1] + (info.center[2] - o[2]) * n[2];
+    } else {
+      distance = distanceOrOpts;
+      opts = maybeOpts;
+    }
     num(distance, "extrude distance");
     if (Math.abs(distance) < 1e-9) userError("extrude distance must be non-zero");
     const prof = this.profile(opts.symmetric ? -distance / 2 : 0);
@@ -415,11 +547,7 @@ function buildProfile(pl: Plane, loops: Loop[]) {
   const segEdges: { seg: Seg; edge: any }[] = [];
   const wires = loops.map((l) => {
     const edges = l.segs.map((s) => {
-      let e;
-      if (s.kind === "line") e = lineEdge(pl.toWorld(s.a), pl.toWorld(s.b));
-      else if (s.kind === "arc") e = arcEdge3(pl.toWorld(s.a), pl.toWorld(s.m), pl.toWorld(s.b));
-      else if (s.kind === "circle") e = circleEdge(pl.toWorld(s.c), pl.normal, s.r);
-      else e = splineEdge(s.pts.map((p) => pl.toWorld(p)), s.closed);
+      const e = segEdge(pl, s);
       segEdges.push({ seg: s, edge: e });
       return e;
     });
@@ -460,6 +588,45 @@ function buildProfile(pl: Plane, loops: Loop[]) {
   };
 }
 
+function segEdge(pl: Plane, s: Seg) {
+  if (s.kind === "line") return lineEdge(pl.toWorld(s.a), pl.toWorld(s.b));
+  if (s.kind === "arc") return arcEdge3(pl.toWorld(s.a), pl.toWorld(s.m), pl.toWorld(s.b));
+  if (s.kind === "circle") return circleEdge(pl.toWorld(s.c), pl.normal, s.r);
+  return splineEdge(s.pts.map((p) => pl.toWorld(p)), s.closed);
+}
+
+/** A closed polygon with every corner rounded to radius r (tangent arcs). */
+function roundedLoop(pts: P2[], r: number, side: (i: number) => string, corner: (i: number) => string): Seg[] {
+  const n = pts.length;
+  const segs: Seg[] = [];
+  const cut: { in: P2; out: P2; mid: P2 }[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = pts[i],
+      a = pts[(i - 1 + n) % n],
+      b = pts[(i + 1) % n];
+    const u1 = norm2([a[0] - p[0], a[1] - p[1]]),
+      u2 = norm2([b[0] - p[0], b[1] - p[1]]);
+    const cos = u1[0] * u2[0] + u1[1] * u2[1];
+    const half = Math.acos(Math.max(-1, Math.min(1, cos))) / 2;
+    const t = r / Math.tan(half);
+    const bis = norm2([u1[0] + u2[0], u1[1] + u2[1]]);
+    const c: P2 = [p[0] + bis[0] * (r / Math.sin(half)), p[1] + bis[1] * (r / Math.sin(half))];
+    const mid: P2 = [c[0] - bis[0] * r, c[1] - bis[1] * r];
+    cut.push({ in: [p[0] + u1[0] * t, p[1] + u1[1] * t], out: [p[0] + u2[0] * t, p[1] + u2[1] * t], mid });
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    segs.push({ kind: "line", a: cut[i].out, b: cut[j].in, name: side(i) });
+    segs.push({ kind: "arc", a: cut[j].in, m: cut[j].mid, b: cut[j].out, name: corner(j) });
+  }
+  return segs;
+}
+
+const norm2 = (v: P2): P2 => {
+  const l = Math.hypot(v[0], v[1]) || 1;
+  return [v[0] / l, v[1] / l];
+};
+
 function centroid(p: P2[]): P2 {
   const s = p.reduce((a, q) => [a[0] + q[0], a[1] + q[1]] as P2, [0, 0] as P2);
   return [s[0] / p.length, s[1] / p.length];
@@ -495,3 +662,20 @@ export function sketch(p: Plane, opts: { tag?: string } = {}) {
 }
 
 export { entityShape };
+
+/** Loft through two or more section sketches (each one closed loop), first to last. */
+export function loft(sections: Sketch[], opts: { tag?: string; ruled?: boolean } = {}): Solid {
+  if (!Array.isArray(sections) || sections.length < 2) userError("loft needs at least two section sketches");
+  const recs = sections.map((sk) => sk.sectionWire());
+  const rec = runOp({
+    type: "loft",
+    tag: opts.tag,
+    params: { ruled: !!opts.ruled },
+    inputs: recs,
+    build: () => {
+      const built = kLoft(recs.map((r) => r.shape), { ruled: opts.ruled });
+      return { built, historyOptions: { generatedFrom: ["edge"], noModified: true }, roles: ({ topo, history }) => capRoles(topo, history, built, "side") };
+    },
+  });
+  return new Solid(rec);
+}

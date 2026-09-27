@@ -324,7 +324,12 @@ export function thicken(shape: Shape, thickness: number): Built {
     const mk = new O.BRepOffsetAPI_MakeThickSolid();
     mk.MakeThickSolidBySimple(shape, thickness);
     if (!mk.IsDone()) throw new KernelError("thicken failed");
-    return { shape: downcast(mk.Shape()), maker: mk };
+    let out = downcast(mk.Shape());
+    // depending on the face orientation the solid can come out inside-out: normalize
+    const p = tmp(new O.GProp_GProps());
+    O.BRepGProp.VolumeProperties(out, p, false, false, false);
+    if (p.Mass() < 0) out = downcast(out.Reversed());
+    return { shape: out, maker: mk };
   }));
 }
 

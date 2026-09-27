@@ -13,7 +13,8 @@ Modeling API (import { ... } from "parasocial")
 - part(name, ({ color }) => solid), param(name, default, { min, max, step, unit: mm, options }) — the value in code is the default; configurations override it. Don't hardcode values that are params.
 - sketch(plane.XY).rect(w, h, { tag }).circle([x, y], r, { tag }).polyline(points).moveTo/lineTo/threePointArc/tangentArcTo/close
 - .extrude(d, { tag, symmetric, mode: "add" | "remove", target }), .revolve(angle, { axis })
-- solid.fillet(edges, r, { tag }), .chamfer(edges, d), .union/.subtract/.intersect(other, { tag }), .translate/.rotate/.mirror, .linearPattern/.circularPattern
+- solid.fillet(edges, r, { tag }), .chamfer(edges, d), .union/.subtract/.intersect(other, { tag }), .translate/.rotate/.mirror, .linearPattern/.circularPattern, .shell(openFaces, t), .draft(faces, deg), .split(plane|solid), .hole(points, d, { counterbore | countersink, depth })
+- sketch …sweep(pathSketch), loft([sketchA, sketchB]), thicken(faces, t), extrude({ upTo: face }), rect(w, h, { fillet }), polyline(pts, { fillet }), .offset(d), .mirror("y")
 - box(w, d, h), cylinder(r, h, { at, axis })
 - Selection: solid.faces(sel), solid.edges(sel). Selectors: tag/name patterns ("base.side", "bore", "base.cap.end & bore"), CadQuery-style (">Z", "<X", "|Z", "#Z", "%circle"), set ops (&, |, -, not). Filters: .planar(), .parallelTo("Z"), .largest(), .sortBy("area"), .nearest([x,y,z]).
 - Units: numbers are mm (document units); strings accept units and expressions ("1/4 in", "=width/2").

@@ -1,9 +1,10 @@
 // Solids: finishing, booleans, transforms, patterns, inspection (PLAN §5 v1 surface).
-import { fillet as kFillet, booleanMany as kBooleanMany, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, distance as kDistance, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
+import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, distance as kDistance, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
 import { entityShape, entityName, faceOf, edgeOf, vertexOf, type OpRecord } from "@parasocial/naming";
 import { runOp, userError } from "./op";
 import { EntitySet } from "./selection";
 import { Plane, axisVec, vec, type AxisLike } from "./plane";
+import { sketch } from "./sketch";
 import type { ColorSpec, Material } from "./types";
 
 type EdgesArg = EntitySet | EntitySet[] | string;
@@ -122,6 +123,106 @@ export class Solid {
     const total = opts.angle ?? 360;
     const step = Math.abs(total - 360) < 1e-9 ? total / count : total / Math.max(1, count - 1);
     return patternOp(this, count, (k) => ({ rotate: { origin: opts.origin ?? [0, 0, 0], axis: axisVec(opts.axis ?? "Z"), angleRad: (step * k * Math.PI) / 180 } }), opts);
+  }
+
+  // ---------- M6: shell, draft, split, holes ----------
+  /** Hollow the solid, leaving `openFaces` open, with walls of `thickness` (inward). */
+  shell(openFaces: FacesArg, thickness: number, opts: OpOpts = {}): Solid {
+    positive(thickness, "shell thickness");
+    const idx = this.resolve(openFaces, "face", "shell");
+    const input = this.record;
+    const rec = runOp({
+      type: "shell",
+      tag: opts.tag,
+      params: { faces: idx, thickness },
+      inputs: [input],
+      build: () => ({
+        built: kShell(input.shape, idx.map((i) => entityShape(input, "face", i)), thickness),
+        historyOptions: { generatedFrom: ["face", "edge"] },
+        roles: ({ history }) => ({ face: history.face.map((o) => (o.some((x) => x.rel === "generated" && x.kind === "face") ? "inner" : o.some((x) => x.rel === "generated") ? "rim" : undefined)) }),
+      }),
+      highlight: () => ({ kind: "face", names: idx.map((i) => entityName(input, "face", i).str) }),
+    });
+    return new Solid(rec, this.meta);
+  }
+
+  /** Taper `faces` by `angle` degrees about a neutral plane (default XY), pulling along `pull` (default +Z). */
+  draft(faces: FacesArg, angle: number, opts: OpOpts & { pull?: AxisLike; neutral?: Plane } = {}): Solid {
+    const idx = this.resolve(faces, "face", "draft");
+    const input = this.record;
+    const pull = axisVec(opts.pull ?? "Z");
+    const neutral = opts.neutral ?? new Plane([0, 0, 0], [0, 0, 1]);
+    const rec = runOp({
+      type: "draft",
+      tag: opts.tag,
+      params: { faces: idx, angle, pull, neutral: neutral.toJSON() },
+      inputs: [input],
+      build: () => ({ built: kDraft(input.shape, idx.map((i) => entityShape(input, "face", i)), pull, (angle * Math.PI) / 180, neutral.origin, neutral.normal) }),
+      highlight: () => ({ kind: "face", names: idx.map((i) => entityName(input, "face", i).str) }),
+    });
+    return new Solid(rec, this.meta);
+  }
+
+  /** Split by a plane or another solid; the result holds every piece. */
+  split(tool: Plane | Solid, opts: OpOpts = {}): Solid {
+    const input = this.record;
+    const isPlane = tool instanceof Plane;
+    const inputs = isPlane ? [input] : [input, (tool as Solid).record];
+    const rec = runOp({
+      type: "split",
+      tag: opts.tag,
+      params: isPlane ? { plane: (tool as Plane).toJSON() } : {},
+      inputs,
+      build: () => {
+        const bb = kBBox(input.shape);
+        const size = 4 * Math.max(1, ...bb.max.map((v, i) => Math.abs(v - bb.min[i])));
+        const toolShape = isPlane ? planeFace((tool as Plane).origin, (tool as Plane).normal, size) : (tool as Solid).record.shape;
+        return { built: kSplit(input.shape, [toolShape]), historyOptions: { generatedFrom: ["edge"] } };
+      },
+    });
+    return new Solid(rec, this.meta);
+  }
+
+  /**
+   * Drill holes at `points` (world) along `direction` (default: into the part, −Z).
+   * Simple, counterbored ({ counterbore: { diameter, depth } }) or countersunk ({ countersink: { diameter, angle } }).
+   * `depth` omitted = through all.
+   */
+  hole(
+    points: Vec3[] | Vec3,
+    diameter: number,
+    opts: OpOpts & { depth?: number; direction?: AxisLike; counterbore?: { diameter: number; depth: number }; countersink?: { diameter: number; angle?: number } } = {},
+  ): Solid {
+    positive(diameter, "hole diameter");
+    const pts = (Array.isArray(points[0]) ? points : [points]) as Vec3[];
+    if (!pts.length) userError("hole needs at least one point");
+    const dir = axisVec(opts.direction ?? ([0, 0, -1] as Vec3));
+    const bb = kBBox(this.record.shape);
+    const depth = opts.depth ?? 2 * Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) + 1;
+    const r = diameter / 2;
+    // half cross-section (radius along local x, depth along local −y), revolved about the axis
+    const prof: [number, number][] = [[0, 0.01]];
+    if (opts.counterbore) {
+      const cr = opts.counterbore.diameter / 2;
+      prof.push([cr, 0.01], [cr, -opts.counterbore.depth], [r, -opts.counterbore.depth]);
+    } else if (opts.countersink) {
+      const sr = opts.countersink.diameter / 2;
+      const ang = ((opts.countersink.angle ?? 90) / 2) * (Math.PI / 180);
+      prof.push([sr, 0.01], [r, -(sr - r) / Math.tan(ang)]);
+    } else prof.push([r, 0.01]);
+    prof.push([r, -depth], [0, -depth]);
+    const tag = opts.tag;
+    let result: Solid = this;
+    const tools: Solid[] = [];
+    pts.forEach((p, k) => {
+      // local plane containing the axis: x ⟂ dir, y = −dir
+      const x = Math.abs(dir[2]) < 0.9 ? vec.unit(vec.cross(dir, [0, 0, 1])) : vec.unit(vec.cross(dir, [1, 0, 0]));
+      const pl = new Plane(p, vec.cross(x, vec.scale(dir, -1)), x);
+      const sk = sketch(pl, { tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}-profile` : undefined }).polyline(prof, { tag: "wall" });
+      tools.push(sk.revolve(360, { axis: { origin: p, direction: vec.scale(dir, -1) as Vec3 }, tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}` : undefined }));
+    });
+    result = booleanOp("subtract", this, tools, { tag: tag ? `${tag}-cut` : undefined });
+    return result;
   }
 
   // ---------- appearance ----------
@@ -313,3 +414,21 @@ export function measure(a: Solid | EntitySet, b: Solid | EntitySet): { distance:
 }
 
 export type { KernelError };
+
+/** Thicken faces (a sheet) into a solid of `thickness` along their normals. */
+export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}): Solid {
+  if (!(faces instanceof EntitySet) || faces.kind !== "face" || !faces.length) userError("thicken(faces, t) needs a face selection, e.g. thicken(part.faces(\">Z\"), 2)");
+  const input = faces.record;
+  const idx = [...faces.indices];
+  const rec = runOp({
+    type: "thicken",
+    tag: opts.tag,
+    params: { faces: idx, thickness },
+    inputs: [input],
+    build: () => {
+      const shape = idx.length === 1 ? entityShape(input, "face", idx[0]) : compound(idx.map((i) => entityShape(input, "face", i)));
+      return { built: kThicken(shape, thickness), historyOptions: { generatedFrom: ["edge"] } };
+    },
+  });
+  return new Solid(rec);
+}
