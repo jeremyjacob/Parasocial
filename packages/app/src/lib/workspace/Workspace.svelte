@@ -129,12 +129,12 @@
 		const name = `part${n}`;
 		const content = `import { part, param, sketch, plane, mm } from "parasocial";\n\nexport default part("Part ${n}", ({ color }) => {\n  const size = param("size", 20, { min: 1, max: 200, unit: mm });\n  return sketch(plane.XY)\n    .rect(size, size, { tag: "outline" })\n    .extrude(size / 2, { tag: "body" })\n    .color(color.auto());\n});\n`;
 		await ws.zero.mutate(mutators.script.write({ documentID, path: `parts/${name}.ts`, content, baseVersion: null, message: `Add ${name}` })).client;
-		toast(`Added parts/${name}.ts`);
+		toast(`Added Part ${n}`);
 	}
 
 	async function exportZip() {
 		const res = await fetch(`/api/documents/${documentID}/export`);
-		if (!res.ok) return toast.error('Export failed');
+		if (!res.ok) return toast.error("Couldn't export. Try again.");
 		const blob = await res.blob();
 		const a = document.createElement('a');
 		a.href = URL.createObjectURL(blob);
@@ -149,11 +149,11 @@
 
 	async function doUndo() {
 		const l = await ws.undo();
-		toast(l ? `Undid ${l}` : 'Nothing to undo');
+		toast(l ? `Undid ${l[0].toLowerCase()}${l.slice(1)}` : 'Nothing to undo');
 	}
 	async function doRedo() {
 		const l = await ws.redo();
-		toast(l ? `Redid ${l}` : 'Nothing to redo');
+		toast(l ? `Redid ${l[0].toLowerCase()}${l.slice(1)}` : 'Nothing to redo');
 	}
 
 	const commands: Command[] = [
@@ -167,7 +167,7 @@
 		{ id: 'view.top', label: 'Top view', group: 'View', keys: ['alt', 'T'], run: () => ws.viewer?.setView('top') },
 		{ id: 'view.right', label: 'Right view', group: 'View', keys: ['alt', 'R'], run: () => ws.viewer?.setView('right') },
 		{ id: 'view.ortho', label: 'Toggle orthographic', group: 'View', keys: ['O'], run: () => (ws.ortho = !ws.ortho) },
-		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => toast('Section view arrives with M6') },
+		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => toast('Section view is coming soon') },
 		{ id: 'display.shaded', label: 'Display: shaded', group: 'View', keys: ['alt', '1'], icon: Box, run: () => (ws.display = 'shaded') },
 		{ id: 'display.edges', label: 'Display: shaded with edges', group: 'View', keys: ['alt', '2'], icon: Boxes, run: () => (ws.display = 'shaded-edges') },
 		{ id: 'display.wire', label: 'Display: wireframe', group: 'View', keys: ['alt', '3'], icon: Grid3x3, run: () => (ws.display = 'wireframe') },
@@ -182,7 +182,7 @@
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
 		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', keys: ['mod', '\\'], icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
-		{ id: 'doc.export', label: 'Export document (zip)', group: 'Document', keys: ['mod', 'shift', 'E'], icon: Download, run: exportZip },
+		{ id: 'doc.export', label: 'Export as zip', group: 'Document', keys: ['mod', 'shift', 'E'], icon: Download, run: exportZip },
 		{ id: 'doc.addPart', label: 'Add a part', group: 'Document', icon: Plus, run: addPart },
 		{ id: 'agent.connect', label: 'Connect an agent', group: 'Document', icon: Bot, run: () => (connectOpen = true) },
 		{ id: 'app.palette', label: 'Command palette', group: 'Help', keys: ['mod', 'K'], run: () => (paletteOpen = true) },
@@ -239,7 +239,7 @@
 		},
 		{
 			heading: 'Configurations',
-			items: [{ id: 'cfg.default', label: 'Default', hint: 'code values', onSelect: () => ((paletteOpen = false), ws.setActiveConfig(null)) }, ...ws.configurations.map((c) => ({ id: `cfg.${c.id}`, label: c.name, hint: 'configuration', onSelect: () => ((paletteOpen = false), ws.setActiveConfig(c.id)) }))]
+			items: [{ id: 'cfg.default', label: 'Default', onSelect: () => ((paletteOpen = false), ws.setActiveConfig(null)) }, ...ws.configurations.map((c) => ({ id: `cfg.${c.id}`, label: c.name, onSelect: () => ((paletteOpen = false), ws.setActiveConfig(c.id)) }))]
 		}
 	]);
 
@@ -271,7 +271,7 @@
 	const docMenu = $derived<MenuEntry[]>([
 		{ label: 'All documents', icon: ArrowLeft, onSelect: () => (location.href = '/') },
 		{ type: 'separator' },
-		{ label: 'Export…', icon: Download, shortcut: ['mod', 'shift', 'E'], onSelect: exportZip },
+		{ label: 'Export as zip', icon: Download, shortcut: ['mod', 'shift', 'E'], onSelect: exportZip },
 		{ label: 'Connect an agent…', icon: Bot, onSelect: () => (connectOpen = true) },
 		{ type: 'separator' },
 		{
@@ -382,7 +382,7 @@
 	</div>
 {/if}
 
-<CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search actions, views, params, parts…" />
+<CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} />
 <Dialog bind:open={cheatsOpen} title="Keyboard shortcuts" class="max-w-[640px]">
 	<div class="grid grid-cols-2 gap-x-8 gap-y-1" data-testid="cheatsheet">

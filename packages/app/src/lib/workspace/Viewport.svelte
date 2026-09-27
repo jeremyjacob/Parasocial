@@ -294,6 +294,8 @@
 	const failing = $derived(Object.values(ws.results).filter((r) => r.problems.some((p) => p.severity === 'error')));
 	const warnings = $derived(Object.values(ws.results).filter((r) => !r.problems.some((p) => p.severity === 'error') && r.problems.length));
 	const pill = $derived.by(() => {
+		// the engine failing to load used to show only in Properties; say it where people look
+		if (ws.engineError) return { tone: 'error' as const, title: "Couldn't load the model", detail: 'reload the page', message: undefined, source: undefined, file: undefined, line: undefined };
 		if (failing.length) {
 			const r = failing[0];
 			const p = r.problems.find((x) => x.severity === 'error')!;
@@ -364,14 +366,14 @@
 				}
 			});
 			items.push({
-				label: 'Copy stable name',
+				label: 'Copy reference',
 				icon: Copy,
 				onSelect: async () => {
 					const r = ws.results[target.part];
 					const name = r?.names?.[target.kind as 'face' | 'edge']?.[target.index] ?? (ws.kernelReady ? (await ws.engine!.describe(target.part, target.kind, target.index)).name : null);
 					if (name) {
 						await navigator.clipboard.writeText(name);
-						toast('Copied stable name');
+						toast('Copied');
 					}
 				}
 			});
@@ -393,7 +395,7 @@
 		aria-label="3D viewport"
 	></div>
 
-	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading kernel' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
+	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
 	{#if pill}
 		<div class="absolute top-3 left-3 z-10 max-w-[min(520px,60%)]" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
@@ -413,7 +415,7 @@
 
 	{#if empty}
 		<div class="absolute inset-0 z-10 grid place-items-center" data-testid="empty-document">
-			<EmptyState size="panel" class="animate-enter" title="This document has no parts yet" description="Parts are scripts in parts/. Start one yourself, or connect an agent and ask it to model something.">
+			<EmptyState size="panel" class="animate-enter" title="No parts yet">
 				{#snippet action()}
 					<div class="flex gap-2">
 						<Button variant="primary" onclick={onAddPart} data-testid="add-part"><Plus size={14} /> Add a part</Button>
@@ -450,6 +452,6 @@
 				<button class="focus-ring h-8 rounded-[var(--toolbar-item-radius)] px-2.5 text-ui font-medium transition-colors-fast {nc.eraser ? 'bg-active text-fg' : 'text-fg-secondary hover:bg-hover hover:text-fg'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
 			</div>
 		{/if}
-		<FloatingToolbar bind:tool={ws.tool} disabled={ws.mode === 'code' ? { note: 'Save to add notes', pencil: 'Save to add notes' } : {}} />
+		<FloatingToolbar bind:tool={ws.tool} disabled={ws.mode === 'code' ? { note: 'Switch to Model to add notes', pencil: 'Switch to Model to draw' } : {}} />
 	</div>
 </ContextMenu>

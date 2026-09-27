@@ -13,7 +13,7 @@
 	}
 </script>
 
-<Dialog bind:open title="Connect an agent" description="Agents read your notes, edit the scripts, check their work and reply, over MCP.">
+<Dialog bind:open title="Connect an agent">
 	<div class="flex flex-col gap-4" data-testid="connect-agent">
 		<div class="flex flex-col gap-1.5">
 			<span class="text-label text-fg-secondary">MCP server URL</span>
@@ -28,7 +28,6 @@
 				<code class="min-w-0 flex-1 truncate font-mono text-label">{cmd}</code>
 				<IconButton label="Copy command" size="sm" onclick={() => copy(cmd, 'cmd')}>{#if copied === 'cmd'}<Check />{:else}<Copy />{/if}</IconButton>
 			</div>
-			<p class="text-label text-fg-tertiary">Your browser opens to sign in with your passkey and approve the connection. Connected agents are listed in Settings, where you can revoke them.</p>
 		</div>
 	</div>
 </Dialog>
