@@ -34,6 +34,7 @@
 	import { CompareController } from './compare.svelte';
 	import CompareBar from './CompareBar.svelte';
 	import { clockTime } from '$lib/format';
+	import { rise, reveal } from '$lib/styles/motion';
 
 	let { documentID, zero, user }: { documentID: string; zero: ParasocialZero; user: { userID: string; name: string } } = $props();
 
@@ -293,7 +294,7 @@
 
 {#if notFound}
 	<div class="grid h-dvh place-items-center bg-canvas">
-		<div class="flex flex-col items-center gap-3 text-center">
+		<div class="animate-enter flex flex-col items-center gap-3 text-center">
 			<p class="text-title font-semibold">Document not found</p>
 			<p class="text-ui text-fg-secondary">It may have been deleted, or you don't have access.</p>
 			<Button href="/" onclick={() => (location.href = '/')}>All documents</Button>
@@ -343,14 +344,14 @@
 				<div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
 					{#if cmp.viewing}
 						{@const v = ws.versions.find((x) => x.id === cmp.viewing)}
-						<div class="flex h-9 shrink-0 items-center gap-3 border-b border-line-subtle bg-accent-subtle px-3 text-ui" data-testid="version-banner">
+						<div class="flex h-10 shrink-0 items-center gap-2 border-b border-line-subtle bg-accent-subtle pr-2 pl-4 text-ui" data-testid="version-banner" transition:reveal={{ duration: 150 }}>
 							<span>Viewing <b class="font-medium">v{v?.number}</b> from {v ? clockTime(v.createdAt) : ''} · read-only</span>
 							<Button size="sm" variant="primary" class="ml-auto" onclick={() => cmp.restore(cmp.viewing!)} data-testid="restore-version">Restore</Button>
 							<Button size="sm" variant="ghost" onclick={() => cmp.back()}>Back to current</Button>
 						</div>
 					{/if}
 					{#if cmp.against}
-						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 [&>*]:pointer-events-auto"><CompareBar {ws} {cmp} /></div>
+						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 [&>*]:pointer-events-auto" in:rise={{ y: 8, scale: 0.98, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, duration: 100 }}><CompareBar {ws} {cmp} /></div>
 					{/if}
 					<Viewport {ws} {nc} onAddPart={addPart} onConnect={() => (connectOpen = true)} onOpenNote={(id) => openNote(id)} />
 				</div>
