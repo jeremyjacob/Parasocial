@@ -19,7 +19,7 @@
 	async function api(path: string, body?: unknown) {
 		const res = await fetch(`/api/auth/${path}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 		const j = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(j.message ?? `Request failed (${res.status})`);
+		if (!res.ok) throw new Error(j.message ?? 'Something went wrong. Try again.');
 		return j;
 	}
 	async function refresh() {
@@ -78,7 +78,7 @@
 				{/each}
 			</ul>
 			{#if passkeys.length === 1}
-				<p class="border-t border-line-subtle px-4 py-3 text-label text-warning">Add a second passkey. It's the only way back in if you lose this one.</p>
+				<p class="border-t border-line-subtle px-4 py-3 text-label text-warning">Add a backup passkey in case you lose this one.</p>
 			{/if}
 		</section>
 

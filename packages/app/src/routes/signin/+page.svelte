@@ -23,7 +23,7 @@
 	async function createAccount(e?: Event) {
 		e?.preventDefault();
 		if (!name.trim()) {
-			error = 'Enter a name so people and agents know who you are.';
+			error = 'Enter your name.';
 			return;
 		}
 		error = '';
@@ -69,9 +69,9 @@
 		{#key mode}<div class="animate-[ps-tab-in_var(--duration-base)_var(--ease-out)]">
 		{#if mode === 'signup'}
 			<h1 class="text-heading font-semibold">{data.needsSetup ? 'Set up this instance' : 'Create your account'}</h1>
-			<p class="mt-1 text-body text-fg-secondary">
-				{data.needsSetup ? 'The first account becomes the admin.' : 'Just a name and a passkey. No email, no password.'}
-			</p>
+			{#if data.needsSetup}
+				<p class="mt-1 text-body text-fg-secondary">The first account becomes the admin.</p>
+			{/if}
 			<form class="mt-5 flex flex-col gap-3" onsubmit={createAccount}>
 				<label class="flex flex-col gap-1.5">
 					<span class="text-label text-fg-secondary">Name</span>
@@ -83,8 +83,7 @@
 				</Button>
 			</form>
 			<p class="mt-4 rounded-md bg-hover px-3 py-2 text-label text-fg-secondary">
-				Your passkey is the only way in. Keep it in a synced keychain (iCloud, Google, 1Password) or add a second one in
-				Settings: there is no other way to recover an account.
+				Your passkey is the only way to sign in. Save it to a synced keychain.
 			</p>
 			{#if !data.needsSetup}
 				<div class="mt-4 text-center text-ui text-fg-secondary">
@@ -93,7 +92,6 @@
 			{/if}
 		{:else}
 			<h1 class="text-heading font-semibold">Welcome back</h1>
-			<p class="mt-1 text-body text-fg-secondary">Use the passkey saved on this device, or scan from your phone.</p>
 			<div class="mt-5 flex flex-col gap-3">
 				<Button variant="primary" size="lg" onclick={passkey} disabled={!!busy} class="w-full justify-center" data-testid="signin-passkey">
 					{#if busy === 'signin'}<LoaderCircle class="animate-spin" size={14} />{:else}<KeyRound size={14} />{/if}
@@ -105,7 +103,7 @@
 					New here? <button class="focus-ring rounded-xs font-medium text-accent hover:underline" onclick={() => ((mode = 'signup'), (error = ''))} data-testid="to-signup">Create an account <ArrowRight class="inline" size={12} /></button>
 				</div>
 			{:else}
-				<p class="mt-4 text-center text-label text-fg-tertiary">Sign-up on this instance is by invite link.</p>
+				<p class="mt-4 text-center text-label text-fg-tertiary">Sign-up is by invite only.</p>
 			{/if}
 		{/if}
 		</div>{/key}
