@@ -1,6 +1,6 @@
 # Parasocial — Plan
 
-An AI-first, code-driven parametric CAD tool that runs in the browser. Parts are TypeScript scripts built on an OpenCascade-backed API. You review the model in a polished 3D workspace and give feedback by pinning **notes directly onto faces, edges and parts**, or by sketching over the model with a pencil. AI agents read those notes over MCP, edit the scripts, check their own work, and reply in the thread.
+An AI-first, code-driven parametric CAD tool that runs in the browser. Parts are TypeScript scripts built on an OpenCascade-backed API. You review the model in a polished 3D workspace and give feedback by pinning **notes directly onto faces, edges and parts**, or by sketching over the model with a pencil. AI agents read those notes over MCP, edit the scripts, check their own work, and resolve completed notes. Replies are optional when there is useful information to add.
 
 It's a client-server app like Onshape, with documents stored on the server. The client drives changes the way Linear does: every edit applies instantly and syncs in the background. v1 ships as a self-hostable docker compose stack.
 
@@ -14,7 +14,7 @@ The UI should feel like Figma or Framer: calm, precise and considered. It should
 2. **The client drives changes.** Every change is an optimistic mutation. It applies in the client immediately and the server confirms it. People and agents go through the same mutators.
 3. **Notes are the primary interaction.** Point at geometry and say what's wrong. The system turns "this face" into a precise reference an agent can act on.
 4. **References never silently drift.** Stable topological naming underpins both notes and the API. When a reference can't be resolved, the UI says so loudly and never guesses.
-5. **Agents check their own work.** Regeneration is automatic, and agents can render, measure and inspect before replying.
+5. **Agents check their own work.** Regeneration is automatic, and agents can render, measure and inspect before resolving notes.
 6. **The UI gets out of the way, but is never empty.** It has rich, read-only insight into the model, Figma-grade inputs for parameters, and smooth motion throughout.
 7. **Fast and snappy, always.** Input never waits on the kernel, the network or an animation. Performance has budgets, and CI checks them (see §9).
 8. **Sync what's authored, recompute what's derived.** Sync carries only what people and agents author. Meshes, caches and renders are addressed by content hash and can be thrown away.
@@ -39,8 +39,8 @@ The UI should feel like Figma or Framer: calm, precise and considered. It should
 1. The human selects geometry and presses `C` to leave a note ("wall too thin here, needs 2mm"). They can also sketch over the model with the pencil (`P`).
 2. An agent calls `list_notes` and claims one. Each note comes with its resolved entity, stable name, **source location** (`bracket.ts:42`), any pencil strokes, and a snapshot of the view the note was made from.
 3. The agent edits the script with `write_script` or `edit_script`. Regeneration is automatic: the write returns the regeneration result. The agent then calls `render` and `measure` to verify.
-4. The agent replies on the thread and moves the note to **Awaiting review**, with a link to the new version.
-5. The human compares the old and new geometry, then resolves the note or replies. Once a note is done, an agent or the human can remove it.
+4. After verifying the work, the agent **resolves the note immediately**. No separate human approval or completion reply is needed. Agents reply only when they have useful information to add. Unfinished work or questions stay **Open**. There is no review state: once the agent marks a note done, it is done.
+5. The human can compare the old and new geometry and reopen the note by replying. Once a note is done, an agent or the human can remove it.
 
 ## 3. Architecture
 
@@ -62,14 +62,14 @@ parasocial/                      Bun workspaces monorepo
 
 ### Services (docker compose)
 
-| Service | Role |
-|---|---|
-| `postgres` | All authored state. Logical replication on, for Zero |
-| `zero-cache` | Syncs Postgres to clients |
-| `app` | SvelteKit, running on Bun. Serves the UI, runs mutators, handles passkeys and OAuth, hosts the MCP endpoint, and serves the engine page on a separate origin (second port or subdomain) |
-| `engine-pool` | Headless Chromium workers that run the same engine build. No network egress |
-| `caddy` | TLS and routing for the app and engine origins. Passkeys need HTTPS everywhere except `localhost` |
-| `storage` | S3-compatible object storage for derived data and authored binaries. S3 or R2 when hosted; a bundled S3-compatible service or a filesystem adapter in compose |
+| Service       | Role                                                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`    | All authored state. Logical replication on, for Zero                                                                                                                                    |
+| `zero-cache`  | Syncs Postgres to clients                                                                                                                                                               |
+| `app`         | SvelteKit, running on Bun. Serves the UI, runs mutators, handles passkeys and OAuth, hosts the MCP endpoint, and serves the engine page on a separate origin (second port or subdomain) |
+| `engine-pool` | Headless Chromium workers that run the same engine build. No network egress                                                                                                             |
+| `caddy`       | TLS and routing for the app and engine origins. Passkeys need HTTPS everywhere except `localhost`                                                                                       |
+| `storage`     | S3-compatible object storage for derived data and authored binaries. S3 or R2 when hosted; a bundled S3-compatible service or a filesystem adapter in compose                           |
 
 **Data flow:** a client runs a mutator optimistically and pushes it to the `app` server. The server runs the same mutator against Postgres, and `zero-cache` fans the result out to every client. MCP tools call the same mutators on the server, so agent edits show up live in the workspace.
 
@@ -81,17 +81,17 @@ There is **one engine build**, hosted in two places.
 - **On the server**, `engine-pool` runs the same build in headless Chromium for MCP calls: write results, `render`, `measure`, `describe_model`, and so on. MCP never depends on a browser tab being open.
 - **Why:** the same build with the same deterministic inputs means agents get exactly the geometry the human sees. We also avoid maintaining OCCT on both a server runtime and the browser.
 - **Isolation**, because this runs user code on our servers:
-  - Each document job gets its own Chromium process, with the Chromium sandbox on.
-  - Containers have no network egress.
-  - Jobs have CPU, memory and wall-clock limits.
+    - Each document job gets its own Chromium process, with the Chromium sandbox on.
+    - Containers have no network egress.
+    - Jobs have CPU, memory and wall-clock limits.
 
 ### Authored vs. derived data
 
 - **Authored** (Postgres, synced by Zero): documents, scripts, versions, configurations and overrides, notes and messages, pencil strokes, and ephemeral presence (selection, which agent is working on what).
 - **Derived** (object storage): meshes, the per-op B-rep cache and renders. Each is keyed by `hash(script contents, effective params, engine build)`, is immutable, and is cached forever.
-  - Each cached mesh carries its face and edge metadata (stable names, source locations, generating operation), so a document opened from cache is fully interactive before the kernel has loaded (see §9).
-  - Clients regenerate locally. The cache speeds up cold loads and headless calls. A missing cache entry makes things slower but never breaks them.
-  - The engine build hash is part of the key, so a kernel change can't poison the cache.
+    - Each cached mesh carries its face and edge metadata (stable names, source locations, generating operation), so a document opened from cache is fully interactive before the kernel has loaded (see §9).
+    - Clients regenerate locally. The cache speeds up cold loads and headless calls. A missing cache entry makes things slower but never breaks them.
+    - The engine build hash is part of the key, so a kernel change can't poison the cache.
 - **Authored binaries** (note snapshots with markup): upload first, then run the mutation that references the hash. A row never points at a missing blob.
 - **Cleanup:** cache entries expire. Authored blobs are swept by reference count.
 - **Access:** signed URLs, checked against document permissions.
@@ -121,14 +121,14 @@ Versions and blobs are not exported. This is how `examples/` gets seeded and how
 ### Accounts and auth
 
 - **Passkeys only, with just a name.** No email and no password.
-  - Sign up: enter a name, then create a passkey.
-  - Sign in: one button, plus passkey autofill.
+    - Sign up: enter a name, then create a passkey.
+    - Sign in: one button, plus passkey autofill.
 - Users can add more passkeys in settings. Synced passkeys (iCloud Keychain, Google Password Manager, 1Password) cover device loss. The sign-up screen says plainly that there is no other way to recover an account.
 - **The domain is fixed at install.** Passkeys are bound to the domain they were created on (the WebAuthn RP ID), so moving an instance to a new domain invalidates every passkey. The domain is set once in the compose config, and the docs warn about this. To move, users export their documents and re-import them on the new instance.
 - **Instance setup:** the first account becomes admin. The admin chooses between open sign-up and invite links.
 - **MCP uses OAuth 2.1**, following the MCP authorization spec. The app is the authorization server, with dynamic client registration and PKCE.
-  - Connecting Claude Code opens the browser, the user signs in with their passkey, and a consent screen shows the client's name.
-  - Settings lists connected agents, and each can be revoked.
+    - Connecting Claude Code opens the browser, the user signs in with their passkey, and a consent screen shows the client's name.
+    - Settings lists connected agents, and each can be revoked.
 
 ## 4. Kernel and naming
 
@@ -156,22 +156,23 @@ TypeScript, transpiled in the worker with esbuild-wasm. Scripts run off the main
 A blob or same-origin worker is **not** a sandbox: it shares the app's origin, so it could `fetch` the app server, read the origin's storage, or `importScripts` remote code. We use a cross-origin iframe as the boundary and light hygiene inside it. The engine never fetches anything itself: the app sends it script sources over the channel. The server-side pool adds process and network isolation on top (see §3).
 
 1. **Cross-origin engine iframe (the boundary).**
-   - A tiny engine page is served from a separate origin (e.g. a second port or an `engine.` subdomain). It hosts the kernel worker.
-   - CSP: `connect-src 'none'; script-src 'self' 'wasm-unsafe-eval' blob:`. That means no network access and no remote code.
-   - The engine page is served with COOP/COEP/CORP headers so it stays cross-origin isolated. OCCT threads need `SharedArrayBuffer`.
-   - Its only channel to the app is a `MessageChannel`. The app validates every message against a schema. Mutations are **never** reachable through this channel.
-   - The app server rejects requests from the engine origin: it checks the Origin header, and the engine never receives a session credential.
+    - A tiny engine page is served from a separate origin (e.g. a second port or an `engine.` subdomain). It hosts the kernel worker.
+    - CSP: `connect-src 'none'; script-src 'self' 'wasm-unsafe-eval' blob:`. That means no network access and no remote code.
+    - The engine page is served with COOP/COEP/CORP headers so it stays cross-origin isolated. OCCT threads need `SharedArrayBuffer`.
+    - Its only channel to the app is a `MessageChannel`. The app validates every message against a schema. Mutations are **never** reachable through this channel.
+    - The app server rejects requests from the engine origin: it checks the Origin header, and the engine never receives a session credential.
 2. **Script hygiene inside the worker (correctness, not security).** The iframe is the security boundary. These measures only stop scripts from interfering with the kernel, with each other, or with determinism.
-   - `Object.freeze` the `parasocial` API objects so scripts can't monkey-patch them.
-   - Evaluate each module in a `new Function` wrapper that shadows ambient globals (`self`, `globalThis`, `fetch`, `importScripts`, `Worker`, `WebSocket`, `setTimeout`, …) as `undefined`. This is leaky by design and acceptable because of the iframe.
-   - **Determinism:** replace `Math.random` with a PRNG seeded per regeneration, and stub `Date` inside the worker. Stable names, the derived-data cache and browser/server parity all depend on identical output from identical input.
-   - Clear the module cache before each regeneration so no state carries over between runs.
-   - Tag each module with `//# sourceURL` so stack traces map back to `studios/*.ts` for provenance.
-   - **Revisit SES** (`lockdown()` + a fresh `Compartment` per regeneration) if scripts turn out to interfere with each other or the kernel in practice.
+    - `Object.freeze` the `parasocial` API objects so scripts can't monkey-patch them.
+    - Evaluate each module in a `new Function` wrapper that shadows ambient globals (`self`, `globalThis`, `fetch`, `importScripts`, `Worker`, `WebSocket`, `setTimeout`, …) as `undefined`. This is leaky by design and acceptable because of the iframe.
+    - **Determinism:** replace `Math.random` with a PRNG seeded per regeneration, and stub `Date` inside the worker. Stable names, the derived-data cache and browser/server parity all depend on identical output from identical input.
+    - Clear the module cache before each regeneration so no state carries over between runs.
+    - Tag each module with `//# sourceURL` so stack traces map back to `studios/*.ts` for provenance.
+    - **Revisit SES** (`lockdown()` + a fresh `Compartment` per regeneration) if scripts turn out to interfere with each other or the kernel in practice.
 
 Killing and respawning the worker is **only for timeouts** (runaway scripts). A spare, pre-loaded worker takes over so recovery is instant. Normal changes never cancel a run (see §9, latest-wins).
 
 **Prior art to borrow from:**
+
 - **CadQuery**: fluent chaining, workplanes, and string selectors (`">Z"`, `"|X"`). These are well represented in LLM training data, which is a real advantage for agents.
 - **replicad**: the closest JS/TS precedent on opencascade.js, covering sketch → drawing → shape layering, API ergonomics, and memory management of OCCT objects (explicit `delete()` vs. scoped cleanup).
 - **build123d**: its selector and filter design (`.filter_by`, `.sort_by`, `.group_by`) is cleaner than CadQuery's in places.
@@ -182,36 +183,36 @@ Match CadQuery and replicad naming wherever there's no reason to differ, so agen
 import { part, param, sketch, plane, mm } from "parasocial";
 
 export default part("Bracket", ({ color }) => {
-  const t = param("thickness", 3, { min: 1, max: 10, unit: mm, step: 0.5 });
-  const w = param("width", 40, { unit: mm });
+    const t = param("thickness", 3, { min: 1, max: 10, unit: mm, step: 0.5 });
+    const w = param("width", 40, { unit: mm });
 
-  const base = sketch(plane.XY)
-    .rect(w, 25, { center: true, tag: "outline" })
-    .circle([0, 0], 4, { tag: "bore" })
-    .extrude(t, { tag: "base" });
+    const base = sketch(plane.XY)
+        .rect(w, 25, { center: true, tag: "outline" })
+        .circle([0, 0], 4, { tag: "bore" })
+        .extrude(t, { tag: "base" });
 
-  return base
-    .fillet(base.edges("base.side").parallelTo("Z"), 2, { tag: "corners" })
-    .chamfer(base.edges("base.cap.end & bore"), 0.5)
-    .color(color.auto());
+    return base
+        .fillet(base.edges("base.side").parallelTo("Z"), 2, { tag: "corners" })
+        .chamfer(base.edges("base.cap.end & bore"), 0.5)
+        .color(color.auto());
 });
 ```
 
 ### v1 surface
 
-| Area | Included |
-|---|---|
-| Planes and references | origin planes, offset / angle / 3-point planes, axes, points |
-| Sketch (explicit geometry) | line, polyline, arc (3-pt, tangent, center), circle, rect, slot, polygon, spline, offset, 2D fillet/chamfer, trim, mirror, text, regions |
-| Solid operations | extrude (new/add/remove, symmetric, up-to), revolve, sweep, loft, shell, draft, thicken, mirror, linear/circular pattern, hole (simple/counterbore/countersink) |
-| Finishing | fillet (constant; variable later), chamfer (distance, distance-angle) |
-| Booleans | union, subtract, intersect, split |
-| Transforms | move, rotate, copy |
-| Selection | tags, stable-name queries, CadQuery-style selectors (`">Z"`, `"|X"`), filters (`.planar()`, `.parallelTo()`, `.largest()`), set ops (`&`, `|`, `-`) |
-| Parameters | `param()` with unit, bounds, step and options, which generates UI automatically. The value in code is the **default**; the UI and agents can override it per configuration (see §8) |
-| Inspection | `measure`, `massProps`, `boundingBox`, `isValid` |
-| Parts | multi-part documents, colors, materials (density) |
-| Units | per-document units, SI default. Every numeric input accepts a unit (`"1/4 in"`) and expressions |
+| Area                       | Included                                                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planes and references      | origin planes, offset / angle / 3-point planes, axes, points                                                                                                                        |
+| Sketch (explicit geometry) | line, polyline, arc (3-pt, tangent, center), circle, rect, slot, polygon, spline, offset, 2D fillet/chamfer, trim, mirror, text, regions                                            |
+| Solid operations           | extrude (new/add/remove, symmetric, up-to), revolve, sweep, loft, shell, draft, thicken, mirror, linear/circular pattern, hole (simple/counterbore/countersink)                     |
+| Finishing                  | fillet (constant; variable later), chamfer (distance, distance-angle)                                                                                                               |
+| Booleans                   | union, subtract, intersect, split                                                                                                                                                   |
+| Transforms                 | move, rotate, copy                                                                                                                                                                  |
+| Selection                  | tags, stable-name queries, CadQuery-style selectors (`">Z"`, `"                                                                                                                     | X"`), filters (`.planar()`, `.parallelTo()`, `.largest()`), set ops (`&`, ` | `, `-`) |
+| Parameters                 | `param()` with unit, bounds, step and options, which generates UI automatically. The value in code is the **default**; the UI and agents can override it per configuration (see §8) |
+| Inspection                 | `measure`, `massProps`, `boundingBox`, `isValid`                                                                                                                                    |
+| Parts                      | multi-part documents, colors, materials (density)                                                                                                                                   |
+| Units                      | per-document units, SI default. Every numeric input accepts a unit (`"1/4 in"`) and expressions                                                                                     |
 
 Later: constraint-solved sketches (`sketch.constrain(...)` on **planegcs**), variable fillets, helix and threads, pattern along a curve, custom features with their own property panels, and an outline view of each part (operation records are kept internally, so this is UI work only).
 
@@ -227,32 +228,34 @@ Later: constraint-solved sketches (`sketch.constrain(...)` on **planegcs**), var
 
 ```ts
 type NoteAnchor = {
-  targets: Array<{               // one or many, across parts
-    kind: "face" | "edge" | "vertex" | "part" | "point";
-    name: string;               // stable name, e.g. "bracket/extrude1 · cap.end"
-    query?: string;             // semantic query, if the entity was tagged
-    point: [number, number, number];   // part-local fallback point on the surface
-    normal?: [number, number, number];
-  }>;
-  camera: { position; target; up; fov; ortho: boolean };
-  version: string;              // document version the note was made on
-  configuration: string;        // active configuration when the note was made
-  sectionPlane?: Plane;         // if made while a section view was active
-  markup?: Stroke[];            // pencil strokes, part-local (see §8 Pencil)
-  snapshot: BlobHash;           // viewport capture, including markup
+    targets: Array<{
+        // one or many, across parts
+        kind: "face" | "edge" | "vertex" | "part" | "point";
+        name: string; // stable name, e.g. "bracket/extrude1 · cap.end"
+        query?: string; // semantic query, if the entity was tagged
+        point: [number, number, number]; // part-local fallback point on the surface
+        normal?: [number, number, number];
+    }>;
+    camera: { position; target; up; fov; ortho: boolean };
+    version: string; // document version the note was made on
+    configuration: string; // active configuration when the note was made
+    sectionPlane?: Plane; // if made while a section view was active
+    markup?: Stroke[]; // pencil strokes, part-local (see §8 Pencil)
+    snapshot: BlobHash; // viewport capture, including markup
 };
 ```
 
 Notes anchor to geometry and parts, never to operations or params (they can still mention params). A note can target **any number of entities**, across parts. Feedback about a whole operation ("make the corner fillets bigger") targets its faces; the stable names already identify the operation that made them.
 
 Resolution on every regen:
+
 1. Resolve by stable name or query.
 2. If that fails, use the nearest entity of the same kind to `point`, within a tolerance.
 3. If that fails, the note is **orphaned**. The pin shows as a dashed "ghost" at its last position, and the thread offers "Re-anchor".
 
 ### Lifecycle
 
-`Open` → `Agent working` (claimed by one agent session) → `Awaiting review` → `Resolved`. A reply moves it back to `Open`.
+`Open` → `Agent working` (claimed by one agent session) → `Resolved` after the agent completes and verifies the work. There is no review state. A human reply to a `Resolved` note moves it back to `Open`.
 
 - **Orphaned** is a flag that can apply at any stage.
 - **Removed** is a soft delete, by the human or by an agent once the work is done. Removed notes are hidden by default and can be restored from the Notes filter.
@@ -262,7 +265,7 @@ Resolution on every regen:
 - **`C` enters note mode** (Figma convention). Click geometry to place a pin, or select first and then press `C` to note the selection. A note can target any number of entities, across parts. Shift/⌘-click, box select, or "Select all from this operation" builds the selection first.
 - **Pins sit in the viewport**, hide when their geometry is occluded, and cluster when zoomed out. Avatars distinguish the human from each agent.
 - **Threads live in a Notes tab** in the right panel. They can be filtered by status (including Removed), part or author. Hovering a thread highlights its geometry and shows its markup.
-- **Every agent reply links a version.** Clicking it opens compare (see §8 Compare).
+- **Completion replies are optional.** Agents resolve finished notes without boilerplate. When an agent does reply, it can link a version; clicking it opens compare (see §8 Compare).
 - **Notes can mention params** (`@thickness`) and parts (`#lid`), which render as chips.
 
 ## 7. MCP server
@@ -273,29 +276,29 @@ Every tool takes a `document`. A session connected from a document's **Connect a
 
 ### Tools
 
-| Tool | Returns |
-|---|---|
-| `list_documents()` / `create_document(name)` | documents the user can access |
-| `list_notes(status?, part?)` | threads with markup and snapshot. Each target is described fully: entity type, stable name, the operation that made it (tag, operation type, source line), the helper call chain (`mountingHoles()` at `bracket.ts:30` → `lib/holes.ts:12`), key measurements (area/length, normal/radius), and the named neighbors it touches |
-| `get_note(id)` / `reply_to_note(id, text, version?)` | thread operations |
-| `wait_for_notes(timeoutSeconds?)` | long-poll: returns as soon as a human adds a note or replies on one the agent may work on (free, or held by this session), described like `list_notes` with the reason; `{ notes: [] }` at the timeout. The note mutators `pg_notify` on commit and the MCP server `LISTEN`s, so any app replica wakes the waiting session |
-| `claim_note(id)` / `release_note(id)` | claim a note for this session; fails with the holder's name if another session has it |
-| `set_note_status(id, status)` / `delete_note(id)` | status changes; `delete_note` removes a finished note (soft delete) |
-| `get_selection()` | the human's current selection, described the same way as note targets |
-| `list_scripts()` / `read_script(path)` | scripts, each with its content and current version |
-| `write_script(path, content, baseVersion, message?)` / `edit_script(path, edits, baseVersion, message?)` / `delete_script(path, baseVersion)` | each write creates a version and **returns the regeneration result**: success, or structured errors (same shape the UI shows, see §8 Errors) with source locations, timings and warnings. A stale `baseVersion` is rejected with the current content |
-| `render({ view, highlight?, section?, style? })` | PNG; named views (`iso`, `top`, …), a note's anchor view, or a custom camera |
-| `describe_model(part?)` | parts, bounding boxes, volume/area/mass, then faces and edges with name, type, area/length, normal/axis, source location |
-| `query(expr, part?)` | evaluate a selector against the live model; returns matched entities |
-| `measure(a, b)` | distance, angle, min clearance between entities or parts |
-| `get_params(configuration?)` | each param's code default, override (if any) and effective value |
-| `set_param(name, value, configuration?)` / `reset_param(name, configuration?)` | set or clear an override and return the regeneration result; never edits source |
-| `list_configurations()` / `set_configuration(name)` | configurations, and this session's active one (each session and each user has its own) |
-| `list_problems()` | current errors and warnings per part, same structured shape as write results, with the version and author that introduced each. Agent instructions say to check it at the start of a session and after each write |
-| `check(part?)` | BRepCheck validity, self-intersection, interference between parts |
-| `list_versions()` / `read_version(id, path?)` / `restore_version(id)` | history; `restore_version` copies a version to the tip as a new version |
-| `export(part, format)` | STEP / STL / 3MF, as a signed download URL |
-| `export_document()` / `import_document(zip)` | the plain-file format from §3 Import and export |
+| Tool                                                                                                                                          | Returns                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list_documents()` / `create_document(name)`                                                                                                  | documents the user can access                                                                                                                                                                                                                                                                                                  |
+| `list_notes(status?, part?)`                                                                                                                  | threads with markup and snapshot. Each target is described fully: entity type, stable name, the operation that made it (tag, operation type, source line), the helper call chain (`mountingHoles()` at `bracket.ts:30` → `lib/holes.ts:12`), key measurements (area/length, normal/radius), and the named neighbors it touches |
+| `get_note(id)` / `reply_to_note(id, text, version?, status?)`                                                                                 | thread operations; replies resolve by default and release the claim, with an explicit `Open` option for unfinished work or questions                                                                                                                                                                    |
+| `wait_for_notes(timeoutSeconds?)`                                                                                                             | long-poll: returns as soon as a human adds a note or replies on one the agent may work on (free, or held by this session), described like `list_notes` with the reason; `{ notes: [] }` at the timeout. The note mutators `pg_notify` on commit and the MCP server `LISTEN`s, so any app replica wakes the waiting session     |
+| `claim_note(id)` / `release_note(id)`                                                                                                         | claim a note for this session; fails with the holder's name if another session has it                                                                                                                                                                                                                                          |
+| `set_note_status(id, status)` / `delete_note(id)`                                                                                             | status changes; `delete_note` removes a finished note (soft delete)                                                                                                                                                                                                                                                            |
+| `get_selection()`                                                                                                                             | the human's current selection, described the same way as note targets                                                                                                                                                                                                                                                          |
+| `list_scripts()` / `read_script(path)`                                                                                                        | scripts, each with its content and current version                                                                                                                                                                                                                                                                             |
+| `write_script(path, content, baseVersion, message?)` / `edit_script(path, edits, baseVersion, message?)` / `delete_script(path, baseVersion)` | each write creates a version and **returns the regeneration result**: success, or structured errors (same shape the UI shows, see §8 Errors) with source locations, timings and warnings. A stale `baseVersion` is rejected with the current content                                                                           |
+| `render({ view, highlight?, section?, style? })`                                                                                              | PNG; named views (`iso`, `top`, …), a note's anchor view, or a custom camera                                                                                                                                                                                                                                                   |
+| `describe_model(part?)`                                                                                                                       | parts, bounding boxes, volume/area/mass, then faces and edges with name, type, area/length, normal/axis, source location                                                                                                                                                                                                       |
+| `query(expr, part?)`                                                                                                                          | evaluate a selector against the live model; returns matched entities                                                                                                                                                                                                                                                           |
+| `measure(a, b)`                                                                                                                               | distance, angle, min clearance between entities or parts                                                                                                                                                                                                                                                                       |
+| `get_params(configuration?)`                                                                                                                  | each param's code default, override (if any) and effective value                                                                                                                                                                                                                                                               |
+| `set_param(name, value, configuration?)` / `reset_param(name, configuration?)`                                                                | set or clear an override and return the regeneration result; never edits source                                                                                                                                                                                                                                                |
+| `list_configurations()` / `set_configuration(name)`                                                                                           | configurations, and this session's active one (each session and each user has its own)                                                                                                                                                                                                                                         |
+| `list_problems()`                                                                                                                             | current errors and warnings per part, same structured shape as write results, with the version and author that introduced each. Agent instructions say to check it at the start of a session and after each write                                                                                                              |
+| `check(part?)`                                                                                                                                | BRepCheck validity, self-intersection, interference between parts                                                                                                                                                                                                                                                              |
+| `list_versions()` / `read_version(id, path?)` / `restore_version(id)`                                                                         | history; `restore_version` copies a version to the tip as a new version                                                                                                                                                                                                                                                        |
+| `export(part, format)`                                                                                                                        | STEP / STL / 3MF, as a signed download URL                                                                                                                                                                                                                                                                                     |
+| `export_document()` / `import_document(zip)`                                                                                                  | the plain-file format from §3 Import and export                                                                                                                                                                                                                                                                                |
 
 There is no `regenerate` tool. Regeneration happens automatically on every write.
 
@@ -350,30 +353,30 @@ Polished but restrained. Empty states get depth from **grayscale geometric art**
 `Default ▾` is the active configuration. `◉◉ 2` shows the connected agents. There is no status bar (see Selection label).
 
 - **Left panel, with tabs:**
-  - **Parts** (default): visibility, isolate, color swatch, and a status badge (ok / warning / error). There is no feature tree in v1: people review the model, not the code, and agents fix their own errors. Operation structure shows up where it's useful instead, in the face/edge Properties and in note targets.
-  - **Scripts:** the document's scripts under `studios/` and `lib/`.
-  - **History:** versions (see Versions).
+    - **Parts** (default): visibility, isolate, color swatch, and a status badge (ok / warning / error). There is no feature tree in v1: people review the model, not the code, and agents fix their own errors. Operation structure shows up where it's useful instead, in the face/edge Properties and in note targets.
+    - **Scripts:** the document's scripts under `studios/` and `lib/`.
+    - **History:** versions (see Versions).
 - **Viewport:**
-  - view cube, standard views
-  - a small control cluster under the view cube: display mode (shaded, shaded + edges, wireframe, hidden-line), section, orthographic/perspective, selection filter, zoom
-  - zoom to fit (`F`) and zoom to selection
-  - grid, origin triad
-  - configurable navigation presets (Onshape / SolidWorks / Fusion / trackpad-first)
-  - trackpad pinch and pan; hold `Space` and drag to pan (Figma convention)
-  - SpaceMouse via WebHID (later)
+    - view cube, standard views
+    - a small control cluster under the view cube: display mode (shaded, shaded + edges, wireframe, hidden-line), section, orthographic/perspective, selection filter, zoom
+    - zoom to fit (`F`) and zoom to selection
+    - grid, origin triad
+    - configurable navigation presets (Onshape / SolidWorks / Fusion / trackpad-first)
+    - trackpad pinch and pan
+    - SpaceMouse via WebHID (later)
 - **Floating bottom toolbar** (Figma-style), with just four tools: **select** (`V`), **note** (`C`), **pencil** (`P`), **measure** (`M`).
 - **Right panel, with tabs:**
-  - **Properties** for the current context:
-    - With nothing selected: document settings, including units.
-    - With a part selected: material, mass properties, color, and a shortcut to its params.
-    - With a face or edge selected: type, area or length, normal or radius, stable name, **"Created by `corners` (fillet) · `bracket.ts:18` →"**, and the notes on it.
-  - **Params:** the parameter and configuration editor (see below).
-  - **Notes:** threads (see §6).
+    - **Properties** for the current context:
+        - With nothing selected: document settings, including units.
+        - With a part selected: material, mass properties, color, and a shortcut to its params.
+        - With a face or edge selected: type, area or length, normal or radius, stable name, **"Created by `corners` (fillet) · `bracket.ts:18` →"**, and the notes on it.
+    - **Params:** the parameter and configuration editor (see below).
+    - **Notes:** threads (see §6).
 - **Code mode:** a Monaco split view next to the viewport. Selecting geometry highlights the source line, and placing the cursor on an operation highlights its geometry. This is also where people write code by hand.
-  - The viewport regenerates live from the editor buffer as you type (short debounce, then latest-wins) and shows an **Unsaved preview** pill.
-  - Monaco is lazy-loaded when Code mode first opens and prefetched when the browser is idle.
-  - **`⌘S` saves and creates a new version**, which is when other clients and agents see the change.
-  - Errors show as Monaco markers on the offending lines.
+    - The viewport regenerates live from the editor buffer as you type (short debounce, then latest-wins) and shows an **Unsaved preview** pill.
+    - Monaco is lazy-loaded when Code mode first opens and prefetched when the browser is idle.
+    - **`⌘S` saves and creates a new version**, which is when other clients and agents see the change.
+    - Errors show as Monaco markers on the offending lines.
 
 ### Selection label
 
@@ -411,18 +414,18 @@ Opened from a version link in a thread or from History.
 Parameters are first-class. Their **defaults live in code** (the value passed to `param()`), and the UI can **override** them without touching the source.
 
 - **Configurations** are named sets of overrides, for example `M3`, `M4` or `Print-draft`. `Default` is the configuration with no overrides, so it is exactly what the code says.
-  - The active configuration is picked in the top bar and at the top of the Params tab. It's per user (and per agent session), not per document.
-  - Configurations can be created, duplicated, renamed or deleted in the Params tab.
+    - The active configuration is picked in the top bar and at the top of the Params tab. It's per user (and per agent session), not per document.
+    - Configurations can be created, duplicated, renamed or deleted in the Params tab.
 - Overrides and configurations are stored in Postgres. Scripts never see them directly; the runtime passes effective values into `param()`.
 - **Overridden values are obvious.** An overridden row gets an accent-colored value and a dot by its label, like Figma's overridden component properties. Hovering shows the code default and where it's declared (`bracket.ts:12`).
 - **Reverting is one click.** Each overridden row has a ↺ reset button, and each part group and each configuration has "Reset all". `⌘⌫` on a focused input resets it too.
 - If the code default changes underneath an override, the row shows "code default changed: 3 → 4" until the override is reset or kept.
 - Overrides outside the declared bounds are rejected inline, with the bound shown.
 - Inputs behave like Figma's:
-  - Drag the label to scrub the value. Shift gives coarse steps, Alt fine steps.
-  - `↑`/`↓` step by the param's `step` (with Shift/Alt modifiers).
-  - Inputs accept expressions and units (`=width/2`, `1/4 in`). The expression is stored in the override as typed, and the evaluated value is shown beside it.
-  - Changes regenerate live, latest-wins (see §9), with coarse meshing while scrubbing. The override is committed when the gesture ends.
+    - Drag the label to scrub the value. Shift gives coarse steps, Alt fine steps.
+    - `↑`/`↓` step by the param's `step` (with Shift/Alt modifiers).
+    - Inputs accept expressions and units (`=width/2`, `1/4 in`). The expression is stored in the override as typed, and the evaluated value is shown beside it.
+    - Changes regenerate live, latest-wins (see §9), with coarse meshing while scrubbing. The override is committed when the gesture ends.
 - Params are grouped per part and can be collapsed. The panel is generated entirely from the `param()` declarations.
 
 ### Versions
@@ -451,9 +454,9 @@ Code mode can have unsaved edits while an agent changes the same script.
 
 - **Kinds:** syntax/transpile, runtime exception, operation failure (for example a fillet that fails), invalid geometry (BRepCheck), timeout, and unresolved references (selectors that match nothing, orphaned notes).
 - **The viewport never goes blank.**
-  - After a syntax error, the last good geometry stays on screen, dimmed.
-  - After an operation failure, the model shows the result up to the last successful operation, and the failing operation's inputs are highlighted in red (for example, the edges a fillet couldn't handle).
-- **A quiet status pill** in the viewport ("Bracket didn't regenerate · agents notified") instead of a banner. Expanding it shows the message and a `bracket.ts:18 →` link for people who want to look.
+    - After a syntax error, the last good geometry stays on screen, dimmed.
+    - After an operation failure, the model shows the result up to the last successful operation, and the failing operation's inputs are highlighted in red (for example, the edges a fillet couldn't handle).
+- **A quiet status pill** in the viewport ("Bracket didn't regenerate") instead of a banner. Expanding it shows the message and a `bracket.ts:18 →` link for people who want to look.
 - **Everywhere else:** a red badge on the part and on the script. Monaco markers in Code mode.
 - Warnings (validity, slow regeneration, selectors that match more than expected) use the same surfaces in amber and never block.
 - **Errors caused by people** (a param override or an edit in Code mode) reach agents the same way: they appear in `list_problems` with the version and author that introduced them.
@@ -479,11 +482,11 @@ Code mode can have unsaved edits while an agent changes the same script.
 - **Part colors:** a curated, tasteful palette, assigned round-robin in the Onshape style, with no orange or accent-blue hues. Each part can override its own color.
 - **Empty-state art:** grayscale clay renders of the example parts (see Sign-in and empty states).
 - **Rendering:**
-  - crisp, anti-aliased feature edges (Line2)
-  - silhouette edges
-  - subtle ambient occlusion
-  - polygon offset so edges never fight faces
-  - reversed-Z or logarithmic depth
+    - crisp, anti-aliased feature edges (Line2)
+    - silhouette edges
+    - subtle ambient occlusion
+    - polygon offset so edges never fight faces
+    - reversed-Z or logarithmic depth
 - **Motion:** 150–250 ms spring or ease-out transitions on panels, hovers, camera moves (view cube, zoom-to), and discrete regenerations such as an agent write or a restore (cross-fade from old mesh to new). While scrubbing or typing, meshes swap instantly. Every animation is interruptible and never delays input. Respects reduced motion.
 
 ### Undo
@@ -498,7 +501,7 @@ Code mode can have unsaved edits while an agent changes the same script.
 - **⌘K command palette** for every action, view, param, and note.
 - Every action has a shortcut. Shortcuts are customizable, with conflict detection, and avoid browser-reserved keys.
 - A cheatsheet opens on `?`.
-- Defaults: `V` select, `C` note, `P` pencil, `M` measure, `S` section, `F` fit, `B` (hold) flash before in compare, `Esc` deselect/cancel, `Space`-drag pan, `1–4` selection filters, `⌘Z`/`⌘⇧Z` undo/redo, `⌘S` save (Code mode), `⌘⇧E` export, `⌘\` toggle Code mode.
+- Defaults: `V` select, `C` note, `P` pencil, `M` measure, `S` section, `F` fit, `B` (hold) flash before in compare, `Esc` deselect/cancel, `Space` deselect all, `1–4` selection filters, `⌘Z`/`⌘⇧Z` undo/redo, `⌘S` save (Code mode), `⌘⇧E` export, `⌘\` toggle Code mode.
 
 ### Agent presence
 
@@ -512,15 +515,15 @@ Speed and snappiness are features. These budgets are checked in CI against the `
 
 ### Budgets
 
-| Interaction | Budget |
-|---|---|
-| Hover preselect | within the current frame |
-| Click to select, with Properties updated | < 50 ms |
-| Param scrub step, when upstream operations are cached | < 100 ms to the new mesh on screen |
-| Open a document with a warm cache | < 1 s to an interactive model (hover, select, Properties), before the kernel is ready |
-| Kernel ready on a repeat visit (WASM already cached) | < 1.5 s |
-| Agent write to regeneration result, warm engine | < 1 s |
-| Typical edit to re-rendered result, cold op cache | < 2 s |
+| Interaction                                           | Budget                                                                                |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Hover preselect                                       | within the current frame                                                              |
+| Click to select, with Properties updated              | < 50 ms                                                                               |
+| Param scrub step, when upstream operations are cached | < 100 ms to the new mesh on screen                                                    |
+| Open a document with a warm cache                     | < 1 s to an interactive model (hover, select, Properties), before the kernel is ready |
+| Kernel ready on a repeat visit (WASM already cached)  | < 1.5 s                                                                               |
+| Agent write to regeneration result, warm engine       | < 1 s                                                                                 |
+| Typical edit to re-rendered result, cold op cache     | < 2 s                                                                                 |
 
 ### Regeneration
 
@@ -566,38 +569,38 @@ Speed and snappiness are features. These budgets are checked in CI against the `
 
 ## 11. Milestones
 
-| # | Milestone | Done when |
-|---|---|---|
-| **M0** | **Kernel spike** | Custom OCCT WASM loads in a worker **inside the cross-origin engine iframe, with COEP working and threads enabled**; using replicad's WASM build, **with the OCCT history API (`Generated`/`Modified`/`IsDeleted`, `BRepTools_History`, `TopTools_ListOfShape` iteration) confirmed reachable, or the build forked to add it**; a box is extruded, filleted and tessellated into Three.js with faces and edges pickable, with meshes transferred (not copied) to the app; threads confirmed working with the app cross-origin isolated; WASM size, cold and cached load time, and single- vs. multi-threaded speed measured |
-| **M1** | **Naming + API core** | Element maps for extrude/revolve/boolean/fillet/chamfer; tags and selectors; `param()`; provenance; per-op cache with lazy naming and latest-wins regeneration; **a regression corpus shows fillets surviving upstream dimension changes and a split face**; CI budget checks running |
-| **M2** | **Platform** | docker compose stack (Postgres, zero-cache, SvelteKit app, storage); Caddy with TLS; passkey accounts; `document_members` permissions; documents and scripts in Postgres through Zero mutators; versions with restore; zip import/export (seeds `examples/`); our Svelte adapter for Zero |
-| **M3** | **Workspace** | Shell with panels, sign-in and empty states, viewport, preselect and selection, selection label, view cube, display modes, parts list, Params tab with overrides and configurations, undo/redo, automatic regeneration, error surfaces, themes, ⌘K; cache-first open and service-worker WASM caching; progressive meshing; render-on-demand; budgets met |
-| **M4** | **Notes + markup** | Anchors, resolution, orphan handling, pins, threads, lifecycle with claims and removal, pencil, compare, History tab |
-| **M5** | **MCP** | OAuth, the full tool set, many concurrent sessions, the isolated engine pool, agent instructions; the end-to-end loop works with Claude Code on the example parts |
-| **M6** | **API breadth + output** | Remaining v1 operations (sweep, loft, shell, draft, patterns, hole, mirror); measure tool and mass properties; section view; STEP/STL/3MF export; Code mode with live preview and dirty-buffer handling |
-| **M7** | **Polish** | Motion pass, navigation presets, shortcut customization, box select, performance pass against the budgets on larger parts, accessibility pass |
+| #      | Milestone                | Done when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M0** | **Kernel spike**         | Custom OCCT WASM loads in a worker **inside the cross-origin engine iframe, with COEP working and threads enabled**; using replicad's WASM build, **with the OCCT history API (`Generated`/`Modified`/`IsDeleted`, `BRepTools_History`, `TopTools_ListOfShape` iteration) confirmed reachable, or the build forked to add it**; a box is extruded, filleted and tessellated into Three.js with faces and edges pickable, with meshes transferred (not copied) to the app; threads confirmed working with the app cross-origin isolated; WASM size, cold and cached load time, and single- vs. multi-threaded speed measured |
+| **M1** | **Naming + API core**    | Element maps for extrude/revolve/boolean/fillet/chamfer; tags and selectors; `param()`; provenance; per-op cache with lazy naming and latest-wins regeneration; **a regression corpus shows fillets surviving upstream dimension changes and a split face**; CI budget checks running                                                                                                                                                                                                                                                                                                                                       |
+| **M2** | **Platform**             | docker compose stack (Postgres, zero-cache, SvelteKit app, storage); Caddy with TLS; passkey accounts; `document_members` permissions; documents and scripts in Postgres through Zero mutators; versions with restore; zip import/export (seeds `examples/`); our Svelte adapter for Zero                                                                                                                                                                                                                                                                                                                                   |
+| **M3** | **Workspace**            | Shell with panels, sign-in and empty states, viewport, preselect and selection, selection label, view cube, display modes, parts list, Params tab with overrides and configurations, undo/redo, automatic regeneration, error surfaces, themes, ⌘K; cache-first open and service-worker WASM caching; progressive meshing; render-on-demand; budgets met                                                                                                                                                                                                                                                                    |
+| **M4** | **Notes + markup**       | Anchors, resolution, orphan handling, pins, threads, lifecycle with claims and removal, pencil, compare, History tab                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **M5** | **MCP**                  | OAuth, the full tool set, many concurrent sessions, the isolated engine pool, agent instructions; the end-to-end loop works with Claude Code on the example parts                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **M6** | **API breadth + output** | Remaining v1 operations (sweep, loft, shell, draft, patterns, hole, mirror); measure tool and mass properties; section view; STEP/STL/3MF export; Code mode with live preview and dirty-buffer handling                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **M7** | **Polish**               | Motion pass, navigation presets, shortcut customization, box select, performance pass against the budgets on larger parts, accessibility pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 M0 and M1 carry the risk. M2 doesn't depend on naming and can run alongside them. Don't start M3 until naming is proven on the regression corpus.
 
 ## 12. Tech stack
 
-| Layer | Choice | Notes |
-|---|---|---|
-| Kernel | OpenCascade (replicad's build pipeline, trimmed) | LGPL: ship the WASM separately; COOP/COEP for threads |
-| Rendering | Three.js (WebGL2; evaluate WebGPU renderer after M3) | Plain Three.js in the `viewer` package, not Threlte, so it stays framework-agnostic |
-| App | **SvelteKit** (Svelte 5 runes), running on Bun | Chosen over SolidStart because shadcn-svelte / bits-ui are much more mature |
-| Sync | **Zero** + Postgres | Custom mutators shared by client, server and MCP. We own the Svelte adapter in `packages/sync` and pin the Zero version |
-| Styling | Tailwind v4 + shadcn-svelte | Custom tokens for the neutral + blue palette and concentric radii |
-| Code editor | Monaco | Loaded with the API `.d.ts` files |
-| Script runtime | Cross-origin engine iframe → Web Worker; esbuild-wasm | Frozen API, shadowed globals, seeded `Math.random`; source maps for provenance |
-| Auth | Passkeys via SimpleWebAuthn; an OAuth 2.1 authorization server for MCP | The OAuth server must support dynamic client registration and PKCE. Evaluate `oidc-provider` |
-| MCP | `@modelcontextprotocol/sdk`, streamable HTTP | Hosted in the SvelteKit server |
-| Engine pool | Playwright-driven headless Chromium | Per-document processes, no egress, resource limits. Runs on Bun; if Playwright proves flaky under Bun, this one service falls back to Node (it's its own container) |
-| Storage | S3-compatible object storage | Content-addressed; signed URLs |
-| Runtime and tooling | **Bun**: package manager, workspaces, runtime, scripts, and test runner | `zero-cache` runs in its own upstream container, whatever its runtime |
-| Deploy | docker compose | |
-| License | AGPL-3.0 (for now) | Compatible with the LGPL OCCT build, which ships as a separate WASM |
-| Tests | `bun test` for plain TypeScript packages; Vitest where Vite is needed (Svelte components); geometry regression corpus (regen → compare volume, face count, named-entity survival); mutator tests against a real Postgres; Playwright for the UI; performance budgets (§9) measured in CI on the example corpus | |
+| Layer               | Choice                                                                                                                                                                                                                                                                                                         | Notes                                                                                                                                                               |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kernel              | OpenCascade (replicad's build pipeline, trimmed)                                                                                                                                                                                                                                                               | LGPL: ship the WASM separately; COOP/COEP for threads                                                                                                               |
+| Rendering           | Three.js (WebGL2; evaluate WebGPU renderer after M3)                                                                                                                                                                                                                                                           | Plain Three.js in the `viewer` package, not Threlte, so it stays framework-agnostic                                                                                 |
+| App                 | **SvelteKit** (Svelte 5 runes), running on Bun                                                                                                                                                                                                                                                                 | Chosen over SolidStart because shadcn-svelte / bits-ui are much more mature                                                                                         |
+| Sync                | **Zero** + Postgres                                                                                                                                                                                                                                                                                            | Custom mutators shared by client, server and MCP. We own the Svelte adapter in `packages/sync` and pin the Zero version                                             |
+| Styling             | Tailwind v4 + shadcn-svelte                                                                                                                                                                                                                                                                                    | Custom tokens for the neutral + blue palette and concentric radii                                                                                                   |
+| Code editor         | Monaco                                                                                                                                                                                                                                                                                                         | Loaded with the API `.d.ts` files                                                                                                                                   |
+| Script runtime      | Cross-origin engine iframe → Web Worker; esbuild-wasm                                                                                                                                                                                                                                                          | Frozen API, shadowed globals, seeded `Math.random`; source maps for provenance                                                                                      |
+| Auth                | Passkeys via SimpleWebAuthn; an OAuth 2.1 authorization server for MCP                                                                                                                                                                                                                                         | The OAuth server must support dynamic client registration and PKCE. Evaluate `oidc-provider`                                                                        |
+| MCP                 | `@modelcontextprotocol/sdk`, streamable HTTP                                                                                                                                                                                                                                                                   | Hosted in the SvelteKit server                                                                                                                                      |
+| Engine pool         | Playwright-driven headless Chromium                                                                                                                                                                                                                                                                            | Per-document processes, no egress, resource limits. Runs on Bun; if Playwright proves flaky under Bun, this one service falls back to Node (it's its own container) |
+| Storage             | S3-compatible object storage                                                                                                                                                                                                                                                                                   | Content-addressed; signed URLs                                                                                                                                      |
+| Runtime and tooling | **Bun**: package manager, workspaces, runtime, scripts, and test runner                                                                                                                                                                                                                                        | `zero-cache` runs in its own upstream container, whatever its runtime                                                                                               |
+| Deploy              | docker compose                                                                                                                                                                                                                                                                                                 |                                                                                                                                                                     |
+| License             | AGPL-3.0 (for now)                                                                                                                                                                                                                                                                                             | Compatible with the LGPL OCCT build, which ships as a separate WASM                                                                                                 |
+| Tests               | `bun test` for plain TypeScript packages; Vitest where Vite is needed (Svelte components); geometry regression corpus (regen → compare volume, face count, named-entity survival); mutator tests against a real Postgres; Playwright for the UI; performance budgets (§9) measured in CI on the example corpus |                                                                                                                                                                     |
 
 ## 13. Risks and open questions
 
@@ -621,7 +624,7 @@ Places where the implementation departs from, or has to interpret, the plan abov
 
 - **Zero permissions are synced queries, not permission rules.** §3 says "Zero permission rules". In Zero 1.x (pinned at 1.9.0), `definePermissions` is deprecated. Clients can only sync through named queries, which the app server re-evaluates with the authenticated context. Every query in `packages/sync/src/queries.ts` filters through `document_members`, and every mutator checks membership and role server-side. The guarantee is the same one §3 asks for: membership from day one, and share links later become a new role, not a migration.
 - **Markup is stored as rows.** The strokes in the §6 `NoteAnchor.markup` field live in `markup_strokes`, not inline in `notes.anchor`. Draft strokes need rows before a note exists (the pencil starts a draft note, §8), and ⌘Z undoes individual strokes. The full anchor is `notes.anchor` plus the note's strokes, and zip export writes them together.
-- **A human reply doesn't take a note away from a working agent.** §6 says "A reply moves it back to `Open`". A human reply moves `AwaitingReview` or `Resolved` back to `Open`. On a note that is `AgentWorking`, the claim is kept and the agent sees the reply in its thread. Silently revoking an in-flight claim would let a second agent collide with the first. A human can still take the note back explicitly with release.
+- **A human reply doesn't take a note away from a working agent.** §6 says "A reply moves it back to `Open`". A human reply moves `Resolved` back to `Open`. On a note that is `AgentWorking`, the claim is kept and the agent sees the reply in its thread. Silently revoking an in-flight claim would let a second agent collide with the first. A human can still take the note back explicitly with release.
 - **A write with identical content creates no version.** §7 says every write creates a version. A write whose content equals the current content is a no-op, so agents retrying or re-saving don't flood History with empty versions. Every write that changes content creates exactly one version.
 - **Configuration changes coalesce with param changes.** §8 coalesces param bursts into one version. Creating, duplicating, renaming and deleting configurations are part of the same param state, so they join the same burst (e.g. "Params: +M3, thickness 3 → 4"). A burst is changes by one author within 10 s, with nothing else committed in between.
 - **Imported notes have no snapshot.** Blobs aren't exported (§3), so `notes.snapshot_hash` is nullable, but only notes arriving through import can have it null. `note.create` still requires an uploaded snapshot.
@@ -638,4 +641,4 @@ Places where the implementation departs from, or has to interpret, the plan abov
 
 ---
 
-*Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/*
+_Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/_

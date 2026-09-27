@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { Crosshair, MoreHorizontal, ArrowUp, Check, RotateCcw, Trash2, Undo2, Unlink } from '@lucide/svelte';
+	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink } from '@lucide/svelte';
 	import { NoteMessage, NoteStatusChip, type NoteMessageData, type NoteSegment, type NoteStatus } from '$lib/components/ui/notes';
 	import { IconButton, Button } from '$lib/components/ui/button';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
-	import { clockTime, relativeTime } from '$lib/format';
+	import { relativeTime } from '$lib/format';
 	import { rise } from '$lib/styles/motion';
 	import type { Note, NoteMessage as Msg } from '@parasocial/sync';
 	import type { WorkspaceState } from './state.svelte';
@@ -12,10 +12,12 @@
 	let { ws, nc, note, pin, onfocus, onversion }: { ws: WorkspaceState; nc: NotesController; note: Note & { messages?: Msg[] }; pin?: Pin; onfocus: () => void; onversion: (versionID: string) => void } = $props();
 	let reply = $state('');
 
-	const status = $derived<NoteStatus>(note.orphaned ? 'orphaned' : note.status === 'Open' ? 'open' : note.status === 'AgentWorking' ? 'working' : note.status === 'AwaitingReview' ? 'review' : 'resolved');
+	const status = $derived<NoteStatus>(note.orphaned ? 'orphaned' : note.status === 'Open' ? 'open' : note.status === 'AgentWorking' ? 'working' : 'resolved');
 	const t0 = $derived(note.anchor.targets[0]);
 	const partName = $derived(t0?.part ? (ws.results[t0.part]?.name ?? t0.part) : '');
-	const target = $derived(`${t0 ? t0.kind[0].toUpperCase() + t0.kind.slice(1) : 'Point'}${note.anchor.targets.length > 1 ? ` +${note.anchor.targets.length - 1}` : ''} · ${partName}`);
+	const kind = $derived(`${t0 ? t0.kind[0].toUpperCase() + t0.kind.slice(1) : 'Point'}${note.anchor.targets.length > 1 ? ` +${note.anchor.targets.length - 1}` : ''}`);
+	const resolved = $derived(note.status === 'Resolved');
+	const claimant = $derived(status === 'working' ? ((note as any).claimant ?? ws.agents.find((a) => a.id === note.claimedBy)) : null);
 
 	const paramNames = $derived(new Set(Object.values(ws.results).flatMap((r) => r.params.map((p) => p.name))));
 	function segments(text: string): NoteSegment[] {
@@ -26,7 +28,7 @@
 			if (at > last) out.push(text.slice(last, at));
 			const name = m[3];
 			if (m[2] === '@') out.push({ kind: 'param', name, broken: !paramNames.has(name) });
-			else out.push({ kind: 'part', name, broken: !ws.parts.includes(name) });
+			else out.push({ kind: 'part', name, broken: !ws.allParts.includes(name) });
 			last = at + 1 + name.length;
 		}
 		if (last < text.length) out.push(text.slice(last));
@@ -36,29 +38,39 @@
 	const messages = $derived.by<NoteMessageData[]>(() => {
 		const msgs = note.messages ?? [];
 		const out: NoteMessageData[] = [];
+		// activity (render, measure, edit …) precedes the agent's reply: hold it until that reply arrives
+		let pending: { agentID: string; entry: NoteMessageData } | null = null;
 		for (const m of msgs) {
 			const agent = (m as any).authorAgent ?? (m.authorAgentID ? ws.agents.find((a) => a.id === m.authorAgentID) ?? { clientName: 'Agent' } : null);
-			const author = agent ? { name: `${agent.clientName}${agent.label ? ` (${agent.label})` : ''}`, kind: 'agent' as const } : { name: (m as any).authorUser?.name ?? (m.authorUserID === ws.userID ? ws.userName : 'Someone'), kind: 'human' as const };
+			const author = agent ? { name: agent.clientName, kind: 'agent' as const } : { name: (m as any).authorUser?.name ?? (m.authorUserID === ws.userID ? ws.userName : 'Someone'), kind: 'human' as const };
+			const detail = agent?.label as string | undefined;
 			if (m.kind === 'activity') {
-				// activity entries fold into the agent's previous message (or start a log)
-				const prev = out[out.length - 1];
-				if (prev && prev.author.kind === 'agent') (prev.activity ??= []).push(m.text);
-				else out.push({ author, time: clockTime(m.createdAt), body: [], activity: [m.text] });
+				if (pending && pending.agentID === m.authorAgentID) pending.entry.activity!.push(m.text);
+				else {
+					if (pending) out.push(pending.entry);
+					pending = { agentID: m.authorAgentID ?? '', entry: { author, detail, time: relativeTime(m.createdAt), body: [], activity: [m.text] } };
+				}
 				continue;
 			}
 			const v = m.versionID ? ws.versions.find((x) => x.id === m.versionID) : undefined;
-			out.push({
+			const entry: NoteMessageData = {
 				author,
+				detail,
 				time: relativeTime(m.createdAt),
 				body: segments(m.text),
-				version: v ? { version: v.number, time: clockTime(v.createdAt), summary: v.message, onclick: () => onversion(v.id) } : undefined
-			});
+				// the message already carries a timestamp; the chip only needs the version and what changed
+				version: v ? { version: v.number, summary: v.message, onclick: () => onversion(v.id) } : undefined
+			};
+			if (pending && pending.agentID === m.authorAgentID) entry.activity = pending.entry.activity;
+			else if (pending) out.push(pending.entry);
+			pending = null;
+			out.push(entry);
 		}
+		if (pending) out.push(pending.entry);
 		return out;
 	});
 
 	const menu = $derived<MenuEntry[]>([
-		note.status === 'Resolved' ? { label: 'Reopen', icon: RotateCcw, onSelect: () => nc.setStatus(note.id, 'Open') } : { label: 'Resolve', icon: Check, onSelect: () => nc.setStatus(note.id, 'Resolved') },
 		{ label: 'Show in viewport', icon: Crosshair, onSelect: onfocus },
 		{ type: 'separator' },
 		note.removedAt ? { label: 'Restore', icon: Undo2, onSelect: () => nc.restore(note.id) } : { label: 'Remove', icon: Trash2, destructive: true, onSelect: () => nc.remove(note.id) }
@@ -80,14 +92,28 @@
 	data-testid="note-card"
 >
 	<header class="flex h-10 items-center gap-2 border-b border-line-subtle pr-1.5 pl-3">
-		<button class="focus-ring flex min-w-0 items-center gap-2 rounded-xs text-left" onclick={onfocus}>
-			<span class="text-ui font-semibold text-fg tabular-nums">#{pin?.number ?? nc.numberOf(note.id)}</span>
-			<span class="flex min-w-0 items-center gap-1 text-label text-fg-secondary">
-				<Crosshair size={12} class="shrink-0 text-fg-tertiary" />
-				<span class="truncate">{target}</span>
+		<button class="focus-ring flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden rounded-xs text-left" onclick={onfocus} title="Show in viewport">
+			<span class="flex min-w-0 items-baseline text-label">
+				{#if partName}<span class="truncate text-fg-secondary">{partName}</span><span class="shrink-0 px-1 text-fg-tertiary">·</span>{/if}
+				<span class="truncate text-fg-tertiary">{kind}</span>
 			</span>
 		</button>
-		<NoteStatusChip {status} class="ml-auto shrink-0" />
+		<span class="shrink-0 text-label text-fg-tertiary tabular-nums">Note #{pin?.number ?? nc.numberOf(note.id)}</span>
+		<!-- "Open" is the default: only call out the states worth noticing -->
+		{#if status !== 'open' && !(resolved && !note.removedAt)}<NoteStatusChip {status} label={claimant ? `${claimant.clientName} working` : undefined} class="shrink-0" />{/if}
+		{#if !note.removedAt}
+			{#if resolved}
+				<button
+					type="button"
+					class="focus-ring inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-ok-subtle pr-2 pl-1.5 text-label font-medium whitespace-nowrap text-ok transition-[filter] duration-[var(--duration-fast)] hover:brightness-95"
+					onclick={() => nc.setStatus(note.id, 'Open')}
+					aria-label="Reopen"
+					title="Reopen"><Check size={12} strokeWidth={2} /> Resolved</button
+				>
+			{:else}
+				<IconButton label="Resolve" size="sm" onclick={() => nc.setStatus(note.id, 'Resolved')} data-testid="note-resolve"><Check /></IconButton>
+			{/if}
+		{/if}
 		<DropdownMenu items={menu} align="end">
 			{#snippet trigger(props)}<IconButton {...props} label="Note actions" size="sm"><MoreHorizontal /></IconButton>{/snippet}
 		</DropdownMenu>

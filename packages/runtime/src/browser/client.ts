@@ -77,6 +77,7 @@ export class EngineClient {
         if (!parts) return p.reject(new Error("engine returned a malformed part list"));
         return p.resolve(parts);
       }
+      if (p.op === "affected" && !(Array.isArray(m.value) && m.value.every((x) => typeof x === "string"))) return p.reject(new Error("engine returned a malformed part list"));
       if (p.op === "assemblies") {
         const a = validateAssemblies(m.value);
         if (!a) return p.reject(new Error("engine returned a malformed assembly list"));
@@ -117,9 +118,16 @@ export class EngineClient {
   setOverrides(part: string, overrides: Record<string, string | number>) {
     return this.call<boolean>({ op: "setOverrides", part, overrides });
   }
-  /** Latest-wins: resolves `null` if a newer request for the same part superseded this one. */
-  regenerate(part: string, quality: MeshQuality = "fine") {
-    return this.call<PartResult | null>({ op: "regenerate", part, quality });
+  /**
+   * Latest-wins: resolves `null` if a newer request for the same part superseded this one.
+   * `known`: the geometry key already on hand at this quality (the result comes back `unchanged` without a mesh if it still is).
+   */
+  regenerate(part: string, quality: MeshQuality = "fine", known?: string) {
+    return this.call<PartResult | null>({ op: "regenerate", part, quality, known });
+  }
+  /** Parts a change to these script paths can affect (the rest can keep their results). */
+  affected(paths: string[]) {
+    return this.call<string[]>({ op: "affected", paths });
   }
   names(part: string) {
     return this.call<Record<EntityKind, string[]>>({ op: "names", part });

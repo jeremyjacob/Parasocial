@@ -23,13 +23,13 @@
 
 <div class={cn('flex flex-col rounded-panel bg-panel shadow-[inset_0_0_0_1px_var(--border-default)]', className)}>
 	<header class="flex h-10 items-center gap-2 border-b border-line-subtle pr-1.5 pl-3">
-		<span class="text-ui font-semibold text-fg tabular">#{number}</span>
-		<span class="flex min-w-0 items-center gap-1 text-label text-fg-secondary">
+		<span class="flex min-w-0 flex-1 items-center gap-1 text-label text-fg-secondary">
 			<Crosshair size={12} class="shrink-0 text-fg-tertiary" />
 			<span class="truncate">{target}</span>
-			{#if source}<span class="shrink-0 font-mono text-fg-tertiary">{source}</span>{/if}
+			{#if source}<span class="min-w-0 truncate font-mono text-fg-tertiary">{source}</span>{/if}
 		</span>
-		<NoteStatusChip {status} class="ml-auto" />
+		<span class="shrink-0 text-label text-fg-tertiary tabular-nums">Note #{number}</span>
+		<NoteStatusChip {status} />
 		<IconButton label="More" size="sm"><MoreHorizontal /></IconButton>
 	</header>
 	<div class="flex flex-col gap-4 px-3 py-3">

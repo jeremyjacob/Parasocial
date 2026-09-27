@@ -3,7 +3,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { PartObject, decodeId, type EntityKind, type EntityRef, type PartData } from "./part";
-import { CadControls, type NavPreset, type CamState } from "./controls";
+import { CadControls, type NavPreset, type TrackpadScroll, type CamState } from "./controls";
 import { ViewCube, VIEW_DIRS } from "./viewcube";
 import { LIGHT, type ViewerTheme } from "./theme";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
@@ -66,6 +66,9 @@ function viewCubeShadeMax(face: readonly number[], background: string): number {
 }
 /** Faces-only render layer: the first phase of the AO frame (see renderShaded). */
 const FACE_LAYER = 2;
+/** Pick snap radii, CSS px: a vertex this close to the cursor wins, then an edge. */
+const VERTEX_SNAP = 3;
+const EDGE_SNAP = 6;
 /** The grid renders before the scene, without contributing depth. */
 const BACKGROUND_LAYER = 3;
 
@@ -82,6 +85,8 @@ export class Viewer {
   private slots: (string | null)[] = [];
   private theme: ViewerTheme;
   private resolution = new THREE.Vector2(1, 1);
+  /** device px per CSS px, shared with the parts (vertex dots are sized in CSS px) */
+  private pixelRatio = { value: 1 };
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
   private pickBuf = new Uint8Array(4 * 13 * 13);
   private needsRender = true;
@@ -103,7 +108,7 @@ export class Viewer {
   private showGrid = true;
   private showOrigin = true;
   private envTex: THREE.Texture | null = null;
-  filter: SelectionFilter = { face: true, edge: true, vertex: false, part: false };
+  filter: SelectionFilter = { face: true, edge: true, vertex: true, part: false };
   private listeners: { [k: string]: Set<(e: any) => void> } = {};
   private ro: ResizeObserver;
   private disposed = false;
@@ -128,6 +133,8 @@ export class Viewer {
   private transforms = new Map<string, THREE.Matrix4>();
   /** Overlap volumes between parts, red; each rides along with its first part. */
   private overlaps = new THREE.Group();
+  /** Overlap volumes show through geometry covering them (x-ray), or only where they're the nearest surface. */
+  private overlapsOnTop = true;
 
   constructor(container: HTMLElement, o: ViewerOptions = {}) {
     this.container = container;
@@ -280,7 +287,7 @@ export class Viewer {
       this.scene.remove(prev.group);
       prev.dispose();
     }
-    const p = new PartObject(d, slot, this.resolution);
+    const p = new PartObject(d, slot, this.resolution, this.pixelRatio);
     this.parts.set(d.id, p);
     this.colors.set(d.id, new THREE.Color(d.color));
     if (d.dim) this.dimmed.add(d.id);
@@ -353,7 +360,7 @@ export class Viewer {
   private exists(r: EntityRef) {
     const p = this.parts.get(r.part);
     if (!p) return false;
-    const n = r.kind === "face" ? p.data.mesh.faceRanges.length / 2 : r.kind === "edge" ? p.data.mesh.edgeRanges.length / 2 : 0;
+    const n = r.kind === "face" ? p.data.mesh.faceRanges.length / 2 : r.kind === "edge" ? p.data.mesh.edgeRanges.length / 2 : r.kind === "vertex" ? (p.data.vertices?.length ?? 0) : 0;
     return r.index < n;
   }
 
@@ -397,14 +404,16 @@ export class Viewer {
     const selEdges: number[] = [];
     const preEdges: number[] = [];
     const errEdges: number[] = [];
+    const marks: { vertex: number; color: THREE.Color }[] = [];
     const partSelected = this.selection.refs.some((r) => r.part === id && (r.kind as string) === "part");
-    for (const r of this.errors) if (r.part === id) r.kind === "face" ? (tints.set(r.index, { color: err, amount: 0.55 }), errEdges.push(...(p.data.faceEdges[r.index] ?? []))) : r.kind === "edge" && errEdges.push(r.index);
+    for (const r of this.errors) if (r.part === id) r.kind === "face" ? (tints.set(r.index, { color: err, amount: 0.55 }), errEdges.push(...(p.data.faceEdges[r.index] ?? []))) : r.kind === "edge" ? errEdges.push(r.index) : r.kind === "vertex" && marks.push({ vertex: r.index, color: err });
     for (const r of this.selection.refs)
       if (r.part === id) {
         if (r.kind === "face") {
           tints.set(r.index, { color: selFill, amount: SELECTED_TINT });
           selEdges.push(...(p.data.faceEdges[r.index] ?? []));
         } else if (r.kind === "edge") selEdges.push(r.index);
+        else if (r.kind === "vertex") marks.push({ vertex: r.index, color: selStroke });
       }
     // a selected part reads as orange: the same tint as a selected face, plus the outline
     if (partSelected) for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, { color: selFill, amount: SELECTED_TINT });
@@ -412,6 +421,7 @@ export class Viewer {
     if (this.preselect?.part === id) {
       if (this.preselect.kind === "face") preEdges.push(...(p.data.faceEdges[this.preselect.index] ?? []));
       else if (this.preselect.kind === "edge") preEdges.push(this.preselect.index);
+      else if (this.preselect.kind === "vertex") marks.push({ vertex: this.preselect.index, color: pre });
       else if ((this.preselect.kind as string) === "part") for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, tints.get(f) ?? { color: pre, amount: 0.12 });
     }
     const hide = p.data.hiddenEdges;
@@ -422,6 +432,7 @@ export class Viewer {
     if (this.mode === "hiddenLine") p.paint(new THREE.Color(t.hiddenLineFill), tints, 0, bg);
     else p.paint(base, tints, dim, bg);
     p.setOverlay(stroke);
+    p.setMarkers(marks);
     p.overlay.userData.active = stroke.some((s) => s.edges.length);
     this.applyMode(p);
   }
@@ -521,6 +532,16 @@ export class Viewer {
     this.controls.preset = p;
   }
 
+  /** What a two-finger trackpad scroll does (shift swaps to the other). */
+  setTrackpadScroll(m: TrackpadScroll) {
+    this.controls.trackpadScroll = m;
+  }
+
+  /** Navigate on wheel/pinch over `root`'s overlays too (pins, pills, toolbars). Returns a disposer. */
+  listenOn(root: HTMLElement) {
+    return this.controls.listenOn(root);
+  }
+
   // ---------- views ----------
   /** Model bounds of visible parts. */
   bounds(parts?: string[]): THREE.Box3 {
@@ -578,6 +599,9 @@ export class Viewer {
         const s = p.data.mesh.edgeRanges[r.index * 2],
           c = p.data.mesh.edgeRanges[r.index * 2 + 1];
         for (let i = s; i < s + c; i++) box.expandByPoint(v.fromArray(p.data.mesh.edgePositions, i * 3).applyMatrix4(p.group.matrix));
+      } else if (r.kind === "vertex") {
+        const at = p.data.vertices?.[r.index];
+        if (at) box.expandByPoint(v.set(...at).applyMatrix4(p.group.matrix));
       } else if (p.faceMesh.geometry.boundingBox) box.union(p.faceMesh.geometry.boundingBox.clone().applyMatrix4(p.group.matrix));
     }
     if (!box.isEmpty()) this.fit(box, animate, (orient && this.selectionNormal()) || undefined);
@@ -694,7 +718,8 @@ export class Viewer {
 
   /**
    * Where parts overlap (interference): red volumes, each mesh in part `a`'s coordinates. Drawn
-   * solid where visible and faintly through whatever covers them, so buried overlaps still read.
+   * solid where visible and, when `overlapsOnTop`, faintly through whatever covers them so buried
+   * overlaps still read.
    */
   setInterferences(list: { a: string; b: string; mesh: import("./part").PartMesh }[]) {
     for (const o of [...this.overlaps.children]) {
@@ -711,12 +736,13 @@ export class Viewer {
       // through other geometry: faint
       const ghost = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: red, transparent: true, opacity: 0.28, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
       ghost.renderOrder = 8;
+      ghost.userData.ghost = true;
       // where it's the nearest surface: solid, lit a little so its shape reads
       const solid = new THREE.Mesh(g, withDepthBias(new THREE.MeshStandardMaterial({ color: red, emissive: red, emissiveIntensity: 0.35, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }), 0.0005));
       solid.renderOrder = 9;
       const eg = new THREE.BufferGeometry();
       eg.setAttribute("position", new THREE.BufferAttribute(x.mesh.edgePositions, 3));
-      const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: red, transparent: true, opacity: 0.9, depthTest: false }));
+      const edges = new THREE.LineSegments(eg, withDepthBias(new THREE.LineBasicMaterial({ color: red, transparent: true, opacity: 0.9 }), 0.001));
       edges.renderOrder = 10;
       grp.add(ghost, solid, edges);
       grp.userData.part = x.a;
@@ -763,11 +789,102 @@ export class Viewer {
   // ---------- section view ----------
   private section: THREE.Plane | null = null;
 
-  /** Clip the model by a plane (normal points at the kept side), or null to clear. */
+  /** Clip the model by a plane (normal points at the removed side), or null to clear. */
   setSection(plane: { origin: number[]; normal: number[] } | null) {
     this.renderer.localClippingEnabled = true;
     this.section = plane ? new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3().fromArray(plane.normal).normalize().negate(), new THREE.Vector3().fromArray(plane.origin)) : null;
     for (const p of this.parts.values()) this.applyClip(p);
+    this.syncOverlaps();
+    this.sectionArrow.visible = !!this.section;
+    this.requestRender();
+  }
+
+  /**
+   * The section handle: an arrow standing on the plane (opposite the model's centre), pointing at
+   * the cut-away side. It keeps a constant size on screen; the app drags it
+   * along its axis to move the plane and clicks it to flip.
+   */
+  private sectionArrow = (() => {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.92, depthTest: false, depthWrite: false, toneMapped: false });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.7, 12).translate(0, 0.35, 0), mat);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.3, 20).translate(0, 0.85, 0), mat);
+    const base = new THREE.Mesh(new THREE.SphereGeometry(0.065, 16, 12), mat);
+    // generous, invisible grab target around the whole arrow
+    const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.1, 8).translate(0, 0.5, 0), new THREE.MeshBasicMaterial({ visible: false }));
+    hit.name = "hit";
+    g.add(shaft, head, base, hit);
+    for (const c of g.children) c.renderOrder = 30;
+    g.visible = false;
+    return g;
+  })();
+  private sectionArrowHover = false;
+  private static readonly ARROW_PX = 64;
+
+  /** Place and size the section arrow for this frame. */
+  private syncSectionArrow() {
+    const a = this.sectionArrow,
+      pl = this.section;
+    if (!pl) return void (a.visible = false);
+    if (!a.parent) this.scene.add(a);
+    a.visible = true;
+    const b = this.bounds();
+    const c = b.isEmpty() ? new THREE.Vector3() : b.getCenter(new THREE.Vector3());
+    pl.projectPoint(c, a.position);
+    a.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pl.normal.clone().negate());
+    this.camera.updateMatrixWorld();
+    a.scale.setScalar(this.worldPerPx(a.position) * Viewer.ARROW_PX * (this.sectionArrowHover ? 1.12 : 1));
+    ((a.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).color.set(this.sectionArrowHover ? this.theme.measureHover : this.theme.measure);
+  }
+
+  /** World units per CSS pixel at a point. */
+  private worldPerPx(p: THREE.Vector3) {
+    const cam = this.camera,
+      h = Math.max(this.container.clientHeight, 1);
+    if ((cam as THREE.PerspectiveCamera).isPerspectiveCamera) {
+      const depth = -p.clone().applyMatrix4(cam.matrixWorldInverse).z;
+      return (2 * Math.max(depth, 1e-6) * Math.tan(THREE.MathUtils.degToRad((cam as THREE.PerspectiveCamera).fov / 2))) / h;
+    }
+    const o = cam as THREE.OrthographicCamera;
+    return (o.top - o.bottom) / o.zoom / h;
+  }
+
+  /** Is the section arrow under this screen point (CSS px)? */
+  sectionArrowAt(x: number, y: number): boolean {
+    if (!this.section || !this.sectionArrow.visible) return false;
+    this.syncSectionArrow();
+    this.sectionArrow.updateMatrixWorld(true);
+    const rc = new THREE.Raycaster();
+    rc.ray.copy(this.rayAt(x, y));
+    return rc.intersectObject(this.sectionArrow.getObjectByName("hit")!, false).length > 0;
+  }
+
+  setSectionArrowHover(on: boolean) {
+    if (on === this.sectionArrowHover) return;
+    this.sectionArrowHover = on;
+    this.requestRender();
+  }
+
+  /**
+   * Where the pointer is along the section arrow's axis (world units toward the kept side, from
+   * the arrow's base), or null when looking straight down the axis.
+   */
+  sectionAxisAt(x: number, y: number): number | null {
+    if (!this.section) return null;
+    const ray = this.rayAt(x, y),
+      u = this.section.normal,
+      b0 = this.bounds(),
+      w = this.section.projectPoint(b0.isEmpty() ? new THREE.Vector3() : b0.getCenter(new THREE.Vector3()), new THREE.Vector3()).sub(ray.origin);
+    const b = u.dot(ray.direction),
+      den = 1 - b * b;
+    if (den < 1e-4) return null;
+    return (b * ray.direction.dot(w) - u.dot(w)) / den;
+  }
+
+  /** Draw overlap volumes on top of the geometry covering them (x-ray), or depth-tested like any surface. */
+  setOverlapsOnTop(on: boolean) {
+    if (on === this.overlapsOnTop) return;
+    this.overlapsOnTop = on;
     this.syncOverlaps();
     this.requestRender();
   }
@@ -779,6 +896,8 @@ export class Viewer {
       o.visible = !!this.parts.get(a)?.group.visible && !!this.parts.get(b)?.group.visible;
       o.traverse((c: any) => {
         if (!c.material) return;
+        if (c.userData.ghost) c.visible = this.overlapsOnTop;
+        if (c.isLineSegments) c.material.depthTest = !this.overlapsOnTop;
         c.material.clippingPlanes = this.section ? [this.section] : null;
         c.material.needsUpdate = true;
       });
@@ -793,8 +912,8 @@ export class Viewer {
     h >>>= 0;
     const angles = [45, 135, 60, 120, 30, 150, 75, 105];
     const scales = [1, 0.75, 1.3];
-    // ~20 lines across a part's cut, whatever its size
-    const spacing = Math.max(p.faceMesh.geometry.boundingSphere?.radius ?? 1, 1e-3) / 16;
+    // ~80 lines across a part's bounding diameter, whatever its size (the shader fades them out if they get too dense on screen)
+    const spacing = Math.max(p.faceMesh.geometry.boundingSphere?.radius ?? 1, 1e-3) / 40;
     p.setClip([this.section], { angle: (angles[h % angles.length] * Math.PI) / 180, spacing: spacing * scales[(h >>> 8) % scales.length], pixelRatio: this.renderer.getPixelRatio() });
   }
 
@@ -848,10 +967,10 @@ export class Viewer {
     if (a && b) {
       const g = new LineGeometry();
       g.setPositions([...a.toArray(), ...b.toArray()]);
-      const line = new Line2(g, withDepthBias(new LineMaterial({ color: new THREE.Color(this.theme.accent), linewidth: 2, resolution: this.resolution, worldUnits: false, depthTest: false, transparent: true }), 0.001) as LineMaterial);
+      const line = new Line2(g, withDepthBias(new LineMaterial({ color: new THREE.Color(this.theme.measure), linewidth: 2, resolution: this.resolution, worldUnits: false, depthTest: false, transparent: true }), 0.001) as LineMaterial);
       line.renderOrder = 7;
       const r = Math.max(0.3, a.distanceTo(b) * 0.012);
-      const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(this.theme.accent), depthTest: false, transparent: true });
+      const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(this.theme.measure), depthTest: false, transparent: true });
       for (const p of [a, b]) {
         const d = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), dotMat);
         d.position.copy(p);
@@ -937,52 +1056,86 @@ export class Viewer {
     const dpr = this.renderer.getPixelRatio();
     const W = this.canvas.width,
       H = this.canvas.height;
-    const R = 6; // 13x13 window
+    // snap radii in device px: a vertex within VERTEX_SNAP CSS px wins, then an edge within EDGE_SNAP
+    const vSnap = VERTEX_SNAP * dpr,
+      eSnap = EDGE_SNAP * dpr;
+    const R = Math.ceil(Math.max(vSnap, eSnap));
     const size = R * 2 + 1;
     if (this.pickTarget.width !== size) this.pickTarget.setSize(size, size);
+    if (this.pickBuf.length !== size * size * 4) this.pickBuf = new Uint8Array(size * size * 4);
     const px = Math.round(x * dpr),
       py = Math.round(y * dpr);
+    const lines = this.mode !== "shaded";
     cam.setViewOffset(W, H, px - R, py - R, size, size);
-    this.renderIds(this.pickTarget, this.filter.edge && this.mode !== "shaded", this.filter.face || this.filter.part);
+    this.renderIds(this.pickTarget, this.filter.edge && lines, this.filter.face || this.filter.part, this.filter.vertex && lines, { edge: eSnap * 2 + 1, vertex: vSnap * 2 + 1 });
     cam.clearViewOffset();
     this.renderer.readRenderTargetPixels(this.pickTarget, 0, 0, size, size, this.pickBuf);
-    // an edge within ~5.5 device px wins (edges are thin); else whatever is under the cursor
+    // edges and vertices are thin: within their snap radius they win over the face under the cursor
+    type Hit = { d: number; id: NonNullable<ReturnType<typeof decodeId>> };
     let center: ReturnType<typeof decodeId> = null;
-    let bestEdge: { d: number; id: NonNullable<ReturnType<typeof decodeId>> } | null = null;
-    let bestAny: { d: number; id: NonNullable<ReturnType<typeof decodeId>> } | null = null;
+    let bestVert: Hit | null = null,
+      bestEdge: Hit | null = null,
+      bestAny: Hit | null = null;
+    const visibleVertices = new Map<string, boolean>();
     for (let j = 0; j < size; j++)
       for (let i = 0; i < size; i++) {
         const o = (j * size + i) * 4;
         const id = decodeId(this.pickBuf[o], this.pickBuf[o + 1], this.pickBuf[o + 2], this.pickBuf[o + 3]);
         if (!id) continue;
+        if (id.kind === "vertex") {
+          const key = `${id.slot}:${id.index}`;
+          if (!visibleVertices.has(key)) visibleVertices.set(key, this.vertexVisible(this.slots[id.slot]!, id.index));
+          if (!visibleVertices.get(key)) continue;
+        }
         const d = (i - R) ** 2 + (j - R) ** 2;
         if (d === 0) center = id;
-        if (id.kind === "edge" && d <= 30 && (!bestEdge || d < bestEdge.d)) bestEdge = { d, id };
-        if (!bestAny || d < bestAny.d) bestAny = { d, id };
+        if (id.kind === "vertex" && d <= vSnap * vSnap && (!bestVert || d < bestVert.d)) bestVert = { d, id };
+        if (id.kind === "edge" && d <= eSnap * eSnap && (!bestEdge || d < bestEdge.d)) bestEdge = { d, id };
+        if (id.kind !== "vertex" && (!bestAny || d < bestAny.d)) bestAny = { d, id };
       }
-    const best = { id: bestEdge?.id ?? center ?? (bestAny && bestAny.d <= 4 ? bestAny.id : null) };
+    // the disc proxies cover the cursor well beyond the vertex itself: only a snapped vertex counts
+    if (center?.kind === "vertex") center = null;
+    const best = { id: bestVert?.id ?? bestEdge?.id ?? center ?? (bestAny && bestAny.d <= 4 * dpr * dpr ? bestAny.id : null) };
     this.stats.lastPickMs = performance.now() - t0;
     if (!best?.id) return null;
     const part = this.slots[best.id.slot];
     if (!part) return null;
-    if (this.filter.part && !this.filter.face && !this.filter.edge) return { part, kind: "part" as any, index: 0 };
+    if (this.filter.part && !this.filter.face && !this.filter.edge && !this.filter.vertex) return { part, kind: "part" as any, index: 0 };
     if (best.id.kind === "face" && !this.filter.face) return this.filter.part ? { part, kind: "part" as any, index: 0 } : null;
     return { part, kind: best.id.kind, index: best.id.index };
+  }
+
+  /** A vertex disc can extend beyond an occluder's silhouette even when its center is hidden. */
+  private vertexVisible(part: string, index: number): boolean {
+    const p = this.parts.get(part);
+    const vertex = p?.data.vertices?.[index];
+    if (!p || !vertex) return false;
+    const point = new THREE.Vector3(...vertex).applyMatrix4(p.group.matrixWorld);
+    const screen = this.project(point);
+    if (!screen) return false;
+    const ray = this.rayAt(screen.x, screen.y);
+    const distance = ray.origin.distanceTo(point);
+    const rc = new THREE.Raycaster(ray.origin, ray.direction, 0, distance - Math.max(1, distance) * 1e-7);
+    for (const other of this.parts.values()) {
+      if (!other.group.visible) continue;
+      if (rc.intersectObject(other.faceMesh, false).some((hit) => !this.section || this.section.distanceToPoint(hit.point) >= 0)) return false;
+    }
+    return true;
   }
 
   /**
    * Render the ID buffer (pick materials; no background, helpers or markup) into `rt` with the
    * current camera, view offset included. Edges draw on top of faces within their pixel footprint.
    */
-  private renderIds(rt: THREE.WebGLRenderTarget, edges: boolean, faces: boolean) {
+  private renderIds(rt: THREE.WebGLRenderTarget, edges: boolean, faces: boolean, vertices = false, px?: { edge: number; vertex: number }) {
     const r = this.renderer;
-    for (const p of this.parts.values()) p.pickMode(true, edges, faces);
+    for (const p of this.parts.values()) p.pickMode(true, edges, faces, vertices, px);
     const bg = this.scene.background,
       env = this.scene.environment,
       tm = r.toneMapping;
     this.scene.background = null;
     this.scene.environment = null;
-    this.grid.visible = this.triad.visible = this.markup.visible = false;
+    this.grid.visible = this.triad.visible = this.markup.visible = this.sectionArrow.visible = false;
     const overlaps = this.overlaps.visible;
     this.overlaps.visible = false;
     r.toneMapping = THREE.NoToneMapping;
@@ -996,21 +1149,24 @@ export class Viewer {
     this.scene.environment = env;
     this.restoreHelpers();
     this.markup.visible = true;
+    this.sectionArrow.visible = !!this.section;
     this.overlaps.visible = overlaps;
     for (const p of this.parts.values()) p.pickMode(false, false, false);
   }
 
   /**
-   * Box select (§8 Selection): `window` selects entities fully inside the rectangle (projected
-   * geometry); `crossing` selects anything visible that touches it (ID buffer over the rect).
+   * Box select (§8 Selection): both modes require visibility. `window` additionally requires
+   * the entity's projected geometry to be fully inside the rectangle.
    */
   pickRect(x0: number, y0: number, x1: number, y1: number, mode: "window" | "crossing"): EntityRef[] {
     const [ax, bx] = [Math.min(x0, x1), Math.max(x0, x1)];
     const [ay, by] = [Math.min(y0, y1), Math.max(y0, y1)];
     const out: EntityRef[] = [];
     const wantFace = this.filter.face,
-      wantEdge = this.filter.edge && this.mode !== "shaded";
+      wantEdge = this.filter.edge && this.mode !== "shaded",
+      wantVertex = this.filter.vertex && this.mode !== "shaded";
     if (mode === "window") {
+      const visible = new Set(this.pickRect(x0, y0, x1, y1, "crossing").map((r) => `${r.part}:${r.kind}:${r.index}`));
       const v = new THREE.Vector3();
       let place = new THREE.Matrix4();
       const inside = (arr: Float32Array, i: number) => {
@@ -1023,7 +1179,7 @@ export class Viewer {
         if (!p.group.visible) continue;
         const m = p.data.mesh;
         place = p.group.matrix;
-        if (this.filter.part && !wantFace && !wantEdge) {
+        if (this.filter.part && !wantFace && !wantEdge && !wantVertex) {
           let all = true;
           for (let i = 0; i < m.positions.length / 3 && all; i += 7) all = inside(m.positions, i);
           if (all) out.push({ part: id, kind: "part" as any, index: 0 });
@@ -1048,8 +1204,14 @@ export class Viewer {
             for (let i = s0; i < s0 + c && all; i++) all = inside(m.edgePositions, i);
             if (all) out.push({ part: id, kind: "edge", index: e });
           }
+        if (wantVertex)
+          for (const index of p.pickableVertices) {
+            v.fromArray(p.data.vertices![index]).applyMatrix4(place);
+            const s = this.project(v);
+            if (s && s.x >= ax && s.x <= bx && s.y >= ay && s.y <= by) out.push({ part: id, kind: "vertex", index });
+          }
       }
-      return out;
+      return out.filter((r) => visible.has(`${r.part}:${r.kind}:${r.index}`));
     }
     // crossing: render the ID pass over the rectangle
     const dpr = this.renderer.getPixelRatio();
@@ -1061,7 +1223,7 @@ export class Viewer {
     const rt = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.UnsignedByteType });
     const cam = this.camera;
     cam.setViewOffset(this.canvas.width, this.canvas.height, Math.round(ax * dpr), Math.round(ay * dpr), w, h);
-    this.renderIds(rt, wantEdge, wantFace || this.filter.part);
+    this.renderIds(rt, wantEdge, wantFace || this.filter.part, wantVertex);
     cam.clearViewOffset();
     const buf = new Uint8Array(rw * rh * 4);
     this.renderer.readRenderTargetPixels(rt, 0, 0, rw, rh, buf);
@@ -1072,34 +1234,23 @@ export class Viewer {
       if (!id) continue;
       const part = this.slots[id.slot];
       if (!part) continue;
-      const k = this.filter.part && !wantFace && !wantEdge ? `${part}:part:0` : `${part}:${id.kind}:${id.index}`;
+      const ref: EntityRef = this.filter.part && !wantFace && !wantEdge && !wantVertex
+        ? { part, kind: "part" as any, index: 0 }
+        : { part, kind: id.kind, index: id.index };
+      const k = `${ref.part}:${ref.kind}:${ref.index}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      const [pp, kind, idx] = k.split(":");
-      out.push({ part: pp, kind: kind as any, index: +idx });
+      if (ref.kind === "vertex" && !this.vertexVisible(part, ref.index)) continue;
+      out.push(ref);
     }
     this.requestRender();
     return out;
   }
 
-  /** Every face along the ray under (x, y), nearest first (Tab cycles through them). */
+  /** The visible face under (x, y); Tab must not expose faces behind another surface. */
   facesUnder(x: number, y: number): EntityRef[] {
-    const rc = new THREE.Raycaster();
-    const w = this.container.clientWidth,
-      h = this.container.clientHeight;
-    rc.setFromCamera(new THREE.Vector2((x / w) * 2 - 1, -(y / h) * 2 + 1), this.camera);
-    const out: EntityRef[] = [];
-    const seen = new Set<string>();
-    const meshes = [...this.parts.values()].filter((p) => p.group.visible).map((p) => p.faceMesh);
-    for (const hit of rc.intersectObjects(meshes, false)) {
-      const p = [...this.parts.values()].find((q) => q.faceMesh === hit.object)!;
-      const f = (hit.object as THREE.Mesh).geometry.getAttribute("faceId").getX(hit.face!.a);
-      const k = `${p.id}:${f}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push({ part: p.id, kind: "face", index: f });
-    }
-    return out;
+    const hit = this.pickPoint(x, y);
+    return hit ? [{ part: hit.part, kind: hit.kind, index: hit.index }] : [];
   }
 
   /**
@@ -1153,7 +1304,7 @@ export class Viewer {
       }
       best = vd < Infinity ? ray.closestPointToPoint(b, new THREE.Vector3()) : p.faceCenter(ref.index, new THREE.Vector3());
     }
-    return { ...ref, point: best.applyMatrix4(p.group.matrix), normal: bn?.transformDirection(p.group.matrix), local: best.clone() };
+    return { ...ref, point: best.clone().applyMatrix4(p.group.matrix), normal: bn?.transformDirection(p.group.matrix), local: best };
   }
 
   rayAt(x: number, y: number): THREE.Ray {
@@ -1230,6 +1381,10 @@ export class Viewer {
       const mid = s + Math.floor(c / 2);
       return new THREE.Vector3().fromArray(m.edgePositions, mid * 3).applyMatrix4(p.group.matrix);
     }
+    if (r.kind === "vertex") {
+      const at = p.data.vertices?.[r.index];
+      return at ? new THREE.Vector3(...at).applyMatrix4(p.group.matrix) : null;
+    }
     return p.faceMesh.geometry.boundingSphere?.center.clone().applyMatrix4(p.group.matrix) ?? null;
   }
 
@@ -1267,6 +1422,7 @@ export class Viewer {
       h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
     this.renderer.getDrawingBufferSize(this.resolution);
+    this.pixelRatio.value = this.renderer.getPixelRatio();
     for (const b of [this.aoFull, this.aoFast]) if (b) this.sizeAO(b, b === this.aoFull ? this.renderer.getPixelRatio() : 1);
     this.syncCameras();
     this.renderNow();
@@ -1483,6 +1639,7 @@ export class Viewer {
     this.groundGrid.update(cam, this.controls.target);
     const reach = (cam as THREE.PerspectiveCamera).isPerspectiveCamera ? (cam as THREE.PerspectiveCamera).far : cam.position.distanceTo(this.controls.target) * 50 + 1e3;
     this.triad.scale.setScalar(reach);
+    this.syncSectionArrow();
   }
 
   /** PNG of the current view (for note snapshots and renders). */

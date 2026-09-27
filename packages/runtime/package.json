@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@parasocial/api": "workspace:*",
+    "@parasocial/assembly": "workspace:*",
     "@parasocial/kernel": "workspace:*",
     "@parasocial/naming": "workspace:*",
     "fflate": "^0.8.3",

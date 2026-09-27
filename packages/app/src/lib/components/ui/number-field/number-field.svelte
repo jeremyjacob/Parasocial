@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+	import { startScrub, scrubCursor } from './scrub';
 	import type { LucideIcon } from '@lucide/svelte';
 	import { RotateCcw } from '@lucide/svelte';
 	import { cn } from '$lib/utils';
@@ -202,58 +204,50 @@
 
 	/* ---------------------------------------------------------------- scrubbing */
 
-	let startX = 0;
-	let acc = 0;
-	let moved = false;
+	let endScrub: (() => void) | undefined;
+	onDestroy(() => endScrub?.());
 
 	function onScrubDown(e: PointerEvent) {
-		if (disabled || e.button !== 0) return;
+		if (disabled || e.button !== 0 || scrubbing) return;
 		e.preventDefault();
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		startX = e.clientX;
-		acc = 0;
-		moved = false;
+		let acc = 0;
 		scrubbing = true;
+		endScrub = startScrub(e, {
+			onstart: () => { if (focused) commitDraft(); },
+			onmove: (dx, event) => {
+				acc += dx / pixelsPerStep;
+				const whole = Math.trunc(acc);
+				if (!whole) return;
+				acc -= whole;
+				setValue(value + whole * step * multiplier(event), undefined);
+				if (focused) draft = restText;
+				oninput?.(value);
+			},
+			onend: (moved, click) => {
+				scrubbing = false;
+				endScrub = undefined;
+				if (moved) oncommit?.(value, expression);
+				else if (click) inputEl?.focus();
+			}
+		});
 	}
 
-	function onScrubMove(e: PointerEvent) {
-		if (!scrubbing) return;
-		if (!moved) {
-			if (Math.abs(e.clientX - startX) < 3) return;
-			moved = true;
-			if (focused) commitDraft();
-			document.documentElement.style.cursor = 'ew-resize';
-		}
-		acc += e.movementX / pixelsPerStep;
-		const whole = Math.trunc(acc);
-		if (!whole) return;
-		acc -= whole;
-		const inc = step * multiplier(e);
-		setValue(value + whole * inc, undefined);
-		if (focused) draft = restText;
-		oninput?.(value);
+	function onHandleDoubleClick(e: MouseEvent) {
+		if (disabled || defaultValue === undefined) return;
+		e.preventDefault();
+		reset();
 	}
 
-	function onScrubUp(e: PointerEvent) {
-		if (!scrubbing) return;
-		scrubbing = false;
-		document.documentElement.style.cursor = '';
-		(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-		if (moved) oncommit?.(value, expression);
-		else inputEl?.focus(); // a click on the label focuses the field
-	}
 </script>
 
 <div class={cn('flex min-w-0 flex-col gap-1', className)}>
 	<div class={rowLabel ? 'grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2' : 'contents'}>
 	{#if rowLabel}
 		<span
-			class={cn('relative flex h-7 min-w-0 cursor-ew-resize touch-none items-center text-ui transition-colors duration-[var(--duration-fast)] select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
+			class={cn('relative flex h-7 min-w-0 touch-none items-center text-ui transition-colors duration-[var(--duration-fast)] select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
 			title={defaultValue !== undefined ? `${rowLabel} · default ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}${source ? ` · ${source}` : ''}` : rowLabel}
 			onpointerdown={onScrubDown}
-			onpointermove={onScrubMove}
-			onpointerup={onScrubUp}
-			onpointercancel={onScrubUp}
+			style:cursor={scrubCursor}
 			data-testid="param-label"
 		>
 			<span aria-hidden="true" class="override-dot" data-on={overridden ? '' : undefined}></span>
@@ -271,14 +265,14 @@
 			<span
 				aria-hidden="true"
 				class={cn(
-					'flex h-full w-7 shrink-0 cursor-ew-resize touch-none items-center justify-center text-ui text-fg-tertiary select-none',
+					'flex h-full w-7 shrink-0 touch-none items-center justify-center text-ui text-fg-tertiary select-none',
 					'transition-colors-fast group-hover/nf:text-fg-secondary',
 					scrubbing && 'text-fg'
 				)}
 				onpointerdown={onScrubDown}
-				onpointermove={onScrubMove}
-				onpointerup={onScrubUp}
-				onpointercancel={onScrubUp}
+				style:cursor={scrubCursor}
+				ondblclick={onHandleDoubleClick}
+				title={defaultValue !== undefined ? `Drag to adjust · Double-click to reset to ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}` : 'Drag to adjust'}
 			>
 				{#if Icon}<Icon />{:else}{label}{/if}
 			</span>

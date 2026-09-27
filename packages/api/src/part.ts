@@ -6,6 +6,7 @@ import { Solid } from "./solid";
 import type { Appearance, ColorSpec, Material, ParamDecl, Problem } from "./types";
 import { evaluate, UNITS, type Unit } from "./units";
 import type { ConnectorFrame } from "./connector";
+import type { Instance } from "./assembly";
 
 export type PartTools = {
   color: {
@@ -22,12 +23,31 @@ export type PartDef = {
   readonly __part: true;
   readonly name: string;
   readonly body: PartBody;
-  /** A connector of this part, for assembly joints: `revolute(body, lid, lid.at("hinge"))`. */
-  at(connector: string): ConnectorRef;
+  /**
+   * A connector of this part, for assembly joints: `revolute(body, lid, lid.at("hinge"))`, or
+   * connector to connector, `revolute(chassis.at("axle"), wheel.at("hub"))`. `index` picks one
+   * frame of a connector declared on several (a pattern of holes): `base.at("bolt", 2)`.
+   */
+  at(connector: string, index?: number): ConnectorRef;
 };
 
-/** A named connector on a part (declared in its body with `.connector(name, ...)`). */
-export type ConnectorRef = { readonly __connector: true; readonly part: PartDef; readonly name: string };
+/** A named connector on a part (declared in its body with `.connector(name, ...)`), or on a copy of one. */
+export type ConnectorRef = {
+  readonly __connector: true;
+  readonly part: PartDef;
+  readonly name: string;
+  /** Which frame of a connector declared on several (0-based). */
+  readonly index?: number;
+  /** The copy it's on (from `insert`); none for the part itself. */
+  readonly instance?: Instance;
+};
+
+/** @internal Check a connector name and index (shared by parts and their copies). */
+export function connectorRef(part: PartDef, what: string, connector: string, index?: number, instance?: Instance): ConnectorRef {
+  if (typeof connector !== "string" || !connector) throw new Error(`${what}.at(name): name the connector, e.g. .at("hinge")`);
+  if (index !== undefined && !(Number.isInteger(index) && index >= 0)) throw new Error(`${what}.at("${connector}", index): index must be a whole number from 0`);
+  return Object.freeze({ __connector: true as const, part, name: connector, ...(index !== undefined && { index }), ...(instance && { instance }) });
+}
 
 /**
  * Declare a part. A studio (`studios/*.ts`) exports one or more:
@@ -43,9 +63,8 @@ export function part(name: string, body: PartBody): PartDef {
     __part: true as const,
     name,
     body,
-    at(connector: string): ConnectorRef {
-      if (typeof connector !== "string" || !connector) throw new Error(`${name}.at(name): name the connector, e.g. .at("hinge")`);
-      return Object.freeze({ __connector: true as const, part: def, name: connector });
+    at(connector: string, index?: number): ConnectorRef {
+      return connectorRef(def, name, connector, index);
     },
   });
   return def;
@@ -61,6 +80,12 @@ export type ParamOptions = {
   options?: (number | string)[];
   label?: string;
   description?: string;
+  /**
+   * One value for the whole document: every part that declares this param (same name) reads the
+   * same override. For dimensions several parts must agree on, like the link lengths of a closed
+   * linkage. Declare it with the same default everywhere, e.g. in a lib/ helper.
+   */
+  shared?: boolean;
 };
 
 /**
@@ -88,6 +113,7 @@ export function param(name: string, defaultValue: number | string, opts: ParamOp
     options: opts.options,
     label: opts.label,
     description: opts.description,
+    shared: opts.shared || undefined,
     source: site && { file: site.file, line: site.line, col: site.col },
     overridden: false,
   };
@@ -96,7 +122,7 @@ export function param(name: string, defaultValue: number | string, opts: ParamOp
     if (opts.max !== undefined && defaultValue > opts.max) userError(`param "${name}" default ${defaultValue} is above its max ${opts.max}`);
   }
   let value: number | string = typeof defaultValue === "number" ? defaultValue * factor : defaultValue;
-  const ov = c.overrides[name];
+  const ov = opts.shared ? c.sharedOverrides[name] : c.overrides[name];
   if (ov !== undefined) {
     decl.expression = String(ov);
     try {
@@ -142,8 +168,8 @@ export type PartRun = {
   color?: ColorSpec;
   appearance?: Appearance;
   material?: Material;
-  /** Named frames for assembly joints (part coordinates). */
-  connectors?: Record<string, ConnectorFrame>;
+  /** Named frames for assembly joints (part coordinates): one per connector, or several for a pattern. */
+  connectors?: Record<string, ConnectorFrame[]>;
   params: ParamDecl[];
   problems: Problem[];
   ops: OpRecord[];

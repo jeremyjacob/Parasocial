@@ -1,0 +1,15 @@
+{
+  "volume": 402454.1203,
+  "area": 52910.71,
+  "faces": 5,
+  "edges": 7,
+  "vertices": 4,
+  "valid": true,
+  "faceNames": [
+    "lamp/disc · cap.end",
+    "lamp/disc · cap.start",
+    "lamp/disc · side · rim",
+    "lamp/foot · chamfer · ((lamp/disc · cap.start) & (lamp/disc · side · rim))",
+    "lamp/topRound · fillet · ((lamp/disc · cap.end) & (lamp/disc · side · rim))"
+  ]
+}

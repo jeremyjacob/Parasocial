@@ -37,10 +37,13 @@ export function runOp(spec: OpSpec): OpRecord {
   const frames = c.frames();
   const site = frames[0];
   if (spec.tag !== undefined) validateTag(spec.tag, site);
-  const id = spec.tag ? `${c.part}/${spec.tag}` : c.autoId(spec.type, frames);
+  // sketches have their own tag namespace, so `sketch(p, { tag: "rib" }).extrude(3, { tag: "rib" })` works
+  const sketchy = spec.type === "sketch" || spec.type === "path";
+  const id = spec.tag ? `${c.part}/${spec.tag}${sketchy ? ".sketch" : ""}` : c.autoId(spec.type, frames);
   if (spec.tag) {
-    if (c.tags.has(spec.tag)) fail(spec, `tag "${spec.tag}" is used twice in ${c.part}; tags must be unique within a part`, site, id);
-    c.tags.set(spec.tag, toLoc(site));
+    const key = sketchy ? `sketch:${spec.tag}` : spec.tag;
+    if (c.tags.has(key)) fail(spec, `${sketchy ? "sketch " : ""}tag "${spec.tag}" is used twice in ${c.part}; tags must be unique within a part`, site, id);
+    c.tags.set(key, toLoc(site));
   }
   const key = hash(stableStringify({ v: ENGINE_VERSION, type: spec.type, id, params: spec.params, inputs: spec.inputs.map((i) => i.key) }));
   let rec = c.cache.get(key);

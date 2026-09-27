@@ -1,0 +1,26 @@
+{
+  "volume": 11651.8299,
+  "area": 6444.6162,
+  "faces": 16,
+  "edges": 34,
+  "vertices": 20,
+  "valid": true,
+  "faceNames": [
+    "lamp:upperRod/upperRod · cap.end",
+    "lamp:upperRod/upperRod · cap.start",
+    "lamp:upperRod/upperRod · side · hole1",
+    "lamp:upperRod/upperRod · side · hole2",
+    "lamp:upperRod/upperRod · side · outline/end1",
+    "lamp:upperRod/upperRod · side · outline/end2",
+    "lamp:upperRod/upperRod · side · outline/side1",
+    "lamp:upperRod/upperRod · side · outline/side2",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.end) & (lamp:upperRod/upperRod · side · outline/end1))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.end) & (lamp:upperRod/upperRod · side · outline/end2))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.end) & (lamp:upperRod/upperRod · side · outline/side1))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.end) & (lamp:upperRod/upperRod · side · outline/side2))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.start) & (lamp:upperRod/upperRod · side · outline/end1))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.start) & (lamp:upperRod/upperRod · side · outline/end2))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.start) & (lamp:upperRod/upperRod · side · outline/side1))",
+    "lamp:upperRod/upperRodEdge · chamfer · ((lamp:upperRod/upperRod · cap.start) & (lamp:upperRod/upperRod · side · outline/side2))"
+  ]
+}

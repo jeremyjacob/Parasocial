@@ -34,6 +34,8 @@ export type ParamDecl = {
   options?: (number | string)[];
   label?: string;
   description?: string;
+  /** One value for the whole document (overrides live under the part id `*`). */
+  shared?: boolean;
   source?: SourceRef;
   overridden: boolean;
   /** The override expression as typed, if any. */

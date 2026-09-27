@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
-	import { Plus, Upload, FileBox, LoaderCircle, Pencil, Trash2 } from '@lucide/svelte';
+	import { Plus, Upload, FileBox, LoaderCircle, Pencil, Trash2, Bot } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Dialog, ConfirmDialog } from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
@@ -15,6 +15,7 @@
 	import { configureEngine, warmEngine } from '$lib/engine';
 	import { newID } from '$lib/zero';
 	import { relativeTime } from '$lib/format';
+	import ConnectAgentDialog from '$lib/workspace/ConnectAgentDialog.svelte';
 
 	let { data } = $props();
 	configureEngine(data.engineURL);
@@ -44,6 +45,7 @@
 	type Example = { slug: string; name: string; units: string; configurations: any[]; scripts: { path: string; content: string }[] };
 	let examples = $state.raw<Example[]>([]);
 	let creating = $state(false);
+	let connectOpen = $state(false);
 	let newOpen = $state(false);
 	let newName = $state('');
 	let importing = $state('');
@@ -188,6 +190,7 @@
 <div class="flex min-h-dvh flex-col bg-canvas">
 	<AppHeader user={data.user}>
 		{#snippet actions()}
+			<Button variant="ghost" onclick={() => (connectOpen = true)} data-testid="connect-agent-button"><Bot size={14} /> Connect agent</Button>
 			<Button variant="ghost" onclick={importZip} data-testid="import-zip"><Upload size={14} /> Import</Button>
 			<Button variant="primary" onclick={() => (newOpen = true)} data-testid="new-document"><Plus size={14} /> New document</Button>
 		{/snippet}
@@ -288,6 +291,8 @@
 		{/if}
 	</main>
 </div>
+
+<ConnectAgentDialog bind:open={connectOpen} />
 
 <ConfirmDialog
 	bind:open={deleteOpen}

@@ -8,17 +8,20 @@ const cfg = (globalThis as any).POOL as typeof POOL;
 let worker: Worker;
 let ready: Promise<any>;
 let nextId = 1;
-const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+const pending = new Map<number, { start: () => void; resolve: (v: any) => void; reject: (e: Error) => void }>();
 let docState: any[] = [];
 const meshes = new Map<string, any>(); // last regeneration result per part (with mesh)
 
 function spawn() {
   worker = new Worker("/engine/worker.js", { type: "module" });
+  const spawned = worker;
   ready = new Promise((resolve, reject) => {
     worker.onmessage = (ev) => {
+      if (spawned !== worker) return;
       const m = ev.data;
       if (m?.type === "ready") return resolve(m.info);
       if (m?.type === "fatal") return reject(new Error(m.error));
+      if (m?.type === "started") return pending.get(m.id)?.start();
       if (m?.type === "result") {
         const p = pending.get(m.id);
         if (!p) return;
@@ -37,15 +40,20 @@ async function call(req: any): Promise<any> {
   else if (req.op === "setScript" || req.op === "setOverrides") docState.push(req);
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    const timer = req.op === "regenerate" ? setTimeout(async () => {
-      // runaway script: replace the worker, replay the document, fail this call
-      pending.delete(id);
-      worker.terminate();
-      spawn();
-      for (const r of docState) worker.postMessage({ id: -1, req: r });
-      reject(Object.assign(new Error(`regeneration timed out after ${cfg.timeoutMs / 1000} s: the script may loop forever`), { timeout: true }));
-    }, cfg.timeoutMs) : null;
-    pending.set(id, { resolve: (v) => (timer && clearTimeout(timer), resolve(v)), reject: (e) => (timer && clearTimeout(timer), reject(e)) });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const start = () => {
+      if (timer !== null || (req.op !== "regenerate" && req.op !== "regenerateSnapshot")) return;
+      timer = setTimeout(() => {
+        // Every pending call belongs to the terminated worker, including queued calls.
+        worker.terminate();
+        const error = Object.assign(new Error(`regeneration timed out after ${cfg.timeoutMs / 1000} s: the script may loop forever`), { timeout: true });
+        for (const p of pending.values()) p.reject(error);
+        pending.clear();
+        spawn();
+        for (const r of docState) worker.postMessage({ id: -1, req: r });
+      }, cfg.timeoutMs);
+    };
+    pending.set(id, { start, resolve: (v) => (timer !== null && clearTimeout(timer), resolve(v)), reject: (e) => (timer !== null && clearTimeout(timer), reject(e)) });
     worker.postMessage({ id, req });
   });
 }
@@ -69,7 +77,7 @@ async function call(req: any): Promise<any> {
 const PALETTE = ["#8e939a", "#93b29c", "#8d8fd6", "#d2c27f", "#5fa6a4", "#cf96a4"];
 
 /** Render the current geometry to a PNG data URL. */
-(globalThis as any).render = async (o: { parts?: string[]; view?: string; camera?: { position: number[]; target: number[]; up: number[]; ortho?: boolean }; highlight?: EntityRef[]; width?: number; height?: number; style?: "shaded" | "shadedEdges" | "wireframe" | "hiddenLine" }) => {
+(globalThis as any).render = async (o: { parts?: string[]; view?: string; camera?: { position: number[]; target: number[]; up: number[]; ortho?: boolean }; section?: { origin: number[]; normal: number[] }; highlight?: EntityRef[]; width?: number; height?: number; style?: "shaded" | "shadedEdges" | "wireframe" | "hiddenLine" }) => {
   const w = o.width ?? 1024,
     h = o.height ?? 768;
   const host = document.createElement("div");
@@ -79,10 +87,11 @@ const PALETTE = ["#8e939a", "#93b29c", "#8d8fd6", "#d2c27f", "#5fa6a4", "#cf96a4
   let i = 0;
   for (const [id, r] of meshes) {
     if (o.parts && !o.parts.includes(id)) continue;
-    v.setPart({ id, mesh: r.mesh, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e: any, j: number) => (e.seam ? [j] : []))), color: r.color?.kind === "rgb" ? r.color.hex : PALETTE[i++ % PALETTE.length] });
+    v.setPart({ id, mesh: r.mesh, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e: any, j: number) => (e.seam || e.smooth ? [j] : []))), color: r.color?.kind === "rgb" ? r.color.hex : PALETTE[i++ % PALETTE.length] });
   }
   if (o.style) v.setDisplayMode(o.style);
   if (o.highlight?.length) v.setSelection(o.highlight);
+  if (o.section) v.setSection(o.section);
   if (o.camera) v.setCameraState(o.camera as any, false);
   else v.setView((o.view as any) ?? "iso", false);
   v.renderNow();

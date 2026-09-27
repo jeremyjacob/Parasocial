@@ -95,6 +95,16 @@
         "zod": "^4.6.5",
       },
     },
+    "packages/mcp-local": {
+      "name": "@parasocial/mcp-local",
+      "version": "0.0.0",
+      "bin": {
+        "parasocial-mcp": "src/main.ts",
+      },
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "1.30.1",
+      },
+    },
     "packages/naming": {
       "name": "@parasocial/naming",
       "version": "0.0.0",
@@ -107,6 +117,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@parasocial/api": "workspace:*",
+        "@parasocial/assembly": "workspace:*",
         "@parasocial/kernel": "workspace:*",
         "@parasocial/naming": "workspace:*",
         "fflate": "^0.8.3",
@@ -518,6 +529,8 @@
     "@parasocial/kernel": ["@parasocial/kernel@workspace:packages/kernel"],
 
     "@parasocial/mcp": ["@parasocial/mcp@workspace:packages/mcp"],
+
+    "@parasocial/mcp-local": ["@parasocial/mcp-local@workspace:packages/mcp-local"],
 
     "@parasocial/naming": ["@parasocial/naming@workspace:packages/naming"],
 

@@ -3,7 +3,7 @@
  *
  * Svelte transitions run through the Web Animations API, so the global reduced-motion CSS
  * rule doesn't reach them: every helper here collapses to 0 ms when the user asks for reduced
- * motion. They're all short (≤ 250 ms), ease-out, and never gate input: elements are
+ * motion. They're all short (≤ 250 ms, `pop` ≤ 350 ms), ease-out, and never gate input: elements are
  * interactive from their first frame and an interrupted transition reverses from where it is.
  */
 import type { TransitionConfig } from 'svelte/transition';
@@ -51,6 +51,37 @@ export function rise(node: Element, { duration = motion.durationFast, delay = 0,
 		delay: prefersReducedMotion() ? 0 : delay,
 		easing: easeOut,
 		css: (t, u) => `opacity:${t};transform:translate(${u * x}px,${u * y}px) scale(${scale + (1 - scale) * t})`
+	};
+}
+
+/** Ease-out with a small overshoot (a gentle spring settling). */
+function backOut(t: number) {
+	const s = 1.4,
+		u = t - 1;
+	return u * u * ((s + 1) * u + s) + 1;
+}
+
+/**
+ * Drop in from above with a slight springy overshoot, for a toolbar that appears on a command
+ * (section view). Pair with `popOut`.
+ */
+export function pop(node: Element, { duration = 340, delay = 0, y = -14, scale = 0.9, origin }: Opts = {}): TransitionConfig {
+	if (origin) (node as HTMLElement).style.transformOrigin = origin;
+	return {
+		duration: dur(duration),
+		delay: prefersReducedMotion() ? 0 : delay,
+		easing: backOut,
+		css: (t, u) => `opacity:${Math.min(1, t * 2.5)};transform:translateY(${u * y}px) scale(${scale + (1 - scale) * t})`
+	};
+}
+
+/** `pop` in reverse, quicker: lifts away, shrinking a touch. */
+export function popOut(_node: Element, { duration = 160, delay = 0, y = -10, scale = 0.94 }: Opts = {}): TransitionConfig {
+	return {
+		duration: dur(duration),
+		delay,
+		easing: (t) => t * t,
+		css: (t, u) => `opacity:${t};transform:translateY(${u * y}px) scale(${scale + (1 - scale) * t})`
 	};
 }
 

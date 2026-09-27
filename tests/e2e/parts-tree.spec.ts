@@ -26,28 +26,26 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   await expect(studio.getByRole("group").getByRole("treeitem")).toHaveText([/Base/, /Lid/, /Clip/]);
   await page.screenshot({ path: "test-results/parts-tree.png" });
 
-  // selecting a part bolds its studio's name; clicking the studio row selects the studio itself (not each part)
+  // the studio in the viewport is bold; selecting a part tints its row; there's no isolate toggle
   const row = (name: string) => studio.locator("div.group\\/row", { hasText: name }).first();
-  await row("Lid").click();
   await expect(row("Stack").locator(".row-main")).toHaveClass(/font-medium/);
-  await expect(row("Stack")).not.toHaveClass(/bg-accent-subtle/);
+  await expect(studio).toHaveAttribute("aria-current", "true");
+  await row("Lid").click();
+  await expect(row("Lid")).toHaveClass(/bg-accent-subtle/);
+  await row("Base").click();
+  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket:lid", "bracket"]);
+  await row("Lid").click();
+  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket"]);
+  await wsEval(page, "ws.additiveSelection = false");
+  await row("Lid").click();
+  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket:lid"]);
+  await row("Base").click({ modifiers: ["Shift"] });
+  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket:lid", "bracket"]);
+  await expect(studio.getByRole("button", { name: /Isolate/ })).toHaveCount(0);
+  await expect(studio.getByRole("button", { name: "Hide Stack" })).toHaveCount(0);
+  // clicking the studio row selects the studio itself (its properties), not its parts
   await row("Stack").click();
-  await expect(row("Stack")).toHaveClass(/bg-accent-subtle/);
-  await expect(row("Lid")).not.toHaveClass(/bg-accent-subtle/);
-  expect(await wsEval(page, "ws.selection.length")).toBe(3);
-  await page.screenshot({ path: "test-results/parts-tree-studio-selected.png", clip: { x: 0, y: 40, width: 260, height: 300 } });
-
-  // isolating the studio: the icon stays on the studio row, not its parts
-  await studio.getByRole("button", { name: "Isolate Stack" }).click();
-  expect(await wsEval(page, "ws.isolated")).toEqual(["bracket", "bracket:lid", "bracket:clip"]);
-  await expect(row("Lid").getByRole("button", { name: /Show all parts|Isolate/ })).toHaveAttribute("aria-pressed", "false");
-  await studio.getByRole("button", { name: "Show all parts" }).click();
-  // isolating one part greys out the rest of the tree
-  await row("Clip").getByRole("button", { name: "Isolate Clip" }).click();
-  await expect(row("Lid").locator(".row-main")).toHaveClass(/text-fg-tertiary/);
-  await expect(row("Clip").locator(".row-main")).not.toHaveClass(/text-fg-tertiary/);
-  await page.screenshot({ path: "test-results/parts-tree-isolated.png", clip: { x: 0, y: 40, width: 260, height: 300 } });
-  await row("Clip").getByRole("button", { name: "Show all parts" }).click();
+  expect(await wsEval(page, "ws.selection.length")).toBe(0);
 
   // context menu: Export… (no Hide / Isolate); ⌘E exports the selection
   await row("Lid").click({ button: "right" });
@@ -56,7 +54,8 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   await page.getByRole("menuitem", { name: "Export…" }).click();
   await expect(page.getByTestId("export-dialog")).toContainText("Lid");
   await page.keyboard.press("Escape");
-  await row("Stack").click();
+  // nothing selected: ⌘E exports the studio in the viewport
+  await wsEval(page, "ws.clearSelection()");
   await page.keyboard.press("ControlOrMeta+e");
   await expect(page.getByTestId("export-dialog")).toContainText("Stack (3 parts)");
   const download = page.waitForEvent("download");
@@ -64,9 +63,44 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   expect((await download).suggestedFilename()).toBe("Stack.step");
   await page.keyboard.press("Escape");
 
-  // the studio row's eye hides all of its parts; collapsing hides the children
-  await studio.getByRole("button", { name: "Hide Stack" }).click();
-  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket", "bracket:lid", "bracket:clip"]);
+  // a part row's eye hides it; collapsing hides the children
+  await row("Clip").getByRole("button", { name: "Hide Clip" }).click();
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip"]);
   await studio.getByRole("button", { name: "Collapse Stack" }).click();
   await expect(studio.getByRole("group")).toHaveCount(0);
+});
+
+
+test("visibility toggles share undo and redo, with one entry per selection action", async ({ page, user }) => {
+  void user;
+  await openExample(page, "bracket", ["bracket"]);
+  await wsEval(page, `(ws.openBuffer("studios/bracket.ts"), ws.editBuffer("studios/bracket.ts", ${JSON.stringify(MULTI)}), ws.saveBuffer("studios/bracket.ts"))`);
+  await page.waitForFunction(() => {
+    const ws = (globalThis as any).__ws;
+    return ["bracket", "bracket:lid", "bracket:clip"].every((p) => ws.results?.[p]?.ok) && Object.values(ws.regen).every((s) => s === "idle");
+  }, null, { timeout: 45_000 });
+  await wsEval(page, "ws.additiveSelection = false");
+  const studio = page.getByTestId("parts-panel").locator('[data-studio="studios/bracket.ts"]');
+  const row = (name: string) => studio.locator("div.group\\/row", { hasText: name }).first();
+  await row("Clip").getByRole("button", { name: "Hide Clip" }).click();
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip"]);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(row("Clip").getByRole("button", { name: "Hide Clip" })).toBeAttached();
+  expect(await wsEval(page, "ws.hidden")).toEqual([]);
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect(row("Clip").getByRole("button", { name: "Show Clip" })).toBeVisible();
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip"]);
+
+  // H toggles a mixed selection in one step; Alt+H shows all in one step.
+  await row("Base").click();
+  await row("Clip").click({ modifiers: ["Shift"] });
+  await page.keyboard.press("h");
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket"]);
+  await page.keyboard.press("ControlOrMeta+z");
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip"]);
+  await row("Lid").getByRole("button", { name: "Hide Lid" }).click();
+  await page.keyboard.press("Alt+h");
+  expect(await wsEval(page, "ws.hidden")).toEqual([]);
+  await page.keyboard.press("ControlOrMeta+z");
+  expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip", "bracket:lid"]);
 });

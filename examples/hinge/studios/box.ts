@@ -3,7 +3,7 @@ import { part, param, box, cylinder, mm } from "parasocial";
 export const name = "Box";
 
 // A box with a hinged lid on top and a drawer below. The parts are modeled closed, in place;
-// studios/mechanism.ts says how they move (drag the lid or the drawer in the viewport).
+// studios/mechanism.ts assembles copies of them (open it and drag the lid or the drawer).
 const W = 70;
 const D = 50;
 const WALL = 2;

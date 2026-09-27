@@ -15,6 +15,10 @@ export type ViewerTheme = {
   ghost: string;
   /** compare ghost edges, other non-selection emphasis (the one accent blue) */
   accent: string;
+  /** measure dimensions and the section arrow (the app's --accent) */
+  measure: string;
+  /** section arrow under the pointer (the app's --accent-hover) */
+  measureHover: string;
   axisX: string;
   axisY: string;
   axisZ: string;
@@ -37,6 +41,8 @@ export const LIGHT: ViewerTheme = {
   error: "#e5484d",
   ghost: "#71717a",
   accent: "#1273eb",
+  measure: "#1170e6",
+  measureHover: "#0d64d2",
   axisX: "#e5484d",
   axisY: "#30a46c",
   axisZ: "#3e63dd",
@@ -58,6 +64,8 @@ export const DARK: ViewerTheme = {
   error: "#ff6369",
   ghost: "#a1a1aa",
   accent: "#5a9dff",
+  measure: "#2470e6",
+  measureHover: "#2d7af0",
   axisX: "#ff6369",
   axisY: "#3dd68c",
   axisZ: "#6e8cff",

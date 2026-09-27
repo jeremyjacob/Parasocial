@@ -72,6 +72,46 @@ test.describe("workspace", () => {
     await expect(page.getByTestId("cheatsheet")).toBeVisible();
   });
 
+  test("S starts a section at the selected face instead of the remembered plane", async ({ page }) => {
+    const p = await viewportPoint(page, 0.62, 0.55);
+    await page.mouse.click(p.x, p.y);
+    await expect(page.getByTestId("stable-name")).toHaveText("bracket/base · cap.end");
+    const face = await wsEval<{ origin: number[]; normal: number[] }>(page, "ws.viewer.facePlane(ws.selection[0])");
+    expect(face).not.toBeNull();
+    await page.evaluate(() => localStorage.setItem("parasocial:section", JSON.stringify({ axis: "X", offset: 123, flip: true })));
+    await page.keyboard.press("s");
+    await expect(page.getByTestId("section-bar")).toBeVisible();
+    await expect.poll(async () => {
+      const cut = await wsEval<{ origin: number[]; normal: number[] } | null>(page, "ws.viewer.getSection()");
+      if (!cut) return Infinity;
+      return Math.abs(face.normal.reduce((d, n, k) => d + n * (cut.origin[k] - face.origin[k]), 0));
+    }).toBeLessThan(0.01); // allow the renderer's small bias to avoid z-fighting
+    const cut = await wsEval<{ normal: number[] }>(page, "ws.viewer.getSection()");
+    expect(cut.normal.reduce((d, n, k) => d + n * face.normal[k], 0)).toBeCloseTo(1);
+    await page.keyboard.press("s");
+    await expect(page.getByTestId("section-bar")).toHaveCount(0);
+    await expect.poll(() => wsEval(page, "ws.viewer.getSection()")).toBeNull();
+  });
+
+  test("section endpoints retain the whole model without a thin cut", async ({ page }) => {
+    await page.keyboard.press("s");
+    const bar = page.getByTestId("section-bar");
+    const slider = bar.getByRole("slider");
+    for (const [k, axis] of ["X", "Y", "Z"].entries()) {
+      await bar.getByRole("radio", { name: axis, exact: true }).click();
+      for (const flip of [false, true]) {
+        const bound = await wsEval<number>(page, `ws.results.bracket.bbox.${flip ? "min" : "max"}[${k}]`);
+        await slider.focus();
+        await slider.press(flip ? "Home" : "End");
+        // The retained endpoint must put the cutting plane outside the model, not just round its label to the bound.
+        await expect.poll(() => wsEval<number>(page, `(${flip ? -1 : 1}) * (ws.viewer.getSection().origin[${k}] - ${bound})`)).toBeGreaterThan(0);
+        await slider.press(flip ? "ArrowRight" : "ArrowLeft");
+        await expect.poll(() => wsEval<number>(page, `(${flip ? -1 : 1}) * (ws.viewer.getSection().origin[${k}] - ${bound})`)).toBeLessThan(0);
+        await bar.getByRole("button", { name: "Flip", exact: true }).click();
+      }
+    }
+  });
+
   test("measure two faces, then note the measurement", async ({ page }) => {
     await page.keyboard.press("m");
     const a = await viewportPoint(page, 0.62, 0.55);
@@ -83,6 +123,23 @@ test.describe("workspace", () => {
     await expect(page.getByTestId("note-text")).toHaveValue(/mm/);
   });
 
+  test("C with a measurement selected drafts a note in place, even with the anchor off-screen", async ({ page }) => {
+    await page.keyboard.press("m");
+    const a = await viewportPoint(page, 0.62, 0.55);
+    await page.mouse.click(a.x, a.y);
+    const b = await viewportPoint(page, 0.45, 0.66);
+    await page.mouse.click(b.x, b.y);
+    await expect(page.getByTestId("measure-card")).toContainText("mm");
+    await page.keyboard.press("c");
+    await expect(page.getByTestId("note-composer")).toBeVisible();
+    expect(await wsEval(page, "ws.tool")).toBe("measure");
+    // an anchor projected off the left edge still opens the composer inside the viewport
+    await page.evaluate(() => (globalThis as any).__nc.startFromTargets((globalThis as any).__nc.draft.targets, { x: -600, y: 200 }));
+    const box = (await page.getByTestId("note-composer").boundingBox())!;
+    const vp = (await page.getByTestId("viewport").boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(vp.x);
+  });
+
   test("box select (window) and the context menu", async ({ page }) => {
     const a = await viewportPoint(page, 0.03, 0.03),
       b = await viewportPoint(page, 0.97, 0.97);
@@ -90,7 +147,9 @@ test.describe("workspace", () => {
     await page.mouse.down();
     await page.mouse.move(b.x, b.y, { steps: 6 });
     await page.mouse.up();
-    expect(await wsEval<number>(page, "ws.selection.filter(r => r.kind === 'face').length")).toBe(12);
+    const faces = await wsEval<number>(page, "ws.selection.filter(r => r.kind === 'face').length");
+    expect(faces).toBeGreaterThan(0);
+    expect(faces).toBeLessThan(12); // the bracket's rear faces are occluded
     const p = await viewportPoint(page, 0.62, 0.55);
     await page.mouse.click(p.x, p.y, { button: "right" });
     await expect(page.getByRole("menuitem", { name: "Select all from this operation" })).toBeVisible();

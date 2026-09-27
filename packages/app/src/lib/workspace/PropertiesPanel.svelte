@@ -1,13 +1,14 @@
 <script lang="ts">
-	import { Copy, ArrowUpRight, SlidersHorizontal } from '@lucide/svelte';
+	import { Copy, ArrowUpRight, SlidersHorizontal, RotateCw, MoveHorizontal, Cylinder, Move, Orbit, Link2 } from '@lucide/svelte';
 	import { PropertySection } from '$lib/components/ui/property';
 	import { Input } from '$lib/components/ui/input';
 	import { Select } from '$lib/components/ui/select';
 	import { IconButton } from '$lib/components/ui/button';
 	import { ColorSwatch } from '$lib/components/ui/color-swatch';
+	import { NumberField } from '$lib/components/ui/number-field';
 	import { toast } from '$lib/components/ui/toast';
 	import { mutators } from '@parasocial/sync';
-	import type { EntityDescription } from '@parasocial/runtime/protocol';
+	import { sourcePart, type AssemblyJoint, type EntityDescription } from '@parasocial/runtime/protocol';
 	import { theme } from '$lib/theme.svelte';
 	import { num } from '$lib/format';
 	import type { WorkspaceState } from './state.svelte';
@@ -51,6 +52,41 @@
 		ws.mode = 'code';
 	}
 
+	const JOINT_ICON = { revolute: RotateCw, slider: MoveHorizontal, cylindrical: Cylinder, planar: Move, ball: Orbit, fastened: Link2 } as const;
+	const JOINT_LABEL = { revolute: 'Revolute', slider: 'Slider', cylindrical: 'Cylindrical', planar: 'Planar', ball: 'Ball', fastened: 'Fastened' } as const;
+	/** Each of a joint's values: short label and unit (degrees, millimetres from where the parts are modeled). Ball joints aren't edited here. */
+	const DOF: Record<string, { label?: string; unit: '°' | 'mm' }[]> = {
+		revolute: [{ unit: '°' }],
+		slider: [{ unit: 'mm' }],
+		cylindrical: [{ label: 'θ', unit: '°' }, { label: 'd', unit: 'mm' }],
+		planar: [{ label: 'X', unit: 'mm' }, { label: 'Y', unit: 'mm' }, { label: 'θ', unit: '°' }]
+	};
+	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? id;
+	// a joint named inside an inserted assembly is saved as "corner@left/spin": shown "Corner left › Spin"
+	const jointName = (j: AssemblyJoint) => {
+		if (!j.named) return `${partName(j.a)} – ${partName(j.b)}`;
+		const scope = ws.scopeLabel(j.scope);
+		// assembly ids have no "/": the name starts with the scope below the assembly, then "/"
+		const own = scope ? j.name.slice(j.scope.length - j.scope.indexOf('/')) : j.name;
+		const cap = own[0].toUpperCase() + own.slice(1);
+		return scope ? `${scope} › ${cap}` : cap;
+	};
+
+	/** The studio in the viewport: its problems, and the joints that drive its assemblies (followers around a closed loop, and fastened joints, stay out). */
+	const studio = $derived(ws.studio);
+	const joints = $derived(
+		(studio?.assemblies ?? []).flatMap((a) =>
+			a.joints.filter((j) => ws.asm.drivers[a.id]?.includes(j.name) ?? j.type !== 'fastened').map((j) => ({ asm: a.id, joint: j, name: jointName(j), value: ws.asm.values[a.id]?.[j.name] ?? j.value }))
+		)
+	);
+	const problems = $derived.by(() => {
+		if (!studio) return [];
+		const asm = ws.asm.problems.filter((p) => studio.assemblies.some((a) => a.id === p.assembly)).map((p) => p.message);
+		const parts = studio.ids.flatMap((id) => (ws.results[id]?.problems ?? []).filter((p) => p.severity === 'error' || p.severity === 'warning').map((p) => `${partName(id)}: ${p.message}`));
+		return [...new Set([...asm, ...parts])];
+	});
+	const withValue = (v: number[], i: number, x: number) => v.map((y, k) => (k === i ? x : y));
+
 	let docName = $state('');
 	$effect(() => {
 		docName = ws.doc?.name ?? '';
@@ -63,6 +99,53 @@
 
 <div class="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="properties-panel">
 	{#if !sel.length}
+		{#if studio}
+			<PropertySection bodyClass="gap-0.5" title={studio.name} meta={studio.assemblies.length ? 'Assembly' : 'Studio'}>
+				<div class={row}><span class="text-fg-secondary">Script</span><button class="focus-ring flex items-center gap-1 truncate rounded-xs text-left text-accent hover:underline" onclick={() => reveal(studio.file)}>{studio.file} <ArrowUpRight size={12} /></button></div>
+				<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{studio.ids.length}</span></div>
+				{#if studio.assemblies.length}
+					<div class={row}><span class="text-fg-secondary">Joints</span><span class="tabular-nums">{studio.assemblies.reduce((n, a) => n + a.joints.length, 0)}</span></div>
+				{/if}
+				{#each problems as p (p)}
+					<p class="py-0.5 text-ui text-error" data-testid="studio-problem">{p}</p>
+				{/each}
+			</PropertySection>
+			{#if joints.length}
+				<PropertySection bodyClass="gap-1" title="Joints" meta={String(joints.length)}>
+					{#each joints as j (`${j.asm}/${j.joint.name}`)}
+						{@const dof = DOF[j.joint.type]}
+						<div class="grid min-h-7 grid-cols-[88px_minmax(0,1fr)] items-center gap-2 text-ui" data-joint={j.joint.name}>
+							<span class="truncate text-fg-secondary" title="{JOINT_LABEL[j.joint.type]} · {partName(j.joint.a)} – {partName(j.joint.b)}">{j.name}</span>
+							{#if dof}
+								<span class="flex min-w-0 gap-1">
+									{#each dof as d, i (i)}
+										{@const lim = j.joint.limits[i]}
+										<NumberField
+											size="sm"
+											class="min-w-0 flex-1"
+											icon={dof.length === 1 ? JOINT_ICON[j.joint.type] : undefined}
+											label={d.label}
+											unit={d.unit}
+											value={j.value[i] ?? 0}
+											defaultValue={j.joint.value[i] ?? 0}
+											min={lim?.min}
+											max={lim?.max}
+											step={1}
+											precision={d.unit === '°' ? 1 : 2}
+											aria-label={d.label ? `${j.name} ${d.label}` : j.name}
+											oninput={(x) => ws.asm.setJoint(j.asm, j.joint.name, withValue(j.value, i, x))}
+											oncommit={(x) => ws.asm.commitJoint(j.asm, j.joint.name, withValue(j.value, i, x), j.name)}
+										/>
+									{/each}
+								</span>
+							{:else}
+								<span class="tabular-nums text-fg-tertiary">{num(Math.hypot(...j.value), 1)}°</span>
+							{/if}
+						</div>
+					{/each}
+				</PropertySection>
+			{/if}
+		{/if}
 		<PropertySection bodyClass="gap-0.5" title="Document">
 			<label class={row}>
 				<span class="text-fg-secondary">Name</span>

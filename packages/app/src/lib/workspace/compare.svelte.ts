@@ -1,7 +1,7 @@
 // Compare (§8) and read-only version viewing (§8 Versions). Other versions regenerate in the
 // engine's snapshot instance; their meshes go straight to the viewer.
 import { mutators, type Version } from '@parasocial/sync';
-import type { PartResult } from '@parasocial/runtime/protocol';
+import { sourcePart, type PartResult } from '@parasocial/runtime/protocol';
 import { newID } from '$lib/zero';
 import type { WorkspaceState } from './state.svelte';
 
@@ -76,7 +76,11 @@ export class CompareController {
 		try {
 			const res = await this.regenerate(this.against, ws.parts);
 			ws.viewer.clearGhosts();
-			for (const [part, r] of res) ws.viewer.setGhost(part, r.mesh!);
+			// an assembly's instances ghost their source part's old geometry
+			for (const id of ws.shownParts) {
+				const r = res.get(sourcePart(id));
+				if (r) ws.viewer.setGhost(id, r.mesh!);
+			}
 			ws.viewer.setBlend(this.blend);
 		} catch (e) {
 			this.error = (e as Error).message;
@@ -114,8 +118,11 @@ export class CompareController {
 			this.viewScripts = v.scripts;
 			const res = await this.regenerate(id);
 			const dark = document.documentElement.dataset.theme === 'dark';
-			for (const part of ws.parts) if (!res.has(part)) ws.viewer.removePart(part);
-			for (const [part, r] of res) ws.viewer.setPart({ id: part, mesh: r.mesh!, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))), color: ws.partColor(part, dark), appearance: r.appearance });
+			for (const id of ws.shownParts) {
+				const r = res.get(sourcePart(id));
+				if (!r) ws.viewer.removePart(id);
+				else ws.viewer.setPart({ id, mesh: r.mesh!, faceEdges: r.faceEdges, vertices: r.vertices, hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam || e.smooth ? [i] : []))), color: ws.partColor(id, dark), appearance: r.appearance });
+			}
 		} catch (e) {
 			this.error = (e as Error).message;
 		} finally {

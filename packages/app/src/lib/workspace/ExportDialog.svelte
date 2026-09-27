@@ -7,7 +7,7 @@
 	import { toast } from '$lib/components/ui/toast';
 	import type { WorkspaceState } from './state.svelte';
 
-	/** `target`: the parts to export when the dialog opens (a part, a script's parts, the selection); empty = all. */
+	/** `target`: the parts to export when the dialog opens (a part, a studio's parts, the selection); empty = the studio in the viewport. */
 	let { ws, open = $bindable(false), target = [], onZip }: { ws: WorkspaceState; open?: boolean; target?: string[]; onZip: () => Promise<void> } = $props();
 	let what = $state('parts');
 	let scope = $state('all');
@@ -16,10 +16,10 @@
 
 	const nameOf = (p: string) => ws.results[p]?.name ?? p;
 	const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
-	/** Scopes: all parts, each multi-part studio, each part, and the opening target when it's none of those. */
+	/** Scopes: all parts, each multi-part studio (an assembly: its instances, where they're posed), each part, and the opening target when it's none of those. */
 	const scopes = $derived.by(() => {
 		const out: { value: string; label: string; parts: string[] }[] = [{ value: 'all', label: `All parts (${ws.parts.length})`, parts: ws.parts }];
-		for (const g of ws.partTree) if (g.parts.length > 1) out.push({ value: `studio:${g.file}`, label: `${g.name} (${g.parts.length} parts)`, parts: g.parts.map((p) => p.id) });
+		for (const g of ws.partTree) if (g.ids.length > 1) out.push({ value: `studio:${g.file}`, label: `${g.name} (${g.ids.length} parts)`, parts: g.ids });
 		for (const p of ws.parts) out.push({ value: `part:${p}`, label: nameOf(p), parts: [p] });
 		return out;
 	});
@@ -31,7 +31,7 @@
 	let wasOpen = false;
 	$effect(() => {
 		if (open && !wasOpen) {
-			const t = target.filter((p) => ws.parts.includes(p));
+			const t = (target.length ? target : ws.shownParts).filter((p) => ws.allParts.includes(p));
 			const match = t.length ? scopes.find((s) => s.value !== 'all' && sameSet(s.parts, t)) : null;
 			custom = t.length && !match && !sameSet(t, ws.parts) ? t : [];
 			scope = match?.value ?? (custom.length ? 'custom' : 'all');

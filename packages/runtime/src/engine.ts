@@ -1,11 +1,12 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, edgeTangent, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, declareAssembly, parseStack, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
+import { sourcePart } from "./protocol";
 import { zipSync, strToU8 } from "fflate";
 
 export type DocumentState = {
@@ -21,27 +22,64 @@ export type DocumentState = {
  */
 export type PartInfo = { id: string; file: string; export: string; name: string; studio: string };
 
-/** An assembly a studio exports (`export default assembly(...)`), with its joints resolved to part ids. */
+/**
+ * An assembly a studio exports (`export default assembly(...)`). It holds its own copies of the
+ * parts it joins (instances): `<assembly id>/<part id>` for a part named directly (placed where
+ * it's modeled), `<assembly id>/<part id>@<name>` for more copies from `insert`, and
+ * `<assembly id>/<sub id>@<name>/<part id>` for the parts of an inserted assembly (a scope). The
+ * source parts stay put in their studios. Joints and `fixed` name instances.
+ */
 export type AssemblyInfo = {
   id: string;
   file: string;
   export: string;
   name: string;
   studio: string;
-  /** Parts that never move (explicit `fix`; the solver also keeps each group's first part still). */
+  /** The assembly's copies of parts, inserted ones first, then in the order the script names them. */
+  instances: AssemblyInstance[];
+  /** Inserted assemblies, parents before the ones they insert. */
+  subs: AssemblySub[];
+  /** Instances that never move (explicit `fix`; the solver also keeps each group's first part still). */
   fixed: string[];
   joints: AssemblyJoint[];
   problems: Problem[];
 };
 
+/** An assembly's copy of a part: same geometry as `part`, moved by the assembly's joints. */
+export type AssemblyInstance = {
+  id: string;
+  part: string;
+  /** The scope it's in: the assembly's id, or an inserted assembly's (`AssemblySub.id`). */
+  scope: string;
+  /** The copy's name, from `insert(part, { name })`. */
+  name?: string;
+  /** Where the script placed it, in its scope's coordinates. */
+  place?: PartPose;
+};
+
+/** An inserted assembly: a scope its parts are laid out in, then placed in its parent scope as a whole. */
+export type AssemblySub = { id: string; parent: string; assembly: string; name?: string; place?: PartPose };
+
+/** A connector on a part, by name, and which of its frames when it has several. */
+export type ConnectorAt = { connector: string; index?: number };
+
 export type AssemblyJoint = {
   /** Stable key: dragged positions are saved under it. */
   name: string;
+  /** The script named it (`{ name: "tilt" }`); otherwise the name is the two part ids. */
+  named: boolean;
   type: JointType;
+  /** Instance ids. */
   a: string;
   b: string;
-  /** A connector declared in a part (resolved from that part's regeneration), or a frame in home coordinates. */
-  at: { part: string; connector: string } | { frame: ConnectorFrame };
+  /** The scope that declared it (the assembly, or an inserted one): frames are in its coordinates. */
+  scope: string;
+  /**
+   * Where it sits: a connector of a (source) part, resolved from its regeneration (`owner`: the
+   * instance it's on, where it's at home); a frame in the scope's home coordinates; or connector to
+   * connector (`mate`: one on a's part, one on b's; `flip` turns b's half a turn about its x).
+   */
+  at: ({ part: string; owner?: string } & ConnectorAt) | { frame: ConnectorFrame } | { mate: { a: ConnectorAt; b: ConnectorAt }; flip: boolean };
   limits: ({ min?: number; max?: number } | null)[];
   value: number[];
   overlap: boolean;
@@ -55,7 +93,7 @@ export type Interference = { a: string; b: string; volume: number; mesh?: MeshDa
 export type PartPose = { r: number[]; t: Vec3 };
 
 export type FaceMeta = { surface: string; area: number; center: Vec3; normal: Vec3; radius?: number; axis?: Vec3; origin?: Vec3 };
-export type EdgeMeta = { curve: string; length: number; mid: Vec3; radius?: number; direction?: Vec3; center?: Vec3; axis?: Vec3; seam?: boolean };
+export type EdgeMeta = { curve: string; length: number; mid: Vec3; radius?: number; direction?: Vec3; center?: Vec3; axis?: Vec3; seam?: boolean; /** faces meet tangent-continuously here (fillet boundary, coplanar split): not drawn */ smooth?: boolean };
 
 export type PartResult = {
   part: string;
@@ -71,8 +109,8 @@ export type PartResult = {
   color?: ColorSpec;
   appearance?: Appearance;
   material?: Material;
-  /** Named frames for assembly joints (part coordinates). */
-  connectors?: Record<string, ConnectorFrame>;
+  /** Named frames for assembly joints (part coordinates): one per connector, or several for a pattern. */
+  connectors?: Record<string, ConnectorFrame[]>;
   quality: MeshQuality;
   mesh?: MeshData;
   faces: FaceMeta[];
@@ -85,6 +123,11 @@ export type PartResult = {
   timings: { total: number; script: number; ops: number; mesh: number; cacheHits: number; cacheMisses: number };
   /** hash of the final op (derived-data cache key component) */
   key?: string;
+  /**
+   * The geometry is the one the caller already has (`known` matched `key`): mesh, faces, edges,
+   * vertices, faceEdges, bbox and mass were skipped; everything else is fresh.
+   */
+  unchanged?: boolean;
 };
 
 export type EntityDescription = {
@@ -132,16 +175,19 @@ export class Engine {
   private runs = new Map<string, PartRun>();
   /** last good record per part: the viewport never goes blank */
   private lastGood = new Map<string, OpRecord>();
+  /** Script paths each part's last regeneration read or looked for (see `affected`). */
+  private deps = new Map<string, Set<string>>();
   private seed = 1;
   /** Discovered parts (evaluating every studio's top level); null = stale. */
   private discovered: PartInfo[] | null = null;
   /** Last discovered parts per studio: a studio that fails to load keeps its parts (with the error). */
   private lastByFile = new Map<string, PartInfo[]>();
   /** Assemblies found by the last discovery, and which part id each discovered PartDef is. */
-  private assemblyDefs: { info: Omit<AssemblyInfo, "fixed" | "joints" | "problems">; def: AssemblyDef }[] = [];
+  private assemblyDefs: { info: Omit<AssemblyInfo, "instances" | "subs" | "fixed" | "joints" | "problems">; def: AssemblyDef }[] = [];
+  private assemblyIdOf = new Map<AssemblyDef, string>();
   private partIdOf = new Map<PartDef, string>();
   private assemblyCache: AssemblyInfo[] | null = null;
-  /** Dragged assembly positions: part -> transform from its modeled pose. */
+  /** Dragged assembly positions: instance -> transform from its modeled pose. */
   private poses = new Map<string, PartPose>();
   private interferenceCache = new Map<string, { volume: number; mesh?: MeshData }>();
 
@@ -191,6 +237,7 @@ export class Engine {
     const exportsOf = new Map(loaded);
     const out: PartInfo[] = [];
     this.assemblyDefs = [];
+    this.assemblyIdOf = new Map();
     this.partIdOf = new Map();
     this.assemblyCache = null;
     for (const f of files) {
@@ -211,7 +258,11 @@ export class Engine {
         list.push({ id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio });
       }
       for (const [key, v] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")])
-        if (isAssemblyDef(v)) this.assemblyDefs.push({ info: { id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio }, def: v });
+        if (isAssemblyDef(v) && !this.assemblyIdOf.has(v)) {
+          const id = key === "default" ? stem : `${stem}:${key}`;
+          this.assemblyIdOf.set(v, id);
+          this.assemblyDefs.push({ info: { id, file: f, export: key, name: v.name, studio }, def: v });
+        }
       // nothing exported yet: one placeholder part carries the "must export a part" error
       if (!list.length && !this.assemblyDefs.some((a) => a.info.file === f)) list.push({ id: stem, file: f, export: "default", name: stem, studio });
       this.lastByFile.set(f, list);
@@ -227,57 +278,150 @@ export class Engine {
   }
 
   /**
-   * Every assembly the studios export, with joints resolved to part ids. Evaluates the assembly
-   * bodies only (no geometry): connector frames come from each part's regeneration.
+   * Every assembly the studios export, flattened: the copies it names or inserts, the assemblies it
+   * inserts (their copies and joints included), joints resolved to instance ids. Evaluates the
+   * assembly bodies only (no geometry): connector frames come from each part's regeneration.
    */
   assemblies(): AssemblyInfo[] {
     this.partInfos();
     if (this.assemblyCache) return this.assemblyCache;
     const out: AssemblyInfo[] = [];
     for (const { info, def } of this.assemblyDefs) {
-      const a: AssemblyInfo = { ...info, fixed: [], joints: [], problems: [] };
+      const a: AssemblyInfo = { ...info, instances: [], subs: [], fixed: [], joints: [], problems: [] };
       out.push(a);
-      const problem = (message: string, source?: SourceRef) =>
-        a.problems.push({ severity: "error", kind: "runtime", message: source ? `${message} (${source.file.split("/").pop()}:${source.line})` : message, part: info.id, source: source ?? { file: info.file, line: 1 } });
-      let decl;
-      try {
-        decl = declareAssembly(def);
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        problem(err.message, sourceOf(err.stack ?? ""));
+      // a studio holds parts or assemblies, never both
+      const own = this.lastByFile.get(info.file) ?? [];
+      if (own.length) {
+        a.problems.push({ severity: "error", kind: "runtime", message: `a studio exports parts or assemblies, not both: move ${own.map((p) => `"${p.name}"`).join(", ")} to another studio and import ${own.length > 1 ? "them" : "it"} here`, part: info.id, source: { file: info.file, line: 1 } });
         continue;
       }
-      const idOf = (p: PartDef, source?: SourceRef) => {
-        const id = this.partIdOf.get(p);
-        if (!id) problem(`the part "${p.name}" isn't exported by a studio, so it can't be in an assembly`, source);
-        return id;
-      };
-      for (const p of decl.fixed) {
-        const id = idOf(p);
-        if (id && !a.fixed.includes(id)) a.fixed.push(id);
-      }
-      const used = new Map<string, number>();
-      for (const j of decl.joints) {
-        const source = sourceOf(j.stack);
-        const ia = idOf(j.a, source),
-          ib = idOf(j.b, source);
-        if (!ia || !ib) continue;
-        let at: AssemblyJoint["at"];
-        if ("connector" in j.at) {
-          const owner = idOf(j.at.connector.part, source);
-          if (!owner) continue;
-          at = { part: owner, connector: j.at.connector.name };
-        } else at = { frame: j.at.frame };
-        const base = j.name ?? `${ia}+${ib}`;
-        const n = (used.get(base) ?? 0) + 1;
-        used.set(base, n);
-        a.joints.push({ name: n > 1 ? `${base}#${n}` : base, type: j.type, a: ia, b: ib, at, limits: j.limits.map((r) => (r ? { min: r.min, max: r.max } : null)), value: j.value, overlap: j.overlap, source });
-      }
+      this.flatten(a, def, info.id, [def]);
     }
     return (this.assemblyCache = out);
   }
 
-  /** Dragged positions (transforms from the modeled pose); parts not listed sit where they're modeled. */
+  /** Add an assembly's copies and joints to `a`, in `scope` (the assembly itself, or where it's inserted). */
+  private flatten(a: AssemblyInfo, def: AssemblyDef, scope: string, stack: AssemblyDef[]) {
+    const problem = (message: string, source?: SourceRef) =>
+      a.problems.push({ severity: "error", kind: "runtime", message: source ? `${message} (${source.file.split("/").pop()}:${source.line})` : message, part: a.id, source: source ?? { file: a.file, line: 1 } });
+    let decl;
+    try {
+      decl = declareAssembly(def);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      problem(err.message, sourceOf(err.stack ?? ""));
+      return;
+    }
+    const partId = (p: PartDef, source?: SourceRef) => {
+      const id = this.partIdOf.get(p);
+      if (!id) problem(`the part "${p.name}" isn't exported by a studio, so it can't be in an assembly`, source);
+      return id;
+    };
+    // a handle's key in this scope: "box:lid", "box:lid@2", "wheel@fl/hub" (a part of an inserted assembly)
+    const keyOf = (h: Body | SubAssembly, source?: SourceRef): string | undefined => {
+      if (isPartDef(h)) return partId(h, source);
+      let base: string | undefined;
+      if ("__instance" in h) base = partId(h.of, source);
+      else {
+        base = this.assemblyIdOf.get(h.of);
+        if (!base) problem(`the assembly "${h.of.name}" isn't exported by a studio, so it can't be inserted`, source);
+      }
+      if (!base) return undefined;
+      if (h.name !== undefined) base += `@${h.name}`;
+      if (!h.within) return base;
+      const w = keyOf(h.within, source);
+      return w && `${w}/${base}`;
+    };
+    const has = (id: string) => a.instances.some((i) => i.id === id);
+    // the instance a handle names: this scope's own copy is made the first time the script names it;
+    // a part of an inserted assembly must be one of its copies
+    const inst = (h: Body, source?: SourceRef) => {
+      const key = keyOf(h, source);
+      if (!key) return undefined;
+      const id = `${scope}/${key}`;
+      if (!isPartDef(h) && h.within) {
+        if (!has(id)) return void problem(`"${h.within.of.name}" has no copy of "${h.of.name}"${h.name === undefined ? "" : ` named "${h.name}"`}`, source);
+        return id;
+      }
+      if (!has(id)) a.instances.push({ id, part: isPartDef(h) ? key : sourcePart(id), scope, ...(!isPartDef(h) && h.name !== undefined && { name: h.name }) });
+      return id;
+    };
+    const local = (id: string) => id.slice(scope.length + 1);
+
+    // copies in the order the script makes or names them; inserted assemblies flatten in place
+    for (const o of decl.order) {
+      if ("body" in o) {
+        if (isPartDef(o.body) || !o.body.within) inst(o.body);
+        continue;
+      }
+      const ins = o.insert;
+      const source = sourceOf(ins.stack);
+      const h = ins.handle;
+      if ("__instance" in h) {
+        const id = inst(h, source);
+        const i = id && a.instances.find((x) => x.id === id);
+        if (i && ins.place) i.place = ins.place;
+        continue;
+      }
+      if (stack.includes(h.of)) {
+        problem(`"${h.of.name}" inserts itself (${[...stack, h.of].map((d) => d.name).join(" → ")})`, source);
+        continue;
+      }
+      const key = keyOf(h, source);
+      if (!key) continue;
+      const sub = `${scope}/${key}`;
+      a.subs.push({ id: sub, parent: scope, assembly: this.assemblyIdOf.get(h.of)!, ...(h.name !== undefined && { name: h.name }), ...(ins.place && { place: ins.place }) });
+      this.flatten(a, h.of, sub, [...stack, h.of]);
+    }
+
+    const fixed: string[] = [];
+    for (const f of decl.fixed) {
+      if ("__subassembly" in f) {
+        const key = keyOf(f);
+        if (key) fixed.push(...a.instances.filter((i) => i.id.startsWith(`${scope}/${key}/`)).map((i) => i.id));
+        continue;
+      }
+      const id = inst(f);
+      if (id && !fixed.includes(id)) fixed.push(id);
+    }
+    // joints of an inserted assembly are named under it: "wheel@fl/spin"
+    const prefix = scope === a.id ? "" : `${scope.slice(a.id.length + 1)}/`;
+    const used = new Map<string, number>();
+    const push = (j: Omit<AssemblyJoint, "name">, base: string) => {
+      const full = prefix + base;
+      const n = (used.get(full) ?? 0) + 1;
+      used.set(full, n);
+      a.joints.push({ name: n > 1 ? `${full}#${n}` : full, ...j });
+    };
+    if (scope === a.id) for (const f of fixed) !a.fixed.includes(f) && a.fixed.push(f);
+    // in an inserted assembly, its fixed parts stay put relative to each other (the whole moves)
+    else for (const f of fixed.slice(1)) push({ named: false, type: "fastened", a: fixed[0], b: f, scope, at: { frame: { origin: [0, 0, 0], z: [0, 0, 1], x: [1, 0, 0] } }, limits: [], value: [], overlap: false }, `${local(fixed[0])}+${local(f)}`);
+
+    for (const j of decl.joints) {
+      const source = sourceOf(j.stack);
+      const ia = inst(j.a, source),
+        ib = inst(j.b, source);
+      if (!ia || !ib) continue;
+      if (ia === ib) {
+        problem(`${j.type}(a, b): a and b are the same copy (${local(ia)})`, source);
+        continue;
+      }
+      let at: AssemblyJoint["at"];
+      if ("connector" in j.at) {
+        const c = j.at.connector;
+        const part = partId(c.part, source);
+        if (!part) continue;
+        const owner = keyOf(bodyOf(c));
+        at = { part, connector: c.name, ...(c.index !== undefined && { index: c.index }), ...(owner && { owner: `${scope}/${owner}` }) };
+      } else if ("mate" in j.at) {
+        const [ca, cb] = j.at.mate;
+        at = { mate: { a: { connector: ca.name, ...(ca.index !== undefined && { index: ca.index }) }, b: { connector: cb.name, ...(cb.index !== undefined && { index: cb.index }) } }, flip: j.at.flip };
+      } else at = { frame: j.at.frame };
+      push({ named: j.name !== undefined, type: j.type, a: ia, b: ib, scope, at, limits: j.limits.map((r) => (r ? { min: r.min, max: r.max } : null)), value: j.value, overlap: j.overlap, source }, j.name ?? `${local(ia)}+${local(ib)}`);
+    }
+  }
+
+  /** Dragged positions of instances (transforms from the modeled pose); those not listed sit where they're modeled. */
   setPoses(poses: Record<string, PartPose>) {
     this.poses = new Map(Object.entries(poses).filter(([, p]) => validPose(p)));
   }
@@ -296,11 +440,17 @@ export class Engine {
   interferences(parts: string[], ignore: [string, string][] = []): Interference[] {
     const skip = new Set(ignore.flatMap(([a, b]) => [`${a}\u0000${b}`, `${b}\u0000${a}`]));
     const items = parts.flatMap((p) => {
-      const rec = this.shown(p);
+      // a part whose last run failed shows its last good geometry; the failed run's partial
+      // result may already be released by the op cache
+      const rec = this.runs.get(sourcePart(p))?.ok ? this.shown(p) : this.lastGood.get(sourcePart(p));
       if (!rec) return [];
-      const bb = boundingBox(rec.shape);
-      const pose = this.poses.get(p) ?? IDENTITY;
-      return [{ part: p, rec, box: worldBox(bb, pose), pose, volume: massProps(rec.shape).volume }];
+      try {
+        const bb = boundingBox(rec.shape);
+        const pose = this.poses.get(p) ?? IDENTITY;
+        return [{ part: p, rec, box: worldBox(bb, pose), pose, volume: massProps(rec.shape).volume }];
+      } catch {
+        return [];
+      }
     });
     const out: Interference[] = [];
     const live = new Set<string>();
@@ -341,22 +491,25 @@ export class Engine {
     return out;
   }
 
-  regenerate(part: string, quality: MeshQuality = "fine"): PartResult {
+  /** `known`: the key of the geometry the caller already has at this quality; if it's still current, meshing is skipped. */
+  regenerate(part: string, quality: MeshQuality = "fine", known?: string): PartResult {
+    // an assembly instance is its source part's geometry
+    if (sourcePart(part) !== part) return { ...this.regenerate(sourcePart(part), quality, known), part };
     const t0 = performance.now();
     const infos = this.partInfos();
     const info = infos.find((p) => p.id === part);
     const colon = part.indexOf(":");
     const file = info?.file ?? `studios/${colon < 0 ? part : part.slice(0, colon)}.ts`;
     const key = info?.export ?? (colon < 0 ? "default" : part.slice(colon + 1));
-    const partIndex = Math.max(0, infos.indexOf(info!));
     this.cache.begin();
+    const touched = new Set([file]);
     let def: PartDef | undefined;
     let problems: Problem[] = [];
     let run: PartRun | undefined;
     const tScript = performance.now();
     try {
       if (!this.scripts.has(file)) throw new ScriptError(`no script at ${file}`, file);
-      const mod = loadModule(file, { scripts: this.scripts, api: API_MODULE, seed: this.seed });
+      const mod = loadModule(file, { scripts: this.scripts, api: API_MODULE, seed: this.seed, touched });
       def = mod[key];
       if (!isPartDef(def))
         throw new ScriptError(
@@ -370,11 +523,12 @@ export class Engine {
       problems.push(scriptProblem(e, part, file));
     }
     if (def) {
-      const ctx = new PartContext({ part, file, cache: this.cache, overrides: this.overrides[part] ?? {}, units: this.units, partIndex, mapFrame: mapScriptFrame, isUserFile: (f) => /^(studios|lib)\//.test(f) });
+      const ctx = new PartContext({ part, file, cache: this.cache, overrides: this.overrides[part] ?? {}, sharedOverrides: this.overrides[SHARED] ?? {}, units: this.units, mapFrame: mapScriptFrame, isUserFile: (f) => /^(studios|lib)\//.test(f) });
       run = runPart(def, ctx);
       problems = run.problems;
       this.runs.set(part, run);
     }
+    this.deps.set(part, touched);
     const scriptMs = performance.now() - tScript;
     let rec = run?.record;
     if (rec && run?.ok) this.lastGood.set(part, rec);
@@ -404,7 +558,8 @@ export class Engine {
       timings: { total: 0, script: scriptMs, ops: run?.timings.ops ?? 0, mesh: 0, cacheHits: run?.timings.cacheHits ?? 0, cacheMisses: run?.timings.cacheMisses ?? 0 },
       key: rec?.key,
     };
-    if (rec) {
+    if (rec && known !== undefined && rec.key === known) result.unchanged = true;
+    else if (rec) {
       const tm = performance.now();
       scoped(() => {
         const bb = boundingBox(rec!.shape);
@@ -420,7 +575,7 @@ export class Engine {
       });
       result.edges = rec.topo.edges.items.map((_, i) => {
         const e = edgeOf(rec!, i);
-        return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, axis: e.axis, seam: isSeamEdge(rec!, i) || undefined };
+        return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, axis: e.axis, seam: isSeamEdge(rec!, i) || undefined, smooth: smoothEdge(rec!, i) || undefined };
       });
       result.vertices = rec.topo.vertices.items.map((_, i) => vertexOf(rec!, i));
       result.faceEdges = rec.topo.faceEdges.map((l) => [...l]);
@@ -433,6 +588,17 @@ export class Engine {
     return result;
   }
 
+  /**
+   * The parts a change to these script paths can affect: those whose last regeneration read (or
+   * looked for) one of them, and those never regenerated.
+   */
+  affected(paths: string[]): string[] {
+    return this.parts().filter((p) => {
+      const d = this.deps.get(p);
+      return !d || paths.some((x) => d.has(x));
+    });
+  }
+
   /** Validity check (BRepCheck) as warnings; slow-ish, so run after the mesh is on screen. */
   check(part: string): Problem[] {
     const rec = this.shown(part);
@@ -440,14 +606,14 @@ export class Engine {
     return isValid(rec.shape) ? [] : [{ severity: "warning", kind: "invalid", message: `${part} geometry is not valid (BRepCheck); a boolean or fillet may have produced bad topology`, part }];
   }
 
-  /** The record currently shown for a part (latest, or last good). */
+  /** The record currently shown for a part (latest, or last good); an instance shows its source part's. */
   shown(part: string): OpRecord | undefined {
-    const r = this.runs.get(part);
-    return r?.record ?? this.lastGood.get(part);
+    const r = this.runs.get(sourcePart(part));
+    return r?.record ?? this.lastGood.get(sourcePart(part));
   }
 
   run(part: string) {
-    return this.runs.get(part);
+    return this.runs.get(sourcePart(part));
   }
 
   /** Stable names for all entities of a part (lazily built; for cache metadata and describe). */
@@ -538,7 +704,7 @@ export class Engine {
 
   /** Ops whose call site is on `line` of `file` (Code mode: cursor → geometry). */
   opsAtLine(part: string, file: string, line: number): string[] {
-    const run = this.runs.get(part);
+    const run = this.run(part);
     if (!run) return [];
     return [...new Set(run.ops.filter((o) => o.callSite?.file === file && o.callSite?.line === line && o.type !== "sketch" && o.type !== "path").map((o) => o.id))];
   }
@@ -632,10 +798,33 @@ export class Engine {
 
 const STUDIO_FILE = /^studios\/[^/]+\.ts$/;
 
+/** The part id shared params' overrides are stored under. */
+export const SHARED = "*";
+
 /** `studios/case.ts` -> `case` (the default part's id, and the prefix of its named parts' ids). */
 export const studioStem = (file: string) => file.slice("studios/".length, -".ts".length);
 
 /** A studio's `export const name = "..."`, trimmed; undefined when absent, blank or not a string. */
+/**
+ * Two faces meeting G1-continuously along edge `e` (a closed edge on one face is a seam, not this),
+ * except at a fillet's boundary: that tangent edge is design intent and stays drawn.
+ */
+function smoothEdge(r: OpRecord, e: number): boolean {
+  const f = r.topo.edgeFaces[e] ?? [];
+  return f.length === 2 && !f.some((i) => isFilletFace(r, i)) && isSmoothEdge(r.topo.edges.items[e], r.topo.faces.items[f[0]], r.topo.faces.items[f[1]]);
+}
+
+/** Whether face `i` was made by a fillet, following it back through the ops that kept or modified it. */
+function isFilletFace(r: OpRecord, i: number): boolean {
+  for (;;) {
+    if (r.type === "fillet" && r.roles.face?.[i]) return true;
+    const o = (r.history.face[i] ?? []).filter((x) => x.kind === "face" && x.rel !== "generated").sort((a, b) => a.slot - b.slot || a.index - b.index)[0];
+    if (!o) return false;
+    r = r.inputs[o.slot];
+    i = o.index;
+  }
+}
+
 function studioName(exports: Record<string, any>): string | undefined {
   const n = exportEntries(exports).find(([k]) => k === "name")?.[1];
   return typeof n === "string" && n.trim() ? n.trim() : undefined;

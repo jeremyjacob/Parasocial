@@ -11,6 +11,7 @@ import { INSTRUCTIONS } from "./instructions";
 import { createOAuth, type OAuth } from "./oauth";
 import { API_DTS, EXAMPLES } from "./resources";
 import { createNoteEvents } from "./note-events";
+import { documentContext, DOCUMENT_GUIDANCE } from "./document-context";
 
 export type McpDeps = { db: Db; store: BlobStore; config: { appOrigin: string; secret: string }; pool?: PoolClient };
 
@@ -22,10 +23,12 @@ export function createMcp(deps: McpDeps) {
   const live = new Map<string, Live>();
   const noteEvents = createNoteEvents(deps.db);
 
-  function buildServer(session: Session) {
-    const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions: INSTRUCTIONS, capabilities: { tools: {}, resources: {} } });
+  async function buildServer(session: Session) {
+    const context = await documentContext(deps.db, session.userID, deps.config.appOrigin);
+    const instructions = `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
+    const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions, capabilities: { tools: {}, resources: {} } });
     registerTools(server, session, { db: deps.db, pool, store: deps.store, noteEvents, config: deps.config });
-    server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: INSTRUCTIONS, mimeType: "text/markdown" }] }));
+    server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}`, mimeType: "text/markdown" }] }));
     server.registerResource("api-types", "parasocial://api/parasocial.d.ts", { title: "Modeling API types (parasocial)", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
     server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
     server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
@@ -69,7 +72,7 @@ export function createMcp(deps: McpDeps) {
       noteCursors: new Map(),
       startedAt: Date.now(),
     };
-    const server = buildServer(session);
+    const server = await buildServer(session);
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: async (id) => {

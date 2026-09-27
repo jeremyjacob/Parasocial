@@ -214,3 +214,68 @@ export const only = part("Only", () => box(1, 1, 1));`,
   expect(e.parts().filter((p) => p.startsWith("case"))).toEqual(["case"]);
   expect(e.regenerate("case").problems[0].message).toContain("must export a part");
 });
+
+test("shared params: one override reaches every part that declares it", () => {
+  const e = new Engine();
+  const src = `import { part, param, box } from "parasocial";
+const link = () => param("link", 40, { shared: true });
+export default part("A", () => box(link(), 5, 5));
+export const b = part("B", () => box(link(), 5, 5).translate([0, 10, 0]));
+export const c = part("C", () => box(param("link", 40), 5, 5).translate([0, 20, 0]));
+`;
+  e.setDocument({ scripts: { "studios/l.ts": src }, overrides: { "*": { link: 60 } } });
+  const size = (p: string) => { const r = e.regenerate(p); return r.bbox!.max[0] - r.bbox!.min[0]; };
+  expect(size("l")).toBeCloseTo(60, 6);
+  expect(size("l:b")).toBeCloseTo(60, 6);
+  // a param of the same name that isn't shared keeps its own value
+  expect(size("l:c")).toBeCloseTo(40, 6);
+  expect(e.regenerate("l").params[0].shared).toBe(true);
+  expect(e.regenerate("l").params[0].overridden).toBe(true);
+});
+
+test("known geometry: an edit elsewhere skips meshing, a real change doesn't", () => {
+  const e = new Engine();
+  const scripts = { ...docFrom("bracket"), "studios/other.ts": `import { part, box } from "parasocial"; export default part("Other", () => box(10, 10, 10));` };
+  e.setDocument({ scripts });
+  const first = e.regenerate("bracket");
+  expect(first.unchanged).toBeUndefined();
+  // another studio changes: bracket's geometry is the same, so no mesh comes back
+  e.setScript("studios/other.ts", scripts["studios/other.ts"].replace("10, 10, 10", "20, 10, 10"));
+  const same = e.regenerate("bracket", "fine", first.key);
+  expect(same.unchanged).toBe(true);
+  expect(same.key).toBe(first.key);
+  expect(same.mesh).toBeUndefined();
+  expect(same.params.length).toBe(first.params.length);
+  // a different geometry comes back in full even when a key is given
+  e.setOverrides("bracket", { [first.params[0].name]: Number(first.params[0].value) + 5 });
+  const changed = e.regenerate("bracket", "fine", first.key);
+  expect(changed.unchanged).toBeUndefined();
+  expect(changed.key).not.toBe(first.key);
+  expect(changed.mesh!.indices.length).toBeGreaterThan(0);
+});
+
+test("affected: only parts that read (or looked for) a changed script", () => {
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "lib/b.ts": `export const h = 4;`,
+      "lib/a.ts": `import { h } from "./b"; export const size = () => h * 2;`,
+      "studios/uses.ts": `import { part, box } from "parasocial"; import { size } from "../lib/a"; export default part("Uses", () => box(size(), 10, 10));`,
+      "studios/lazy.ts": `import { part, box } from "parasocial"; export default part("Lazy", () => box(require("../lib/lazy").w, 5, 5));`,
+      "studios/lone.ts": `import { part, box } from "parasocial"; export default part("Lone", () => box(3, 3, 3));`,
+      "studios/broken.ts": `import { part, box } from "parasocial"; import { g } from "../lib/missing"; export default part("Broken", () => box(g, 1, 1));`,
+      "studios/syntax.ts": `import { part, box } from "parasocial"; import { s } from "../lib/bad"; export default part("Syntax", () => box(s, 1, 1));`,
+      "lib/bad.ts": `export const s = ;`,
+      "lib/lazy.ts": `export const w = 7;`,
+    },
+  });
+  // never regenerated: everything is affected
+  expect(e.affected(["lib/b.ts"]).sort()).toEqual(e.parts().sort());
+  for (const p of e.parts()) e.regenerate(p);
+  expect(e.affected(["studios/lone.ts"])).toEqual(["lone"]);
+  expect(e.affected(["lib/b.ts"])).toEqual(["uses"]); // two imports deep
+  expect(e.affected(["lib/lazy.ts"])).toEqual(["lazy"]); // required while the part builds
+  expect(e.affected(["lib/bad.ts"])).toEqual(["syntax"]); // failed to parse, still read
+  expect(e.affected(["lib/missing.ts"])).toEqual(["broken"]); // creating it can fix the import
+  expect(e.affected(["studios/other.ts"])).toEqual([]);
+});

@@ -1,10 +1,17 @@
+<script lang="ts" module>
+	/**
+	 * Drag-to-toggle (After Effects style): pressing an eye starts a paint with the state that press
+	 * set, and every row the pointer drags across takes that same state until release.
+	 */
+	let paint = $state<boolean | null>(null);
+</script>
+
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { Eye, EyeOff } from '@lucide/svelte';
 	import { cn } from '$lib/utils';
 	import { ColorSwatch } from '$lib/components/ui/color-swatch';
 	import { StatusBadge, type Status } from '$lib/components/ui/badge';
-	import IsolateIcon from './isolate-icon.svelte';
 
 	type Props = {
 		name: string;
@@ -13,12 +20,14 @@
 		/** Status text shown after the dot, for errors ("didn't regenerate"). */
 		statusLabel?: string;
 		visible?: boolean;
+		/** Show the eye toggle (default); off for rows that can't be hidden on their own. */
+		hideable?: boolean;
 		/** Hidden by its parent row: greyed, but the eye-off only shows on hover (the parent carries it). */
 		parentHidden?: boolean;
 		selected?: boolean;
 		/** Bold name without the selected background (e.g. a group whose children are selected). */
 		strong?: boolean;
-		/** Greyed out like a hidden row, without pinning the eye (e.g. outside an isolation). */
+		/** Greyed out like a hidden row, without pinning the eye (e.g. a studio not in the viewport). */
 		dimmed?: boolean;
 		/** Agent currently working on this part: subtle shimmer across the row. */
 		busy?: boolean;
@@ -30,11 +39,8 @@
 		actions?: Snippet;
 		/** Always-visible trailing content (e.g. an avatar of the agent editing). */
 		trailing?: Snippet;
-		onclick?: () => void;
+		onclick?: (event: MouseEvent) => void;
 		onVisibleChange?: (v: boolean) => void;
-		/** Isolate toggle (shown only when `onIsolateChange` is set). */
-		isolated?: boolean;
-		onIsolateChange?: (v: boolean) => void;
 		class?: string;
 	};
 	let {
@@ -43,6 +49,7 @@
 		status = 'ok',
 		statusLabel,
 		visible = $bindable(true),
+		hideable = true,
 		parentHidden = false,
 		selected = false,
 		strong = false,
@@ -54,26 +61,40 @@
 		trailing,
 		onclick,
 		onVisibleChange,
-		isolated = false,
-		onIsolateChange,
 		class: className
 	}: Props = $props();
 
-	function toggleVisible(e: MouseEvent) {
-		e.stopPropagation();
-		visible = !visible;
-		onVisibleChange?.(visible);
+	function setVisible(v: boolean) {
+		if (v === visible) return;
+		visible = v;
+		onVisibleChange?.(v);
 	}
 
-	function toggleIsolate(e: MouseEvent) {
+	function startPaint(e: PointerEvent) {
 		e.stopPropagation();
-		onIsolateChange?.(!isolated);
+		if (e.button !== 0) return;
+		e.preventDefault();
+		// touch captures the pointer to the pressed element; release so other rows get pointerenter
+		(e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+		paint = !visible;
+		setVisible(paint);
+		const end = () => {
+			paint = null;
+			removeEventListener('pointerup', end);
+			removeEventListener('pointercancel', end);
+		};
+		addEventListener('pointerup', end);
+		addEventListener('pointercancel', end);
+	}
+
+	function paintOver() {
+		if (paint !== null && hideable) setVisible(paint);
 	}
 
 	const toggleClass =
 		'inline-flex size-6 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg focus-ring aria-pressed:text-fg-secondary';
-	/** Toggles with a set state stay visible at rest (hidden, isolated). */
-	const pinned = $derived((!visible && !parentHidden) || isolated);
+	/** Toggles with a set state stay visible at rest (hidden). */
+	const pinned = $derived(hideable && !visible && !parentHidden);
 </script>
 
 <!-- 28px row. List selection is a blue tint (orange is only for 3D selection). -->
@@ -86,8 +107,9 @@
 		selected ? 'bg-accent-subtle' : 'hover:bg-hover',
 		className
 	)}
-	onpointerdown={(e) => e.button === 0 && onclick?.()}
-	onclick={(e) => e.detail === 0 && onclick?.()}
+	onpointerdown={(e) => e.button === 0 && onclick?.(e)}
+	onclick={(e) => e.detail === 0 && onclick?.(e)}
+	onpointerenter={paintOver}
 >
 	{#if busy}
 		<span
@@ -102,13 +124,13 @@
 			{#if leading}
 				{@render leading()}
 			{:else if color}
-				<ColorSwatch {color} size={12} class={cn((!visible || dimmed) && 'opacity-30')} />
+				<ColorSwatch color={dimmed ? 'var(--fg-disabled)' : color} size={12} class={cn(!visible && 'opacity-30', dimmed && "opacity-75")} />
 			{/if}
 		</span>
 	{/if}
 	<button
 		type="button"
-		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', visible && !dimmed ? 'text-fg' : 'text-fg-tertiary/60', (selected || strong) && 'font-medium')}
+		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', !visible ? 'text-fg-tertiary/60' : dimmed ? 'text-fg-secondary' : 'text-fg', (selected || strong) && 'font-medium')}
 		aria-current={selected ? 'true' : undefined}>{name}</button
 	>
 	<!--
@@ -135,24 +157,20 @@
 			)}
 		>
 			{#if actions}<!-- svelte-ignore a11y_no_static_element_interactions --><span onpointerdown={(e) => e.stopPropagation()} class={cn('flex items-center gap-0.5', pinned && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}>{@render actions()}</span>{/if}
-			{#if onIsolateChange}
+			{#if hideable}
 				<button
 					type="button"
-					aria-label={isolated ? 'Show all parts' : `Isolate ${name}`}
-					aria-pressed={isolated}
-					class={cn(toggleClass, pinned && !isolated && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
-					onpointerdown={(e) => e.stopPropagation()}
-					onclick={toggleIsolate}><IsolateIcon on={isolated} /></button
+					aria-label="{visible ? 'Hide' : 'Show'} {name}"
+					aria-pressed={!visible}
+					class={cn(toggleClass, 'touch-none', pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
+					onpointerdown={startPaint}
+					onclick={(e) => {
+						e.stopPropagation();
+						// pointer presses toggle on pointerdown; only keyboard activation lands here
+						if (e.detail === 0) setVisible(!visible);
+					}}>{#if visible}<Eye />{:else}<EyeOff />{/if}</button
 				>
 			{/if}
-			<button
-				type="button"
-				aria-label="{visible ? 'Hide' : 'Show'} {name}"
-				aria-pressed={!visible}
-				class={cn(toggleClass, pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
-				onpointerdown={(e) => e.stopPropagation()}
-				onclick={toggleVisible}>{#if visible}<Eye />{:else}<EyeOff />{/if}</button
-			>
 		</div>
 	</div>
 </div>

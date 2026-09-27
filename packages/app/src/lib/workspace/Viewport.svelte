@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { dev } from '$app/environment';
-	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors } from '@lucide/svelte';
+	import { Copy, EyeOff, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
@@ -19,9 +19,10 @@
 	import { newID } from '$lib/zero';
 	import * as THREE from 'three';
 	import Pins from './Pins.svelte';
+	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { pairReadouts, singleReadouts, type Readout } from './measure';
 	import NoteComposer from './NoteComposer.svelte';
-	import { rise, fadeOut } from '$lib/styles/motion';
+	import { rise, fadeOut, pop, popOut } from '$lib/styles/motion';
 
 	let { ws, nc, onAddStudio, onConnect, onOpenNote }: { ws: WorkspaceState; nc: NotesController; onAddStudio: () => void; onConnect: () => void; onOpenNote: (id: string) => void } = $props();
 
@@ -101,6 +102,12 @@
 		return () => (off(), clearInterval(id));
 	}
 
+	let stopOverlayNav: (() => void) | undefined;
+	/** A pinch anywhere in the workspace would zoom the whole page (Chrome: ctrl+wheel, Safari: gesture events). */
+	const noPageZoom = (e: Event) => {
+		if (e.type !== 'wheel' || (e as WheelEvent).ctrlKey) e.preventDefault();
+	};
+
 	onMount(() => {
 		window.addEventListener('keydown', onTab);
 		host.addEventListener('contextmenu', onContextCapture, { capture: true });
@@ -109,9 +116,14 @@
 		viewer = new Viewer(host, { theme: viewerTheme(dark), viewCubeInset: { top: 4, right: 8 } });
 		// a remount (HMR) takes over the previous viewer's meshes and camera
 		if (ws.attachViewer(viewer)) fitted = true;
+		// wheel/pinch over the overlays (pins, pills, toolbars) still navigates
+		stopOverlayNav = viewer.listenOn(host.parentElement ?? host);
+		window.addEventListener('wheel', noPageZoom, { passive: false });
+		window.addEventListener('gesturestart', noPageZoom);
 		(window as any).__viewer = viewer; // test hook
 		// no hover preselect while the camera is moving (orbit, pan, zoom, view cube)
 		viewer.on('moving', (on: boolean) => ((camMoving = on), on && onLeave()));
+		viewer.on('poses', () => poses++);
 		if (dev) stopFps = trackFps(viewer);
 		// re-apply any results that arrived before the viewer existed
 		ws.sync();
@@ -120,6 +132,9 @@
 		clearTimeout(hoverTimer);
 		stopFps?.();
 		window.removeEventListener('keydown', onTab);
+		window.removeEventListener('wheel', noPageZoom);
+		window.removeEventListener('gesturestart', noPageZoom);
+		stopOverlayNav?.();
 		ws.detachViewer();
 		viewer?.dispose();
 	});
@@ -138,8 +153,16 @@
 			const d = (a.detail ?? {}) as any;
 			if (typeof d.path === 'string') for (const p of ws.parts) if (ws.scriptOf(p) === d.path) working.add(p);
 			if (d.noteID) for (const t of ws.notes.find((n) => n.id === d.noteID)?.anchor.targets ?? []) if (t.part) working.add(t.part);
+			// a part's copies in assemblies are the same geometry
+			for (const p of [...working]) for (const c of ws.copiesOf(p)) working.add(c);
 		}
 		viewer?.setShimmer([...working]);
+	});
+
+	// the active studio's parts (or an assembly's instances) are what the viewer holds
+	$effect(() => {
+		ws.shownParts;
+		if (viewer) ws.untracked(() => ws.showStudio());
 	});
 
 	// display state -> viewer
@@ -215,10 +238,11 @@
 	}
 
 	function onMove(e: PointerEvent) {
+		if (arrowDrag) return sectionArrowMove(e);
 		if (partDrag && e.buttons & 1 && viewer) {
 			if (!partDrag.started) {
 				if (Math.hypot(e.clientX - partDrag.x, e.clientY - partDrag.y) <= 4) return;
-				if (!ws.asm.startDrag(partDrag.part, partDrag.local)) return void (partDrag = null);
+				if (!ws.asm.startDrag(partDrag.part, partDrag.local)) return void ((partDrag = null), (host.style.cursor = ''));
 				partDrag.started = true;
 				host.setPointerCapture(e.pointerId);
 				onLeave();
@@ -258,7 +282,7 @@
 	function strokeless(e: PointerEvent) {
 		const rr = host.getBoundingClientRect();
 		pointer = { x: e.clientX - rr.left, y: e.clientY - rr.top };
-		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !partDrag && !e.altKey && !viewer?.controls.spaceHeld && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
+		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !partDrag && !e.altKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
 			box = { x0: down.x - rr.left, y0: down.y - rr.top, x1: pointer.x, y1: pointer.y };
 		}
 		if (box) {
@@ -266,16 +290,28 @@
 			return;
 		}
 		if (!viewer || e.buttons || camMoving) return;
+		const onArrow = !!ws.section && ws.tool !== 'pencil' && viewer.sectionArrowAt(pointer.x, pointer.y);
+		viewer.setSectionArrowHover(onArrow);
+		if (onArrow) {
+			host.style.cursor = 'grab';
+			return onLeave();
+		}
 		stack = null;
 		if (ws.tool === 'pencil') return viewer.setPreselect(null);
 		const ref = pickAt(e);
 		host.style.cursor = ws.tool === 'select' && ref && ws.asm.movable(ref.part) ? 'grab' : '';
 		const h = ws.hover;
 		if (ref && h && ref.part === h.part && ref.kind === h.kind && ref.index === h.index) return clearTimeout(hoverTimer);
-		// the preselect waits for the pointer to linger briefly, so sweeping across faces stays calm
+		clearTimeout(hoverTimer);
+		// moving between entities preselects at once; coming onto the model from empty space waits
+		// for the pointer to linger briefly, so sweeping across the view stays calm
+		if (ref && h) {
+			ws.hover = ref;
+			viewer.setPreselect(ref);
+			return;
+		}
 		ws.hover = null;
 		viewer.setPreselect(null);
-		clearTimeout(hoverTimer);
 		if (ref) hoverTimer = setTimeout(() => ((ws.hover = ref), viewer?.setPreselect(ref)), HOVER_DELAY);
 	}
 
@@ -287,6 +323,7 @@
 
 	function onDown(e: PointerEvent) {
 		down = { x: e.clientX, y: e.clientY, button: e.button };
+		if (sectionArrowDown(e)) return;
 		if (ws.tool === 'pencil' && e.button === 0 && viewer) {
 			if (nc.eraser) return eraseAt(e);
 			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(viewer.camera.getWorldDirection(new THREE.Vector3()).negate(), viewer.controls.target);
@@ -297,12 +334,13 @@
 			renderMarkup();
 			return;
 		}
-		if (ws.tool === 'select' && e.button === 0 && viewer && !e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !viewer.controls.spaceHeld) {
+		if (ws.tool === 'select' && e.button === 0 && viewer && !e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
 			const r = host.getBoundingClientRect();
 			const hit = viewer.pickPoint(e.clientX - r.left, e.clientY - r.top);
 			if (hit?.local && ws.asm.movable(hit.part)) {
 				const facing = viewer.camera.getWorldDirection(new THREE.Vector3()).negate();
 				partDrag = { part: hit.part, local: [hit.local.x, hit.local.y, hit.local.z], plane: new THREE.Plane().setFromNormalAndCoplanarPoint(facing, hit.point), x: e.clientX, y: e.clientY, started: false };
+				host.style.cursor = 'grabbing';
 			}
 		}
 		// right-click targets the context menu (a Tab-cycled preselection wins, as for a click); it selects on release
@@ -310,9 +348,11 @@
 	}
 
 	async function onUp(e: PointerEvent) {
+		if (arrowDrag && e.button === 0) return sectionArrowUp(e);
 		if (partDrag && e.button === 0) {
 			const d = partDrag;
 			partDrag = null;
+			host.style.cursor = 'grab';
 			if (d.started) {
 				down = null;
 				host.releasePointerCapture?.(e.pointerId);
@@ -326,7 +366,13 @@
 			stroke = null;
 			down = null;
 			host.releasePointerCapture(e.pointerId);
-			if (!s.points.length || !s.part) return renderMarkup();
+			if (!s.points.length) return renderMarkup();
+			// Marks beside the model still belong to the current part; they needn't cross a face.
+			if (!s.part) {
+				s.part = nc.draft?.targets.find((t) => ws.shownParts.includes(t.ref.part))?.ref.part ?? ws.shownParts[0];
+				if (!s.part) return renderMarkup();
+				s.crossed.push({ ref: { part: s.part, kind: 'part' as any, index: 0 }, point: s.points[0] });
+			}
 			// stored in the part's coordinates, so the stroke moves with it in an assembly
 			const part = s.part;
 			s.points = s.points.map((p) => viewer!.toLocal(part, new THREE.Vector3(...p)).toArray() as [number, number, number]);
@@ -342,7 +388,7 @@
 			box = null;
 			down = null;
 			const refs = viewer.pickRect(b.x0, b.y0, b.x1, b.y1, b.x1 >= b.x0 ? 'window' : 'crossing');
-			ws.select(refs, e.shiftKey || e.metaKey || e.ctrlKey ? 'add' : 'replace');
+			ws.select(refs, ws.selectionMode(e, 'add'));
 			return;
 		}
 		if (!down || e.button !== 0 || down.button !== 0) return;
@@ -370,7 +416,7 @@
 		const ref = stack && ws.hover ? ws.hover : pickAt(e);
 		if (ws.tool === 'select' || ws.tool === 'measure') {
 			if (!ref) return !(e.shiftKey || e.metaKey || e.ctrlKey) && ws.clearSelection();
-			ws.select([ref], e.shiftKey || e.metaKey || e.ctrlKey || ws.tool === 'measure' ? 'toggle' : 'replace');
+			ws.select([ref], ws.tool === 'measure' ? 'toggle' : ws.selectionMode(e));
 			if (ws.tool === 'measure' && ws.selection.length > 2) ws.select(ws.selection.slice(-2));
 		}
 	}
@@ -381,7 +427,9 @@
 		const ref = pickAt(e);
 		if (!ref) return;
 		const part = { part: ref.part, kind: 'part' as any, index: 0 };
-		ws.select([part], e.shiftKey || e.metaKey || e.ctrlKey ? 'add' : 'replace');
+		// Promote this body's faces/edges to the whole part while retaining other bodies.
+		const others = ws.selectionMode(e, 'add') === 'add' ? ws.selection.filter((s) => s.part !== ref.part) : [];
+		ws.select([...others, part]);
 	}
 
 	// ---- measurement card: fixed bottom right, every value named (§8 Selection label) ----
@@ -426,43 +474,97 @@
 	}
 
 	// ---- section view (S) ----
+	/** Bumped when the viewer moves a part, so the section range follows assembly poses. */
+	let poses = $state(0);
+	/** World-space corners of every shown part's bbox (instances placed by their transforms). */
+	const sectionCorners = $derived.by(() => {
+		void poses;
+		return ws.shownParts.flatMap((id) => {
+			const b = ws.results[sourcePart(id)]?.bbox;
+			if (!b) return [];
+			const m = viewer?.partTransform(id);
+			return [0, 1, 2, 3, 4, 5, 6, 7].map((i) => {
+				const v = new THREE.Vector3(i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]);
+				return m ? v.applyMatrix4(m) : v;
+			});
+		});
+	});
 	function axisCenter(axis: 'X' | 'Y' | 'Z') {
-		const r = Object.values(ws.results).filter((x) => x.bbox);
 		const k = { X: 0, Y: 1, Z: 2 }[axis];
-		return r.length ? (Math.min(...r.map((x) => x.bbox!.min[k])) + Math.max(...r.map((x) => x.bbox!.max[k]))) / 2 : 0;
+		const c = sectionCorners.map((v) => v.getComponent(k));
+		return c.length ? (Math.min(...c) + Math.max(...c)) / 2 : 0;
 	}
 	const sectionRange = $derived.by(() => {
-		const r = Object.values(ws.results).filter((x) => x.bbox);
-		if (!r.length || !ws.section) return { min: -50, max: 50 };
-		const pl = ws.section.plane;
-		if (ws.section.axis === 'Face' && pl) {
-			// signed distance of the model's bbox corners from the face plane
-			const lo = [0, 1, 2].map((k) => Math.min(...r.map((x) => x.bbox!.min[k])));
-			const hi = [0, 1, 2].map((k) => Math.max(...r.map((x) => x.bbox!.max[k])));
-			const ds = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [0, 1, 2].reduce((d, k) => d + ((i >> k) & 1 ? hi[k] : lo[k]) * pl.normal[k], 0) - [0, 1, 2].reduce((d, k) => d + pl.origin[k] * pl.normal[k], 0));
-			return { min: Math.min(...ds, 0), max: Math.max(...ds, 0) };
-		}
-		const k = { X: 0, Y: 1, Z: 2 }[ws.section.axis as 'X' | 'Y' | 'Z'];
-		return { min: Math.min(...r.map((x) => x.bbox!.min[k])), max: Math.max(...r.map((x) => x.bbox!.max[k])) };
+		const s = ws.section;
+		if (!sectionCorners.length || !s) return { min: -50, max: 50 };
+		// signed distance of every corner along the section direction, from its offset-0 point
+		const { origin, dir } = sectionBase(s);
+		const ds = sectionCorners.map((v) => (v.x - origin[0]) * dir[0] + (v.y - origin[1]) * dir[1] + (v.z - origin[2]) * dir[2]);
+		return s.axis === 'Face' ? { min: Math.min(...ds, 0), max: Math.max(...ds, 0) } : { min: Math.min(...ds), max: Math.max(...ds) };
 	});
+	// Explicit endpoints avoid floating-point step rounding stopping short of the model bounds.
+	const sectionSteps = $derived(Array.from({ length: 201 }, (_, i) => i === 200 ? sectionRange.max : sectionRange.min + (sectionRange.max - sectionRange.min) * i / 200));
+	/** The section's unflipped direction (offset runs along it) and the point at offset 0. */
+	function sectionBase(s: NonNullable<typeof ws.section>) {
+		if (s.axis === 'Face' && s.plane) return { origin: s.plane.origin, dir: s.plane.normal };
+		return { origin: [0, 0, 0], dir: s.axis === 'X' ? [1, 0, 0] : s.axis === 'Y' ? [0, 1, 0] : [0, 0, 1] };
+	}
 	$effect(() => {
 		const s = ws.section;
 		if (!viewer) return;
-		if (!s) return viewer.setSection(null);
-		if (s.axis === 'Face' && s.plane) {
-			const { origin, normal } = s.plane;
-			// a hair toward the kept side, so the face itself clips away cleanly instead of z-fighting the cap
-			const eps = Math.max(viewer.bounds().getSize(new THREE.Vector3()).length() * 1e-5, 1e-6);
-			const d = s.offset + (s.flip ? eps : -eps);
-			viewer.setSection({ origin: origin.map((c, k) => c + normal[k] * d), normal: s.flip ? normal.map((c) => -c) : normal });
-			return;
-		}
-		const n = s.axis === 'X' ? [1, 0, 0] : s.axis === 'Y' ? [0, 1, 0] : [0, 0, 1];
-		const o = n.map((c) => c * s.offset);
-		viewer.setSection({ origin: o, normal: s.flip ? n.map((c) => -c) : n });
+		if (!s) return viewer.setSectionArrowHover(false), viewer.setSection(null);
+		const { origin, dir } = sectionBase(s);
+		// Bias inward to avoid z-fighting at a cut, but outward at the fully retained endpoint
+		// so the outer face stays intact instead of becoming a thin, hatched section.
+		const eps = Math.max(viewer.bounds().getSize(new THREE.Vector3()).length() * 1e-5, 1e-6);
+		const fullyRetained = s.flip ? s.offset <= sectionRange.min : s.offset >= sectionRange.max;
+		const d = s.offset + (s.flip ? eps : -eps) * (fullyRetained ? -1 : 1);
+		viewer.setSection({ origin: origin.map((c, k) => c + dir[k] * d), normal: s.flip ? dir.map((c) => -c) : dir });
 		ws.untracked(() => ws.rememberSection());
 	});
+
+	/**
+	 * Section arrow: drag it along its axis to move the plane, click it to flip. `t0` is where it was
+	 * grabbed along the axis, relative to the plane.
+	 */
+	let arrowDrag: { t0: number; x: number; y: number; moved: boolean } | null = null;
+	function sectionArrowDown(e: PointerEvent): boolean {
+		if (!viewer || !ws.section || ws.tool === 'pencil' || e.button !== 0 || e.altKey) return false;
+		const r = host.getBoundingClientRect();
+		const x = e.clientX - r.left,
+			y = e.clientY - r.top;
+		if (!viewer.sectionArrowAt(x, y)) return false;
+		arrowDrag = { t0: viewer.sectionAxisAt(x, y) ?? 0, x: e.clientX, y: e.clientY, moved: false };
+		// the controls listen on the canvas below: they never see this press
+		e.stopPropagation();
+		host.setPointerCapture(e.pointerId);
+		host.style.cursor = 'grabbing';
+		onLeave();
+		return true;
+	}
+	function sectionArrowMove(e: PointerEvent) {
+		const d = arrowDrag!,
+			s = ws.section;
+		if (!viewer || !s) return;
+		if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) <= 3) return;
+		d.moved = true;
+		const r = host.getBoundingClientRect();
+		const t = viewer.sectionAxisAt(e.clientX - r.left, e.clientY - r.top);
+		if (t === null) return;
+		// the drag axis (kept side) runs against the offset direction unless flipped
+		const offset = s.offset + (t - d.t0) * (s.flip ? 1 : -1);
+		ws.section = { ...s, offset: Math.min(sectionRange.max, Math.max(sectionRange.min, offset)) };
+	}
+	function sectionArrowUp(e: PointerEvent) {
+		const d = arrowDrag!;
+		arrowDrag = null;
+		down = null;
+		host.releasePointerCapture?.(e.pointerId);
+		host.style.cursor = 'grab';
+		if (!d.moved && ws.section) ws.section = { ...ws.section, flip: !ws.section.flip };
+	}
 	$effect(() => viewer?.setHelpers({ grid: ws.showGrid, origin: ws.showOrigin }));
+	$effect(() => viewer?.setOverlapsOnTop(ws.asm.interferenceOnTop));
 
 	// ---- markup: drafts, open notes' strokes, and the hovered note's (§8 Pencil) ----
 	function markupFor() {
@@ -499,8 +601,8 @@
 	});
 
 	// ---- status pill: calm, agents fix errors (§8 Errors) ----
-	const failing = $derived(Object.values(ws.results).filter((r) => r.problems.some((p) => p.severity === 'error')));
-	const warnings = $derived(Object.values(ws.results).filter((r) => !r.problems.some((p) => p.severity === 'error') && r.problems.length));
+	const failing = $derived(ws.partResults.filter((r) => r.problems.some((p) => p.severity === 'error')));
+	const warnings = $derived(ws.partResults.filter((r) => !r.problems.some((p) => p.severity === 'error') && r.problems.length));
 	const pill = $derived.by(() => {
 		// the engine failing to load used to show only in Properties; say it where people look
 		if (ws.engineError) return { tone: 'error' as const, title: "Couldn't load the model", detail: 'reload the page', message: undefined, source: undefined, file: undefined, line: undefined };
@@ -510,7 +612,7 @@
 			return {
 				tone: 'error' as const,
 				title: failing.length === 1 ? `${r.name} didn't regenerate` : `${failing.length} parts didn't regenerate`,
-				detail: ws.agents.some((a) => a.status !== 'disconnected') ? 'agents notified' : 'showing last good geometry',
+				detail: ws.agents.some((a) => a.status !== 'disconnected') ? undefined : 'showing last good geometry',
 				message: p.message,
 				source: p.source ? `${p.source.file.split('/').pop()}:${p.source.line}` : undefined,
 				file: p.source?.file,
@@ -527,13 +629,6 @@
 			const p = r.problems[0];
 			return { tone: 'warning' as const, title: `${r.name}: ${warnings.reduce((n, w) => n + w.problems.length, 0)} warning${warnings.length > 1 || r.problems.length > 1 ? 's' : ''}`, detail: '', message: p.message, source: p.source ? `${p.source.file.split('/').pop()}:${p.source.line}` : undefined, file: p.source?.file, line: p.source?.line };
 		}
-		// assembly parts running into each other (the red in the viewport)
-		const hits = ws.asm.overlaps;
-		if (hits.length) {
-			const n = (id: string) => ws.results[id]?.name ?? id;
-			const o = hits[0];
-			return { tone: 'warning' as const, title: hits.length === 1 ? `${n(o.a)} and ${n(o.b)} overlap` : `${hits.length} overlaps`, detail: 'I hides the red', message: hits.map((h) => `${n(h.a)} and ${n(h.b)} share ${num(h.volume, 1)} mm³`).join('\n'), source: undefined, file: undefined, line: undefined };
-		}
 		return null;
 	});
 
@@ -547,6 +642,8 @@
 	// an engine that failed to load shows its error in the status pill, not an endless loader
 	const busy = $derived((!ws.kernelReady && !ws.engineError) ||Object.values(ws.regen).some((s) => s !== 'idle'));
 	const empty = $derived(ws.synced && ws.parts.length === 0);
+	/** Veils the canvas behind the empty and loading states. */
+	const scrim = 'absolute inset-0 grid place-items-center bg-[radial-gradient(closest-side,var(--bg-canvas)_35%,color-mix(in_oklab,var(--bg-canvas)_60%,transparent))] backdrop-blur-[3px]';
 	const neverGenerated = $derived(ws.synced && ws.parts.length > 0 && !Object.values(ws.results).some((r) => !r.empty));
 
 	const ctxItems = $derived.by<MenuEntry[]>(() => {
@@ -581,6 +678,7 @@
 		} else if (target?.kind === 'face') {
 			items.push({
 				label: 'Select boundary loop',
+				icon: SquareDashed,
 				disabled: !ws.kernelReady,
 				onSelect: async () => {
 					const edges = ws.results[target.part]?.faceEdges[target.index] ?? [];
@@ -589,11 +687,10 @@
 				}
 			});
 			const plane = viewer?.facePlane(target) ?? null;
-			items.push({ label: 'Section view', icon: Scissors, disabled: !plane, onSelect: () => plane && (ws.section = { axis: 'Face', offset: 0, flip: false, plane }) });
+			items.push({ label: 'Section view', icon: Scissors, disabled: !plane, onSelect: () => plane && ws.sectionFromFace(plane) });
 		}
 		if (items.length) items.push({ type: 'separator' });
 		if (target) {
-			items.push({ label: 'Isolate', icon: Focus, onSelect: () => ws.isolate(target.part) });
 			items.push({ label: 'Hide part', icon: EyeOff, onSelect: () => ws.setHidden(target.part, true) });
 		}
 		if (target && target.kind !== ('part' as any)) {
@@ -620,7 +717,7 @@
 		class="absolute inset-0 overflow-hidden bg-canvas"
 		bind:this={host}
 		onpointermove={onMove}
-		onpointerleave={onLeave}
+		onpointerleave={() => (onLeave(), viewer?.setSectionArrowHover(false))}
 		onpointerdowncapture={onDown}
 		onpointerup={onUp}
 		ondblclick={onDblClick}
@@ -639,14 +736,14 @@
 		{/if}
 		{#if pill}
 			<div class="max-w-[520px]" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
-				<StatusPill tone={pill.tone} title={pill.title} detail={pill.detail} message={pill.message} source={pill.source} bind:expanded={pillOpen} onSourceClick={() => revealSource(pill!.file, pill!.line)} />
+				<StatusPill tone={pill.tone} title={pill.title} detail={pill.detail} message={pill.message} source={pill.source} bind:expanded={pillOpen} onClick={ws.engineError ? () => window.location.reload() : undefined} onSourceClick={() => revealSource(pill!.file, pill!.line)} />
 			</div>
 		{/if}
 	</div>
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[120px] right-[33px] z-10">
-			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
+			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} bind:overlapsOnTop={() => ws.asm.interferenceOnTop, (v) => ws.asm.setInterferenceOnTop(v)} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
 
@@ -658,10 +755,11 @@
 		></div>
 	{/if}
 	{#if ws.section}
-		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="section-bar">
+		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="section-bar" in:pop={{ origin: 'top center' }} out:popOut>
 			<span class="text-ui font-medium">Section</span>
-			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }, ...(ws.section.axis === 'Face' ? [{ value: 'Face', text: 'Face' }] : [])]} onValueChange={(v) => v !== 'Face' && (ws.section = { axis: v as 'X' | 'Y' | 'Z', flip: ws.section!.flip, offset: axisCenter(v as 'X' | 'Y' | 'Z') })} class={ws.section.axis === 'Face' ? 'w-44' : 'w-28'} />
-			<Slider value={ws.section.offset} min={sectionRange.min} max={sectionRange.max} step={(sectionRange.max - sectionRange.min) / 200 || 0.1} onValueChange={(v: number) => (ws.section = { ...ws.section!, offset: v })} class="w-40" aria-label="Section offset" />
+			<!-- a section through a slanted face has no axis: none is selected -->
+			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }]} onValueChange={(v) => (ws.section = { axis: v as 'X' | 'Y' | 'Z', flip: ws.section!.flip, offset: axisCenter(v as 'X' | 'Y' | 'Z') })} class="w-28" />
+			<Slider value={ws.section.offset} min={sectionRange.min} max={sectionRange.max} step={sectionSteps} onValueChange={(v: number) => (ws.section = { ...ws.section!, offset: v })} class="w-40" aria-label="Section offset" />
 			<span class="w-16 text-label text-fg-secondary tabular-nums">{num(ws.section.offset, 1)} mm</span>
 			<IconButton label="Flip" size="sm" onclick={() => (ws.section = { ...ws.section!, flip: !ws.section!.flip })}><FlipVertical2 /></IconButton>
 			<IconButton label="Close section" shortcut={['S']} size="sm" onclick={() => (ws.section = null)}><X /></IconButton>
@@ -702,7 +800,7 @@
 	{/if}
 
 	{#if empty}
-		<div class="absolute inset-0 z-10 grid place-items-center bg-[radial-gradient(closest-side,var(--bg-canvas)_35%,color-mix(in_oklab,var(--bg-canvas)_60%,transparent))] backdrop-blur-[3px]" data-testid="empty-document">
+		<div class="{scrim} z-10" data-testid="empty-document">
 			<EmptyState size="panel" class="animate-enter" title="No parts yet">
 				{#snippet action()}
 					<div class="flex gap-2">
@@ -713,16 +811,16 @@
 			</EmptyState>
 		</div>
 	{:else if neverGenerated && !Object.values(ws.regen).some((s) => s === 'running')}
-		<div class="pointer-events-none absolute inset-0 z-0 grid place-items-center text-fg-tertiary">
-			<div class="flex flex-col items-center gap-2 text-ui"><Box size={28} strokeWidth={1.25} /> Loading…</div>
+		<div class="{scrim} pointer-events-none z-0 text-fg-tertiary" out:fadeOut>
+			<div class="animate-enter flex flex-col items-center gap-2 text-ui"><Box size={28} strokeWidth={1.25} /> Loading…</div>
 		</div>
 	{/if}
 
 	{#if viewer}
-		<Pins {viewer} {nc} onopen={onOpenNote} />
+		<Pins {ws} {viewer} {nc} onopen={onOpenNote} />
 	{/if}
 	{#if nc.draft && nc.composerShown}
-		<div class="absolute z-20" in:rise={{ y: 4, scale: 0.96, origin: 'top left' }} out:fadeOut style="left:{Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292)}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
+		<div class="absolute z-20" in:rise={{ y: 4, scale: 0.96, origin: 'top left' }} out:fadeOut style="left:{Math.max(8, Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292))}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
 			<NoteComposer {ws} {nc} />
 		</div>
 	{/if}

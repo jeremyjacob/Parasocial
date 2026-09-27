@@ -12,7 +12,7 @@
 	import { evaluate, UNITS } from '@parasocial/api/units';
 	import type { ParamDecl } from '@parasocial/api/types';
 	import { newID } from '$lib/zero';
-	import type { WorkspaceState } from './state.svelte';
+	import { SHARED, type WorkspaceState } from './state.svelte';
 
 	let { ws }: { ws: WorkspaceState } = $props();
 
@@ -26,20 +26,24 @@
 		if (!dialogOpen) dialog = null;
 	});
 
-	const groups = $derived(
-		ws.parts
-			.map((part) => ({ part, name: ws.results[part]?.name ?? part, params: ws.results[part]?.params ?? [] }))
-			.filter((g) => g.params.length)
-	);
+	// shared params (one value for the document) first, once each; then those of each part in the viewport
+	const groups = $derived.by(() => {
+		const shared = new Map<string, ParamDecl>();
+		for (const part of ws.parts) for (const p of ws.results[part]?.params ?? []) if (p.shared && !shared.has(p.name)) shared.set(p.name, { ...p, part: SHARED });
+		return [
+			{ part: SHARED, name: 'Shared', params: [...shared.values()] },
+			...ws.shownSources.map((part) => ({ part, name: ws.results[part]?.name ?? part, params: (ws.results[part]?.params ?? []).filter((p) => !p.shared) }))
+		].filter((g) => g.params.length);
+	});
 
 	/** Code default for a param: its declared default in base units. */
 	function factor(p: ParamDecl) {
 		return p.unit ? (UNITS[p.unit]?.factor ?? 1) : 1;
 	}
 
-	function evaluatorFor(part: string, p: ParamDecl): Evaluator {
+	function evaluatorFor(params: ParamDecl[], p: ParamDecl): Evaluator {
 		const vars: Record<string, number> = {};
-		for (const q of ws.results[part]?.params ?? []) if (typeof q.value === 'number') vars[q.name] = q.value;
+		for (const q of params) if (typeof q.value === 'number') vars[q.name] = q.value;
 		const unit = p.unit ? UNITS[p.unit] : UNITS.mm;
 		return (input: string) => {
 			try {
@@ -151,7 +155,7 @@
 							overridden={p.overridden}
 							source={p.source ? `${p.source.file.split('/').pop()}:${p.source.line}` : undefined}
 							error={p.error}
-							evaluate={evaluatorFor(g.part, p)}
+							evaluate={evaluatorFor(g.params, p)}
 							oninput={(v) => ws.scrub(g.part, p.name, v * factor(p))}
 							oncommit={(v, expr) => commit(g.part, p, v, expr)}
 							onreset={() => ws.resetParam(g.part, p.name)}

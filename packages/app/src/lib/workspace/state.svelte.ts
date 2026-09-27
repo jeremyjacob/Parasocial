@@ -4,7 +4,7 @@
 import { untrack } from 'svelte';
 import type { Viewer, EntityRef } from '@parasocial/viewer';
 import { mutators, captureInverse, captureInverseAll, type AnyMR, type ParasocialZero, type Script, type Configuration, type ParamOverride, type Version, type Note, type AgentSession, type Document as DocRow } from '@parasocial/sync';
-import type { PartResult, PartInfo, EngineInfo, AssemblyInfo } from '@parasocial/runtime/protocol';
+import { sourcePart, type PartResult, type PartInfo, type EngineInfo, type AssemblyInfo, type AssemblyInstance } from '@parasocial/runtime/protocol';
 import { packResult, unpackResult, derivedKey, type CachedPart } from '@parasocial/runtime/pack';
 import type { EngineClient } from '@parasocial/runtime/browser/client';
 import { partColorAt } from '$lib/styles/tokens';
@@ -16,9 +16,15 @@ type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 export type Tool = 'select' | 'note' | 'pencil' | 'measure';
 export type PartMeta = Omit<PartResult, 'mesh'> & { names?: { face: string[]; edge: string[] }; fromCache?: boolean };
 export type RegenState = 'idle' | 'running' | 'queued';
-type Undo = { undo: AnyMR[]; redo: AnyMR[]; label: string };
+type Visibility = { part: string; hidden: boolean };
+type Undo = { label: string } & (
+	| { kind: 'mutation'; undo: AnyMR[]; redo: AnyMR[] }
+	| { kind: 'visibility'; undo: Visibility[]; redo: Visibility[] }
+);
 
 const DERIVED_CACHE = 'parasocial-derived-v1';
+/** Part id that shared params' overrides live under (`param(..., { shared: true })`). */
+export const SHARED = '*';
 const BUILD_KEY = 'parasocial:engineBuild';
 
 export class WorkspaceState {
@@ -59,7 +65,11 @@ export class WorkspaceState {
 		} catch {}
 	}
 	hidden = $state<string[]>([]);
-	isolated = $state<string[]>([]);
+	/**
+	 * The studio shown in the viewport: one at a time, like a CAD document's tabs. An assembly
+	 * studio shows its own copies of the parts it joins. Remembered per document; null = the first.
+	 */
+	activeStudio = $state<string | null>(null);
 	openScript = $state<string | null>(null);
 	/** Section view (S): axis, offset along it (mm), flipped. */
 	/** Axis-aligned section, or 'Face': through a planar face's plane (offset along its outward normal). */
@@ -79,6 +89,16 @@ export class WorkspaceState {
 	engineError = $state<string | null>(null);
 
 	// ---- selection ----
+	#additiveSelection = $state(pref('parasocial:additiveSelection', false));
+	get additiveSelection() {
+		return this.#additiveSelection;
+	}
+	set additiveSelection(value: boolean) {
+		this.#additiveSelection = value;
+		try {
+			localStorage.setItem('parasocial:additiveSelection', String(value));
+		} catch {}
+	}
 	selection = $state.raw<EntityRef[]>([]);
 	hover = $state.raw<EntityRef | null>(null);
 
@@ -115,6 +135,7 @@ export class WorkspaceState {
 		try {
 			const saved = localStorage.getItem(`parasocial:config:${o.documentID}`);
 			if (saved) this.activeConfigID = saved === 'default' ? null : saved;
+			this.activeStudio = localStorage.getItem(`parasocial:studio:${o.documentID}`);
 			this.partInfos = JSON.parse(localStorage.getItem(`parasocial:parts:${o.documentID}`) ?? '[]');
 		} catch {}
 	}
@@ -127,9 +148,11 @@ export class WorkspaceState {
 
 	/**
 	 * Parts grouped under the studio that exports them (Parts tab tree), in path order; `name` is
-	 * the studio's display name. A studio's assemblies come along (a studio may export only those).
+	 * the studio's display name. A studio exports parts or assemblies, not both (the engine
+	 * rejects a mix); an assembly studio comes with its instances. `ids` is what the viewport
+	 * shows while the studio is active: its parts, or its instances.
 	 */
-	get partTree(): { file: string; name: string; parts: PartInfo[]; assemblies: AssemblyInfo[] }[] {
+	get partTree(): { file: string; name: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
 		return this.scripts
 			.map((s) => s.path)
 			.filter((p) => /^studios\/[^/]+\.ts$/.test(p))
@@ -140,8 +163,74 @@ export class WorkspaceState {
 				// part lists remembered before studios had names lack `studio`
 				const assemblies = this.asm.assemblies.filter((a) => a.file === file);
 				const name = known[0]?.studio ?? assemblies[0]?.studio ?? stem;
-				return { file, name, assemblies, parts: known.length || assemblies.length ? known : [{ id: stem, file, export: 'default', name: stem, studio: stem }] };
+				const parts = known.length || assemblies.length ? known : [{ id: stem, file, export: 'default', name: stem, studio: stem }];
+				const instances = assemblies.flatMap((a) => a.instances);
+				const ids = [...parts.map((p) => p.id), ...instances.map((i) => i.id)];
+				return { file, name, assemblies, parts, instances, ids };
 			});
+	}
+
+	/** The studio shown in the viewport (the remembered one, else the first). */
+	get studio() {
+		const tree = this.partTree;
+		return tree.find((g) => g.file === this.activeStudio) ?? tree[0] ?? null;
+	}
+
+	/** Ids in the viewport: the active studio's parts, or an assembly studio's instances. */
+	get shownParts(): string[] {
+		return this.studio?.ids ?? [];
+	}
+
+	/** The parts whose geometry is on screen (an instance counts as its source part). */
+	get shownSources(): string[] {
+		return [...new Set(this.shownParts.map(sourcePart))];
+	}
+
+	/** Every assembly instance in the document. */
+	get instances(): AssemblyInstance[] {
+		return this.asm.assemblies.flatMap((a) => a.instances);
+	}
+
+	/** Every id something can be selected or pinned on: parts and assembly instances. */
+	get allParts(): string[] {
+		return [...this.parts, ...this.instances.map((i) => i.id)];
+	}
+
+	/** A part's copies in assemblies. */
+	copiesOf(part: string): string[] {
+		return this.instances.filter((i) => i.part === part).map((i) => i.id);
+	}
+
+	/** The studio a part or instance is shown in. */
+	studioOf(id: string): string | undefined {
+		return this.partTree.find((g) => g.ids.includes(id))?.file;
+	}
+
+	/** Show one studio in the viewport (selection outside it is dropped). */
+	setActiveStudio(file: string) {
+		if (this.studio?.file === file) return;
+		this.activeStudio = file;
+		try {
+			localStorage.setItem(`parasocial:studio:${this.documentID}`, file);
+		} catch {}
+		this.showStudio();
+	}
+
+	/**
+	 * Put the active studio's geometry in the viewer and take everything else out. Idempotent;
+	 * called when the studio changes and whenever its list of parts may have.
+	 */
+	showStudio() {
+		const v = this.viewer;
+		if (!v) return;
+		const shown = new Set(this.shownParts);
+		for (const id of v.partIds()) if (!shown.has(id)) v.removePart(id);
+		const present = new Set(v.partIds());
+		for (const id of shown) if (!present.has(id)) this.paint(id);
+		const sel = this.selection.filter((r) => shown.has(r.part));
+		if (sel.length !== this.selection.length) this.select(sel);
+		if (this.hover && !shown.has(this.hover.part)) this.hover = null;
+		this.asm.check();
 	}
 
 	/** The studio script a part comes from. */
@@ -168,15 +257,27 @@ export class WorkspaceState {
 		return out;
 	}
 
+	/** Everything a part's geometry depends on besides scripts: its overrides and the shared ones. */
+	private cacheOverrides(part: string): Record<string, string | number> {
+		const out = { ...this.overridesFor(part) };
+		for (const [k, v] of Object.entries(this.overridesFor(SHARED))) out[`${SHARED}${k}`] = v;
+		return out;
+	}
+
 	partColor(part: string, dark: boolean): string {
 		const r = this.results[part];
 		if (r?.color?.kind === 'rgb') return r.color.hex;
-		const c = partColorAt(Math.max(0, this.parts.indexOf(part)));
+		const c = partColorAt(Math.max(0, this.parts.indexOf(sourcePart(part))));
 		return dark ? c.dark : c.light;
 	}
 
+	/** Regeneration results of the parts (instances repeat their source part's, so they're left out). */
+	get partResults(): PartMeta[] {
+		return this.parts.flatMap((p) => this.results[p] ?? []);
+	}
+
 	get problems() {
-		return Object.values(this.results).flatMap((r) => r.problems.map((p) => ({ ...p, part: r.part })));
+		return this.partResults.flatMap((r) => r.problems.map((p) => ({ ...p, part: r.part })));
 	}
 
 	setActiveConfig(id: string | null) {
@@ -223,7 +324,7 @@ export class WorkspaceState {
 		if (!this.docSent) {
 			this.docSent = true;
 			// overrides for every part that has any (the part list comes back from the engine)
-			const ids = new Set([...this.parts, ...(this.activeConfig?.overrides ?? []).map((o) => o.part), ...Object.keys(this.live)]);
+			const ids = new Set([...this.parts, SHARED, ...(this.activeConfig?.overrides ?? []).map((o) => o.part), ...Object.keys(this.live)]);
 			const overrides = Object.fromEntries([...ids].map((p) => [p, this.overridesFor(p)]));
 			this.setPartInfos(await engine.setDocument({ scripts, overrides, units: { length: this.doc?.units ?? 'mm', angle: 'deg' } }));
 			// before listing parts: a studio that only exports an assembly has none
@@ -233,26 +334,32 @@ export class WorkspaceState {
 			parts = this.parts;
 			parts.forEach((p) => toRegen.add(p));
 		} else {
-			let scriptChanged = false;
+			const changed: string[] = [];
 			let infos: PartInfo[] | null = null;
 			for (const [path, content] of Object.entries(scripts)) {
 				if (this.sentScripts.get(path) !== content) {
 					this.sentScripts.set(path, content);
 					infos = await engine.setScript(path, content);
-					scriptChanged = true;
+					changed.push(path);
 				}
 			}
 			for (const path of [...this.sentScripts.keys()]) {
 				if (!(path in scripts)) {
 					this.sentScripts.delete(path);
 					infos = await engine.setScript(path, null);
-					scriptChanged = true;
+					changed.push(path);
 				}
 			}
+			const before = new Map(this.partInfos.map((p) => [p.id, JSON.stringify(p)]));
 			if (infos) this.setPartInfos(infos);
-			if (scriptChanged) await this.asm.refresh();
+			if (changed.length) await this.asm.refresh();
 			parts = this.parts;
-			if (scriptChanged) parts.forEach((p) => toRegen.add(p));
+			if (changed.length) {
+				// only what reads a changed script (or looked for a missing one); the rest keep their results
+				for (const p of await engine.affected(changed)) toRegen.add(p);
+				// new parts, and parts that moved to another file or export
+				for (const p of this.partInfos) if (before.get(p.id) !== JSON.stringify(p) || !this.results[p.id]) toRegen.add(p.id);
+			}
 			for (const p of parts) {
 				const o = this.overridesFor(p);
 				const s = JSON.stringify(o);
@@ -262,8 +369,17 @@ export class WorkspaceState {
 					toRegen.add(p);
 				}
 			}
-			// parts that disappeared
-			for (const p of Object.keys(this.results)) if (!parts.includes(p)) this.dropPart(p);
+			// shared params: one set of overrides, read by every part that declares them
+			const so = this.overridesFor(SHARED);
+			const ss = JSON.stringify(so);
+			if (this.sentOverrides.get(SHARED) !== ss) {
+				this.sentOverrides.set(SHARED, ss);
+				await engine.setOverrides(SHARED, so);
+				for (const p of parts) if (!this.results[p] || this.results[p].params.some((d) => d.shared)) toRegen.add(p);
+			}
+			// Only source parts belong to this list. Assembly copies are reconciled by syncInstances;
+			// treating them as deleted here unmounts every copy, including ones that won't regenerate.
+			for (const p of Object.keys(this.results)) if (sourcePart(p) === p && !parts.includes(p)) this.dropPart(p);
 		}
 		// progressive meshing: a settled fine pass after scrubbing ends
 		if (!this.scrubbing && !this.typing) for (const p of parts) if (this.results[p]?.quality === 'coarse') toRegen.add(p);
@@ -275,27 +391,43 @@ export class WorkspaceState {
 		await Promise.all(this.parts.map((p) => this.regenerate(p, 'fine')));
 	}
 
-	private async regenerate(part: string, quality: 'coarse' | 'fine') {
+	private regenerations = new Map<string, symbol>();
+
+	private async regenerate(part: string, quality: 'coarse' | 'fine', reuse = true): Promise<void> {
 		const engine = this.engine!;
+		const request = Symbol();
+		this.regenerations.set(part, request);
 		this.regen = { ...this.regen, [part]: 'running' };
 		try {
-			const r = await engine.regenerate(part, quality);
-			if (!r) return; // superseded: a newer request for this part is already running
-			this.applyResult(r, false);
-			if (r.ok && quality === 'fine') this.writeCache(r);
+			// the geometry on screen at this quality: an edit elsewhere usually leaves it as is
+			const prev = this.results[part];
+			const known = reuse && prev?.key && prev.quality === quality && this.meshes.has(part) ? prev.key : undefined;
+			const r = await engine.regenerate(part, quality, known);
+			if (!r || this.regenerations.get(part) !== request) return;
+			if (r.unchanged) {
+				// something else landed meanwhile: what we said we had is gone, fetch the mesh after all
+				const now = this.results[part];
+				if (now?.key !== r.key || now.quality !== r.quality || !this.meshes.has(part)) return await this.regenerate(part, quality, false);
+				this.applyUnchanged(r);
+			} else this.applyResult(r, false);
+			if (r.ok && quality === 'fine') {
+				const { names: _, fromCache: __, ...meta } = this.results[part] ?? r;
+				this.writeCache(r.unchanged ? meta : r);
+			}
 		} catch (e) {
+			if (this.regenerations.get(part) !== request) return;
 			const err = e as Error & { timeout?: boolean };
-			this.results = {
-				...this.results,
-				[part]: {
-					...(this.results[part] ?? emptyMeta(part)),
-					ok: false,
-					partial: true,
-					problems: [{ severity: 'error', kind: err.timeout ? 'timeout' : 'runtime', message: err.message, part }]
-				}
-			};
+			this.setMeta(part, {
+				...(this.results[part] ?? emptyMeta(part)),
+				ok: false,
+				partial: true,
+				problems: [{ severity: 'error', kind: err.timeout ? 'timeout' : 'runtime', message: err.message, part }]
+			});
 		} finally {
-			this.regen = { ...this.regen, [part]: 'idle' };
+			if (this.regenerations.get(part) === request) {
+				this.regenerations.delete(part);
+				this.regen = { ...this.regen, [part]: 'idle' };
+			}
 		}
 	}
 
@@ -304,50 +436,138 @@ export class WorkspaceState {
 		const prev = this.results[r.part];
 		// a script that doesn't load has no name: keep the last known one
 		if (!r.ok && prev && meta.name === r.part) meta.name = prev.name;
-		this.results = { ...this.results, [r.part]: { ...meta, names: r.names ?? (prev?.key === meta.key ? prev?.names : undefined), fromCache } };
+		this.setMeta(r.part, { ...meta, names: r.names ?? (prev?.key === meta.key ? prev?.names : undefined), fromCache });
+		if (mesh) this.meshes.set(r.part, mesh);
+		else this.meshes.delete(r.part);
 		if (this.viewer) {
-			if (mesh) {
-				// discrete changes (someone else's write, a restore) cross-fade; our own scrubbing/typing swaps instantly
-				const crossfade = !fromCache && !!prev && !this.scrubbing && !this.typing && prev.key !== meta.key && r.quality === 'fine' && prev.quality === 'fine';
-				this.paint(r, mesh, crossfade);
-			} else this.viewer.removePart(r.part);
-			this.highlightErrors(r);
+			// discrete changes (someone else's write, a restore) cross-fade; our own scrubbing/typing swaps instantly
+			const crossfade = !fromCache && !!prev && !this.scrubbing && !this.typing && prev.key !== meta.key && r.quality === 'fine' && prev.quality === 'fine';
+			for (const id of [r.part, ...this.copiesOf(r.part)]) if (this.shownParts.includes(id)) this.paint(id, crossfade);
+			// selections on a part that changed shape keep their indices only if still valid (viewer prunes)
+			this.selection = this.viewer.getSelection();
 		}
-		// selections on a part that changed shape keep their indices only if still valid (viewer prunes)
-		if (this.viewer) this.selection = this.viewer.getSelection();
 		// connectors may have moved with the geometry; overlaps certainly may have
 		if (!fromCache) this.asm.rebuild();
 	}
 
-	private paint(r: PartResult, mesh: Mesh, crossfade = false) {
-		const dark = document.documentElement.dataset.theme === 'dark';
-		this.viewer!.setPart({
-			id: r.part,
-			mesh,
-			faceEdges: r.faceEdges,
-			hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))),
-			color: this.partColor(r.part, dark),
-			appearance: r.appearance,
-			dim: !r.ok
-		}, { crossfade });
-		this.viewer!.setVisible(r.part, !this.hidden.includes(r.part));
+	/**
+	 * Same geometry as on screen, fresh everything else (params, problems, color …): keep the mesh,
+	 * its entity metadata and the viewer's part, and only touch what actually changed.
+	 */
+	private applyUnchanged(r: PartResult) {
+		const prev = this.results[r.part];
+		if (!prev) return;
+		const { mesh: _, unchanged: __, ...fresh } = r;
+		const density = r.material?.density ?? 1;
+		const meta: PartMeta = {
+			...fresh,
+			faces: prev.faces,
+			edges: prev.edges,
+			vertices: prev.vertices,
+			faceEdges: prev.faceEdges,
+			bbox: prev.bbox,
+			// the material may have changed without the shape
+			mass: prev.mass && { ...prev.mass, mass: (prev.mass.volume / 1000) * density },
+			names: prev.names,
+			fromCache: false
+		};
+		if (!r.ok && meta.name === r.part) meta.name = prev.name;
+		this.setMeta(r.part, meta);
+		const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+		if (this.viewer) {
+			const repaint = prev.ok !== meta.ok || prev.fromCache || !same(prev.color, meta.color) || !same(prev.appearance, meta.appearance);
+			const errors = !same(prev.problems, meta.problems);
+			for (const id of [r.part, ...this.copiesOf(r.part)]) {
+				if (!this.shownParts.includes(id)) continue;
+				if (repaint) this.paint(id);
+				else if (errors) this.highlightErrors(this.results[id]);
+			}
+		}
+		if (prev.fromCache || prev.name !== meta.name || !same(prev.connectors, meta.connectors)) this.asm.rebuild();
+	}
+
+	/** A part's metadata, repeated for its copies in assemblies (same geometry, their own ids and names). */
+	private setMeta(part: string, meta: PartMeta) {
+		const next = { ...this.results, [part]: meta };
+		for (const i of this.instances) if (i.part === part) next[i.id] = this.copyMeta(i, meta);
+		this.results = next;
 	}
 
 	/**
-	 * Meshes are transferred into the viewer, so a remounted viewport (HMR, re-entering the page)
-	 * can't be repainted from `results`: keep the old viewer's meshes and camera to hand over.
+	 * A copy's metadata: its part's, under its own id, named after the copy ("Wheel fl") and the
+	 * inserted assemblies it's in ("Corner left › Wheel").
 	 */
-	private stash: { meshes: Map<string, Mesh>; camera: ReturnType<Viewer['cameraState']> } | null = null;
+	private copyMeta(i: AssemblyInstance, meta: PartMeta): PartMeta {
+		const own = i.name === undefined ? meta.name : `${meta.name} ${i.name}`;
+		const scope = this.scopeLabel(i.scope);
+		return { ...meta, part: i.id, name: scope ? `${scope} › ${own}` : own };
+	}
+
+	/** The inserted assemblies a scope is inside, for display ("Axle front › Corner left"); null for an assembly itself. */
+	scopeLabel(scope: string): string | null {
+		const asm = this.asm.assemblies.find((a) => scope.startsWith(`${a.id}/`));
+		const out: string[] = [];
+		for (let s = scope; asm && s !== asm.id; ) {
+			const sub = asm.subs.find((x) => x.id === s);
+			if (!sub) break;
+			const label = this.asm.assemblies.find((a) => a.id === sub.assembly)?.name ?? sub.assembly;
+			out.unshift(sub.name === undefined ? label : `${label} ${sub.name}`);
+			s = sub.parent;
+		}
+		return out.length ? out.join(' › ') : null;
+	}
+
+	/** Assemblies changed: give new instances their source part's metadata, drop removed ones. */
+	syncInstances() {
+		const ids = new Set(this.instances.map((i) => i.id));
+		let next: Record<string, PartMeta> | null = null;
+		for (const id of Object.keys(this.results)) if (sourcePart(id) !== id && !ids.has(id)) delete (next ??= { ...this.results })[id];
+		for (const i of this.instances) {
+			const r = this.results[i.part];
+			if (!r) continue;
+			const cur = this.results[i.id];
+			const meta = this.copyMeta(i, r);
+			if (cur?.key !== r.key || cur.name !== meta.name) (next ??= { ...this.results })[i.id] = meta;
+		}
+		if (next) this.results = next;
+		this.showStudio();
+	}
+
+	/**
+	 * Every part's latest mesh, by source part id. Only the active studio is in the viewer, so the
+	 * meshes live here: switching studios or remounting the viewport repaints from them.
+	 */
+	private meshes = new Map<string, Mesh>();
+
+	/** Show a part or instance in the viewer from its metadata and its source part's mesh. */
+	private paint(id: string, crossfade = false) {
+		const v = this.viewer;
+		const r = this.results[id];
+		const mesh = this.meshes.get(sourcePart(id));
+		if (!v) return;
+		if (!r || !mesh) return void v.removePart(id);
+		const dark = document.documentElement.dataset.theme === 'dark';
+		v.setPart({
+			id,
+			mesh,
+			faceEdges: r.faceEdges,
+			vertices: r.vertices,
+			hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam || e.smooth ? [i] : []))),
+			color: this.partColor(id, dark),
+			appearance: r.appearance,
+			dim: !r.ok
+		}, { crossfade });
+		v.setVisible(id, !this.hidden.includes(id));
+		this.highlightErrors(r);
+	}
+
+	/** A remounted viewport (HMR, re-entering the page) gets the old viewer's camera. */
+	private stash: { camera: ReturnType<Viewer['cameraState']> } | null = null;
 
 	detachViewer() {
 		const v = this.viewer;
 		if (!v) return;
-		const meshes = new Map<string, Mesh>();
-		for (const p of Object.keys(this.results)) {
-			const m = v.meshOf(p);
-			if (m) meshes.set(p, m);
-		}
-		this.stash = { meshes, camera: v.cameraState() };
+		this.stash = { camera: v.cameraState() };
 		this.viewer = null;
 	}
 
@@ -356,18 +576,12 @@ export class WorkspaceState {
 		this.viewer = v;
 		const stash = this.stash;
 		this.stash = null;
+		this.showStudio();
 		if (!stash) return false;
-		for (const [p, mesh] of stash.meshes) {
-			const r = this.results[p];
-			if (!r) continue;
-			this.paint(r, mesh);
-			this.highlightErrors(r);
-		}
-		if (this.isolated.length) v.isolate(this.isolated);
 		if (this.selection.length) v.setSelection(this.selection);
 		v.setCameraState(stash.camera, false);
 		this.asm.attach();
-		return stash.meshes.size > 0;
+		return this.meshes.size > 0;
 	}
 
 	private async highlightErrors(r: PartResult) {
@@ -378,13 +592,24 @@ export class WorkspaceState {
 		}
 		const refs: EntityRef[] = [];
 		for (const n of hl.names) for (const index of await this.engine.indexOfName(r.part, hl.kind, n)) refs.push({ part: r.part, kind: hl.kind, index });
-		this.viewer.setPartErrors(r.part, refs);
+		this.viewer?.setPartErrors(r.part, refs);
 	}
 
 	private dropPart(p: string) {
+		// A result already in flight must not resurrect a deleted source part.
+		this.regenerations.delete(p);
+		const { [p]: _regen, ...regen } = this.regen;
+		this.regen = regen;
 		const { [p]: _, ...rest } = this.results;
+		for (const id of this.copiesOf(p)) delete rest[id];
 		this.results = rest;
-		this.viewer?.removePart(p);
+		this.meshes.delete(p);
+		for (const id of [p, ...this.copiesOf(p)]) this.viewer?.removePart(id);
+	}
+
+	/** A part's mesh as last regenerated (instances: their source part's). */
+	meshOf(id: string): Mesh | undefined {
+		return this.meshes.get(sourcePart(id));
 	}
 
 	/** Paint the viewport from cached derived data before the kernel is ready (§9 cache-first open). */
@@ -394,7 +619,7 @@ export class WorkspaceState {
 		const cache = await caches.open(DERIVED_CACHE);
 		await Promise.all(
 			parts.map(async (part) => {
-				const key = await derivedKey({ part, scripts, overrides: this.overridesFor(part), build });
+				const key = await derivedKey({ part, scripts, overrides: this.cacheOverrides(part), build });
 				const res = await cache.match(`/derived/${key}`);
 				if (!res || this.results[part]) return;
 				const r = unpackResult(await res.arrayBuffer());
@@ -409,37 +634,52 @@ export class WorkspaceState {
 			if (!build || !this.engine || typeof caches === 'undefined') return;
 			const names = await this.engine.names(r.part);
 			const scripts = Object.fromEntries(this.sentScripts);
-			const key = await derivedKey({ part: r.part, scripts, overrides: this.overridesFor(r.part), build });
+			const key = await derivedKey({ part: r.part, scripts, overrides: this.cacheOverrides(r.part), build });
 			const meta = this.results[r.part];
-			if (meta?.key === r.key) this.results = { ...this.results, [r.part]: { ...meta, names: { face: names.face, edge: names.edge } } };
+			if (meta?.key === r.key) this.setMeta(r.part, { ...meta, names: { face: names.face, edge: names.edge } });
 			const cache = await caches.open(DERIVED_CACHE);
-			// the mesh was transferred into the viewer; re-read it from the viewer's copy
-			const mesh = this.viewer?.meshOf(r.part);
+			// the result's mesh was transferred out; this is the same one
+			const mesh = this.meshes.get(r.part);
 			if (!mesh) return;
 			await cache.put(`/derived/${key}`, new Response(packResult({ ...r, mesh, names: { face: names.face, edge: names.edge } })));
 		} catch {}
 	}
 
 	// ---------- mutations (with undo) ----------
+	private recordUndo(entry: Undo) {
+		this.undoStack = [...this.undoStack.slice(-99), entry];
+		this.redoStack = [];
+	}
+
 	async mutate(mr: AnyMR, label: string) {
 		const read = ((q: any) => this.zero.run(q)) as any;
 		const inverse = await captureInverse(read, mr).catch(() => null);
 		const res = this.zero.mutate(mr as any);
 		if (inverse?.length) {
-			this.undoStack = [...this.undoStack.slice(-99), { undo: inverse, redo: [mr], label }];
-			this.redoStack = [];
+			this.recordUndo({ kind: 'mutation', undo: inverse, redo: [mr], label });
 		}
 		return res;
+	}
+
+	/** Apply an entry and capture the inverse for the opposite stack. */
+	private async replay(entry: Undo): Promise<Undo> {
+		if (entry.kind === 'visibility') {
+			const inverse = entry.undo.map(({ part }) => ({ part, hidden: this.hidden.includes(part) }));
+			this.applyVisibility(entry.undo);
+			return { ...entry, undo: inverse, redo: entry.undo };
+		}
+		const read = ((q: any) => this.zero.run(q)) as any;
+		const inverse = (await captureInverseAll(read, entry.undo).catch(() => null)) ?? entry.redo;
+		for (const m of entry.undo) this.zero.mutate(m as any);
+		return { ...entry, undo: inverse, redo: entry.undo };
 	}
 
 	async undo() {
 		const e = this.undoStack.at(-1);
 		if (!e) return null;
 		this.undoStack = this.undoStack.slice(0, -1);
-		const read = ((q: any) => this.zero.run(q)) as any;
-		const redo = (await captureInverseAll(read, e.undo).catch(() => null)) ?? e.redo;
-		for (const m of e.undo) this.zero.mutate(m as any);
-		this.redoStack = [...this.redoStack, { undo: redo, redo: e.undo, label: e.label }];
+		const inverse = await this.replay(e);
+		this.redoStack = [...this.redoStack, inverse];
 		return e.label;
 	}
 
@@ -447,10 +687,8 @@ export class WorkspaceState {
 		const e = this.redoStack.at(-1);
 		if (!e) return null;
 		this.redoStack = this.redoStack.slice(0, -1);
-		const read = ((q: any) => this.zero.run(q)) as any;
-		const undo = (await captureInverseAll(read, e.undo).catch(() => null)) ?? e.redo;
-		for (const m of e.undo) this.zero.mutate(m as any);
-		this.undoStack = [...this.undoStack, { undo, redo: e.undo, label: e.label }];
+		const inverse = await this.replay(e);
+		this.undoStack = [...this.undoStack, inverse];
 		return e.label;
 	}
 
@@ -472,7 +710,7 @@ export class WorkspaceState {
 		const configurationID = await this.ensureConfiguration();
 		const { [name]: _, ...restLive } = this.live[part] ?? {};
 		this.live = { ...this.live, [part]: restLive };
-		const decl = this.results[part]?.params.find((p) => p.name === name);
+		const decl = part === SHARED ? this.partResults.flatMap((r) => r.params).find((p) => p.shared && p.name === name) : this.results[part]?.params.find((p) => p.name === name);
 		const codeDefault = opts.codeDefault ?? (decl ? String(decl.default) : undefined);
 		return this.mutate(mutators.param.set({ documentID: this.documentID, configurationID, part, name, expression, value, codeDefault, rebase: opts.rebase } as any), `Set ${name}`);
 	}
@@ -562,6 +800,11 @@ export class WorkspaceState {
 	}
 
 	// ---------- selection ----------
+	/** User gestures follow the preference or modifier keys; explicit selection commands replace. */
+	selectionMode(e: Pick<MouseEvent, 'shiftKey' | 'metaKey' | 'ctrlKey'>, additive: 'toggle' | 'add' = 'toggle'): 'replace' | 'toggle' | 'add' {
+		return this.additiveSelection || e.shiftKey || e.metaKey || e.ctrlKey ? additive : 'replace';
+	}
+
 	select(refs: EntityRef[], mode: 'replace' | 'toggle' | 'add' = 'replace') {
 		let next: EntityRef[];
 		const same = (a: EntityRef, b: EntityRef) => a.part === b.part && a.kind === b.kind && a.index === b.index;
@@ -578,6 +821,11 @@ export class WorkspaceState {
 		this.selection = next;
 		this.viewer?.setSelection(next);
 		this.publishPresence();
+	}
+
+	/** Keep browser activity discoverable even before the user selects any geometry. */
+	touchPresence() {
+		this.zero.mutate(mutators.presence.set({ id: this.presenceID, documentID: this.documentID }));
 	}
 
 	/** Share the selection (by stable name) and active configuration, so agents can get_selection. */
@@ -604,28 +852,45 @@ export class WorkspaceState {
 	}
 
 	setHidden(part: string, hidden: boolean) {
-		this.hidden = hidden ? [...new Set([...this.hidden, part])] : this.hidden.filter((p) => p !== part);
-		this.viewer?.setVisible(part, !hidden);
+		this.setVisibility([{ part, hidden }]);
+	}
+
+	/** One visibility action, including multi-selection toggles and Show all. */
+	setVisibility(changes: Visibility[]) {
+		const desired = new Map(changes.map(({ part, hidden }) => [part, hidden]));
+		const redo = [...desired].filter(([part, hidden]) => this.hidden.includes(part) !== hidden).map(([part, hidden]) => ({ part, hidden }));
+		if (!redo.length) return;
+		const undo = redo.map(({ part }) => ({ part, hidden: this.hidden.includes(part) }));
+		const action = redo.every((v) => v.hidden) ? 'Hide' : redo.every((v) => !v.hidden) ? 'Show' : 'Toggle visibility of';
+		const target = redo.length === 1 ? (this.results[redo[0].part]?.name ?? redo[0].part) : `${redo.length} parts`;
+		this.applyVisibility(redo);
+		this.recordUndo({ kind: 'visibility', undo, redo, label: `${action} ${target}` });
+	}
+
+	private applyVisibility(changes: Visibility[]) {
+		const hidden = new Set(this.hidden);
+		for (const change of changes) {
+			if (change.hidden) hidden.add(change.part);
+			else hidden.delete(change.part);
+			this.viewer?.setVisible(change.part, !change.hidden);
+		}
+		this.hidden = [...hidden];
 		this.asm.check();
 	}
 
-	isolate(part: string | null) {
-		this.isolated = part && !(this.isolated.length === 1 && this.isolated[0] === part) ? [part] : [];
-		this.viewer?.isolate(this.isolated);
-		this.asm.check();
+	/** Start a section at a planar face, using an axis when its normal is aligned to one. */
+	sectionFromFace(plane: { origin: number[]; normal: number[] }) {
+		const k = plane.normal.findIndex((c) => Math.abs(c) > 1 - 1e-6);
+		this.section = k < 0
+			? { axis: 'Face', offset: 0, flip: false, plane }
+			: { axis: (['X', 'Y', 'Z'] as const)[k], offset: plane.origin[k], flip: plane.normal[k] < 0 };
 	}
 
-	/** Isolate a set of parts (a studio's parts); toggles off when exactly that set is isolated. */
-	isolateMany(parts: string[]) {
-		const same = this.isolated.length === parts.length && parts.every((p) => this.isolated.includes(p));
-		this.isolated = same ? [] : [...parts];
-		this.viewer?.isolate(this.isolated);
-		this.asm.check();
-	}
-
-	/** Section on/off (S). Turning it on restores the last axis, offset and flip used. */
+	/** Section on/off (S). Start at the selected planar face, otherwise restore the last settings. */
 	toggleSection(center = 0) {
 		if (this.section) return void (this.section = null);
+		const plane = this.selection.length === 1 ? this.viewer?.facePlane(this.selection[0]) : null;
+		if (plane) return this.sectionFromFace(plane);
 		let last: any = null;
 		try {
 			last = JSON.parse(localStorage.getItem('parasocial:section') ?? 'null');
@@ -682,9 +947,9 @@ export class WorkspaceState {
 		if (!v || this.doc?.headVersion !== version) return;
 		const parts = this.parts.flatMap((p) => {
 			const r = this.results[p],
-				mesh = v.meshOf(p);
+				mesh = this.meshes.get(p);
 			if (!r?.ok || !mesh) return [];
-			const hiddenEdges = new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : [])));
+			const hiddenEdges = new Set(r.edges.flatMap((e, i) => (e.seam || e.smooth ? [i] : [])));
 			return [{ id: p, mesh, faceEdges: r.faceEdges, hiddenEdges, color: { light: this.partColor(p, false), dark: this.partColor(p, true) }, appearance: r.appearance }];
 		});
 		if (!parts.length) return;
@@ -709,7 +974,7 @@ export class WorkspaceState {
 
 	/** Recolor viewer parts for a theme change. */
 	retheme(dark: boolean) {
-		for (const p of this.parts) this.viewer?.setPartColor(p, this.partColor(p, dark));
+		for (const p of this.shownParts) this.viewer?.setPartColor(p, this.partColor(p, dark));
 	}
 
 	untracked<T>(fn: () => T): T {

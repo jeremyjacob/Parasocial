@@ -33,7 +33,15 @@ function spawn(): Slot {
 
 function attach(slot: Slot) {
   slot.worker.onmessage = (ev) => {
+    if (slot !== current) return;
     const m = ev.data;
+    if (m?.type === "started") {
+      const p = pending.get(m.id);
+      if (p && p.timer === null && (p.req.op === "regenerate" || p.req.op === "regenerateSnapshot")) {
+        p.timer = setTimeout(replaceWorker, cfg.timeoutMs);
+      }
+      return;
+    }
     if (m?.type === "result") {
       const p = pending.get(m.id);
       if (p) {
@@ -73,8 +81,7 @@ function send(m: { id: number; req: any }) {
   const op = m.req?.op;
   if (op === "setDocument") docState = [m.req];
   else if (op === "setScript" || op === "setOverrides") docState.push(m.req);
-  const timer = op === "regenerate" || op === "regenerateSnapshot" ? setTimeout(replaceWorker, cfg.timeoutMs) : null;
-  pending.set(m.id, { timer, req: m.req });
+  pending.set(m.id, { timer: null, req: m.req });
   current.worker.postMessage(m);
 }
 

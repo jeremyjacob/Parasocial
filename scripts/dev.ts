@@ -21,6 +21,8 @@ if (import.meta.main) {
   await $`docker compose ${compose} up -d --wait postgres`.quiet();
   await $`bun ${join(root, "packages/sync/src/server/migrate.ts")}`.env({ ...process.env, ...DEV_ENV });
   await $`docker compose ${compose} up -d zero-cache`.quiet();
+  // the local MCP bridge the Connect dialog hands out (served from static/)
+  await $`bun run --cwd ${join(root, "packages/mcp-local")} bundle`.quiet();
   const env = { ...process.env, ...DEV_ENV };
   // the engine origin rebuilds its bundle on start; `--watch` restarts it when runtime sources change
   const engine = Bun.spawn(["bun", join(root, "packages/runtime/src/server/serve.ts")], { env: { ...env, ENGINE_PORT: "5174", APP_ORIGINS: DEV_ENV.APP_ORIGIN, ENGINE_WATCH: "1" }, stdout: "inherit", stderr: "inherit" });

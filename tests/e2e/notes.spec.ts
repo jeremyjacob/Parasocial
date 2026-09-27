@@ -40,16 +40,23 @@ test.describe("notes", () => {
 
     // a pin on the geometry, resolved by its stable name
     await expect(page.getByTestId("pin")).toHaveCount(1);
-    await expect(page.getByTestId("pin")).toHaveText("1");
+    await expect(page.getByTestId("pin")).toHaveAccessibleName("Note #1");
+    await expect(page.getByTestId("pin")).toHaveText("");
     await expect.poll(async () => (await pins(page))[0]?.resolution).toBe("name");
 
     // listed in the Notes tab (the composer switched to it)
     const card = page.getByTestId("notes-panel").getByTestId("note-card");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("#1");
-    await expect(card).toContainText("Face · Bracket");
+    await expect(card.locator("header").first()).toContainText("Bracket");
+    await expect(card.locator("header").first()).toContainText("Face");
     await expect(card).toContainText("Wall too thin here");
-    await expect(card).toContainText("Open");
+
+    // hovering the pin for a beat expands it into a peek at the note
+    await page.getByTestId("pin").hover();
+    await expect(page.getByTestId("pin-peek")).toContainText("Wall too thin here");
+    await page.mouse.move(5, 5);
+    await expect(page.getByTestId("pin-peek")).toHaveCount(0);
 
     // reply in the thread (⌘↩)
     const reply = card.getByRole("textbox", { name: "Reply" });
@@ -59,9 +66,8 @@ test.describe("notes", () => {
     await expect(reply).toHaveValue("");
     await expect.poll(() => wsEval<number>(page, "ws.notes[0].messages?.length ?? 0")).toBe(2);
 
-    // resolve from the actions menu: the default filter hides resolved notes
-    await card.getByRole("button", { name: "Note actions" }).click();
-    await page.getByRole("menuitem", { name: "Resolve" }).click();
+    // resolve is one click in the header: the default filter hides resolved notes
+    await card.getByRole("button", { name: "Resolve" }).click();
     await expect.poll(() => wsEval<string>(page, "ws.notes[0].status")).toBe("Resolved");
     await expect(page.getByTestId("notes-panel").getByTestId("note-card")).toHaveCount(0);
     await expect(page.getByTestId("notes-panel")).toContainText("No notes match these filters.");
@@ -105,11 +111,13 @@ test.describe("notes", () => {
     // the first stroke never pops the composer up
     expect(pen.ups[0]).toMatchObject({ shown: false, composer: false });
     // a stroke started within the pause keeps it hidden (only checkable when the page was fast enough)
-    if (pen.downs[1] - pen.ups[0].t < 800) expect(pen.ups[1]).toMatchObject({ shown: false, composer: false });
-    // it appears ~900ms after the stroke that preceded it, never sooner
+    if (pen.downs[1] - pen.ups[0].t < 550) expect(pen.ups[1]).toMatchObject({ shown: false, composer: false });
+    // it appears ~650ms after the stroke that preceded it, never sooner
     expect(pen.shownAt).toBeGreaterThan(pen.ups[0].t);
     const lastUp = Math.max(...pen.ups.map((u) => u.t).filter((t) => t < pen.shownAt));
-    expect(pen.shownAt - lastUp).toBeGreaterThanOrEqual(850);
+    expect(pen.shownAt - lastUp).toBeGreaterThanOrEqual(600);
+    // and takes focus so you can type straight away
+    await expect(page.getByTestId("note-text")).toBeFocused();
 
     expect(await wsEval<number>(page, "globalThis.__nc.draft.targets.length")).toBeGreaterThan(0);
     await page.getByTestId("note-text").fill("Round this corner off");
@@ -134,7 +142,8 @@ test.describe("notes", () => {
     await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(1);
     expect(await wsEval<number>(page, "globalThis.__nc.strokes[0].points.length")).toBe(1);
     await expect(page.getByTestId("note-composer")).toBeVisible();
-    await expect(page.getByTestId("note-text")).not.toBeFocused();
+    // the composer takes focus, but with nothing typed ⌘Z still undoes the stroke
+    await expect(page.getByTestId("note-text")).toBeFocused();
 
     await page.keyboard.press("Meta+z");
     await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(0);
@@ -151,6 +160,32 @@ test.describe("notes", () => {
     await page.getByTestId("note-post").click();
     await expect.poll(() => wsEval<number>(page, "ws.notes.length")).toBe(1);
     expect(await wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(0);
+  });
+
+  test("pencil: short strokes and dots off the model persist and can be posted", async ({ page }) => {
+    await page.keyboard.press("p");
+    const a = await viewportPoint(page, 0.15, 0.2);
+    const b = { x: a.x + 3, y: a.y + 2 };
+    expect(await page.evaluate(({ x, y }) => {
+      const rect = document.querySelector('[data-testid="viewport"]')!.getBoundingClientRect();
+      return (globalThis as any).__viewer.pickPoint(x - rect.left, y - rect.top);
+    }, a)).toBeNull();
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y);
+    await page.mouse.up();
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(1);
+    await page.mouse.click(a.x - 12, a.y);
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(2);
+    expect(await wsEval<number[]>(page, "globalThis.__nc.strokes.map(s => s.points.length).sort()")).toEqual([1, 2]);
+    await expect.poll(() => wsEval<number>(page, "ws.viewer.markup.children.length")).toBe(2);
+    await expect(page.getByTestId("note-composer")).toBeVisible();
+    await page.getByTestId("note-post").click();
+    await expect.poll(() => wsEval<number>(page, "ws.notes.length")).toBe(1);
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.filter(s => s.noteID === ws.notes[0].id).length")).toBe(2);
+    await page.reload();
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc?.strokes.length ?? 0")).toBe(2);
+    await expect.poll(() => wsEval<number>(page, "ws?.viewer?.markup.children.length ?? 0")).toBe(2);
   });
 
   test("pencil: preserves the starting point off the model and erasing is undoable", async ({ page }) => {

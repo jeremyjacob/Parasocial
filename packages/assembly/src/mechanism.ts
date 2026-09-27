@@ -1,9 +1,10 @@
-// The assembly solver. Parts are modeled in place, so the modeled layout is the "home" pose: every
-// joint's variables are 0 there and every part's transform is the identity. A joint relates two
-// parts through one frame (in home coordinates): moving the joint by q moves part b relative to
-// part a by M(q) expressed in that frame, so
+// The assembly solver. Every joint's variables are 0 in the "home" pose, where each body sits at
+// its home transform (the identity for a part used where it's modeled; a copy placed elsewhere has
+// its own). A body's transform T maps its part's own coordinates to the world. A joint relates two
+// bodies through a frame on each (in that body's part coordinates; the frames coincide at home):
+// moving the joint by q moves b relative to a by M(q) expressed in those frames, so
 //
-//   T_b = T_a · F · M(q) · F⁻¹
+//   T_b = T_a · F_a · M(q) · F_b⁻¹
 //
 // Unknowns are the joint variables. A spanning tree from the fixed parts turns most joints into
 // forward kinematics; joints that close a loop become 6-D residuals the solver drives to zero.
@@ -33,8 +34,10 @@ export type JointSpec = {
   type: JointType;
   a: string;
   b: string;
-  /** The joint frame in home coordinates: z is the axis (revolute, slider, cylindrical) or the normal (planar). */
-  frame: Frame;
+  /** The joint frame in home (world) coordinates: z is the axis (revolute, slider, cylindrical) or the normal (planar). */
+  frame?: Frame;
+  /** Or the frame on each body, in its part's own coordinates (they coincide at home). */
+  frames?: { a: Frame; b: Frame };
   /** Per variable; null or missing = free. */
   limits?: (Range | null | undefined)[];
   /** Starting values (default 0, clamped into the limits). */
@@ -45,6 +48,8 @@ export type MechanismSpec = {
   joints: JointSpec[];
   /** Parts that never move. Each connected group without one keeps its first part still. */
   fixed?: string[];
+  /** Where bodies sit with every joint at 0 (default: the identity, where the part is modeled). Bodies listed here without joints stay put. */
+  home?: Record<string, Pose>;
   /** Characteristic length (mm): weighs rotation residuals against translations. Default 50. */
   scale?: number;
 };
@@ -67,7 +72,7 @@ export function motion(type: JointType, q: ArrayLike<number>, o = 0): Pose {
   }
 }
 
-type Joint = JointSpec & { F: Pose; Finv: Pose; off: number; n: number; lo: number[]; hi: number[] };
+type Joint = JointSpec & { Fa: Pose; Fb: Pose; FaInv: Pose; FbInv: Pose; off: number; n: number; lo: number[]; hi: number[] };
 type Link = { body: string; parent: string; joint: Joint; forward: boolean };
 
 export class Mechanism {
@@ -79,16 +84,25 @@ export class Mechanism {
   private links: Link[] = [];
   private loops: Joint[] = [];
   private L: number;
+  private home: Map<string, Pose>;
 
   constructor(spec: MechanismSpec) {
     this.L = spec.scale && spec.scale > 0 ? spec.scale : 50;
+    this.home = new Map(Object.entries(spec.home ?? {}));
+    const homeOf = (b: string) => this.home.get(b) ?? identity();
     let off = 0;
     this.joints = spec.joints.map((j) => {
       const n = JOINT_VARS[j.type].length;
-      const F = framePose(j.frame);
+      let Fa: Pose, Fb: Pose;
+      if (j.frames) (Fa = framePose(j.frames.a)), (Fb = framePose(j.frames.b));
+      else if (j.frame) {
+        const F = framePose(j.frame);
+        Fa = compose(inverse(homeOf(j.a)), F);
+        Fb = compose(inverse(homeOf(j.b)), F);
+      } else throw new Error(`joint "${j.name}": give frame or frames`);
       const lo = [...Array(n)].map((_, i) => j.limits?.[i]?.min ?? -Infinity);
       const hi = [...Array(n)].map((_, i) => j.limits?.[i]?.max ?? Infinity);
-      const joint = { ...j, F, Finv: inverse(F), off, n, lo, hi };
+      const joint = { ...j, Fa, Fb, FaInv: inverse(Fa), FbInv: inverse(Fb), off, n, lo, hi };
       off += n;
       return joint;
     });
@@ -97,6 +111,7 @@ export class Mechanism {
 
     const bodies: string[] = [];
     for (const j of this.joints) for (const p of [j.a, j.b]) if (!bodies.includes(p)) bodies.push(p);
+    for (const p of this.home.keys()) if (!bodies.includes(p)) bodies.push(p);
     this.bodies = bodies;
     // connected groups; each needs something fixed
     const adj = new Map<string, { joint: Joint; other: string }[]>(bodies.map((b) => [b, []]));
@@ -133,13 +148,14 @@ export class Mechanism {
     this.loops = this.joints.filter((j) => !used.has(j));
   }
 
-  /** Every part's transform from its home pose, for variables `x`. */
+  /** Every body's transform (its part's coordinates to the world) for variables `x`. */
   poses(x: ArrayLike<number> = this.x): Map<string, Pose> {
     const out = new Map<string, Pose>();
-    for (const f of this.fixed) out.set(f, identity());
+    for (const f of this.fixed) out.set(f, this.home.get(f) ?? identity());
     for (const { body, parent, joint: j, forward } of this.links) {
       const M = motion(j.type, x, j.off);
-      out.set(body, compose(out.get(parent)!, compose(j.F, compose(forward ? M : inverse(M), j.Finv))));
+      // forward: T_b = T_a · F_a · M · F_b⁻¹; backward: T_a = T_b · F_b · M⁻¹ · F_a⁻¹
+      out.set(body, forward ? compose(out.get(parent)!, compose(j.Fa, compose(M, j.FbInv))) : compose(out.get(parent)!, compose(j.Fb, compose(inverse(M), j.FaInv))));
     }
     return out;
   }
@@ -147,7 +163,7 @@ export class Mechanism {
   /** Loop-closure residuals (6 per loop joint: rotation scaled by the characteristic length, then translation). */
   private loopResiduals(poses: Map<string, Pose>, x: ArrayLike<number>, out: number[]) {
     for (const j of this.loops) {
-      const E = compose(j.Finv, compose(inverse(poses.get(j.a)!), compose(poses.get(j.b)!, j.F)));
+      const E = compose(j.FaInv, compose(inverse(poses.get(j.a)!), compose(poses.get(j.b)!, j.Fb)));
       const D = compose(inverse(motion(j.type, x, j.off)), E);
       const w = logRot(D.r);
       out.push(w[0] * this.L, w[1] * this.L, w[2] * this.L, D.t[0], D.t[1], D.t[2]);
@@ -243,7 +259,7 @@ export class Mechanism {
   }
 
   /**
-   * Drag: move `body` so the point `local` (home coordinates of that part) follows `target`
+   * Drag: move `body` so the point `local` (its part's coordinates) follows `target`
    * (world), within the joints. Returns true if anything moved.
    */
   drag(body: string, local: Vec3, target: Vec3): boolean {
@@ -284,6 +300,40 @@ export class Mechanism {
     };
     const r = residual(this.x);
     return n - rank(jacobian(residual, this.x, r), r.length, n, 1e-6);
+  }
+
+  /**
+   * The joints that drive the mechanism: in declaration order, each joint whose variables add a
+   * degree of freedom the earlier ones don't already set. In a closed loop, the first joint drives
+   * and the rest follow; joints with no variables (fastened) never drive.
+   */
+  drivers(): string[] {
+    const n = this.x.length;
+    const loopRes = (y: Float64Array) => {
+      const r: number[] = [];
+      this.loopResiduals(this.poses(y), y, r);
+      return r;
+    };
+    const r0 = loopRes(this.x);
+    const rows: number[][] = [];
+    const J = jacobian(loopRes, this.x, r0);
+    for (let k = 0; k < r0.length; k++) rows.push([...J.subarray(k * n, (k + 1) * n)]);
+    const rankOf = (rs: number[][]) => (rs.length ? rank(Float64Array.from(rs.flat()), rs.length, n, 1e-6) : 0);
+    let have = rankOf(rows);
+    const out: string[] = [];
+    for (const j of this.joints) {
+      let drives = false;
+      for (let i = 0; i < j.n; i++) {
+        const e = new Array(n).fill(0);
+        e[j.off + i] = 1;
+        rows.push(e);
+        const r = rankOf(rows);
+        if (r > have) (have = r), (drives = true);
+        else rows.pop();
+      }
+      if (drives) out.push(j.name);
+    }
+    return out;
   }
 
   /** Can dragging move this part at all (not fixed, and some freedom reaches it)? */

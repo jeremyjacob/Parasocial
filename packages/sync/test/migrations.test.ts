@@ -11,7 +11,7 @@ test("embedded migrations match packages/sync/migrations (run scripts/gen-migrat
   expect(MIGRATIONS.map(([n, s]) => [n, s])).toEqual((await readMigrations()).map(([n, s]) => [n, s]));
 });
 
-test("0005 moves parts/ scripts and version snapshots to studios/", async () => {
+test("0005 moves parts/ scripts and version snapshots to studios/; 0006 resolves AwaitingReview notes", async () => {
   const name = `ps_test_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const admin = postgres(TEST_URL, { max: 1, onnotice: () => {} });
   await admin.unsafe(`CREATE DATABASE ${name}`);
@@ -29,7 +29,10 @@ test("0005 moves parts/ scripts and version snapshots to studios/", async () => 
     const snapshot = { scripts: { "parts/case.ts": "a", "lib/holes.ts": "b" }, params: { configurations: [] } };
     await sql`INSERT INTO versions (id, document_id, number, kind, message, snapshot) VALUES ('v', 'd', 1, 'script', 'x', ${sql.json(snapshot)})`;
 
-    expect(await migrate(sql)).toEqual(["0005_studios.sql"]);
+    await sql`INSERT INTO notes (id, document_id, anchor, status) VALUES ('n', 'd', '{}', 'AwaitingReview')`;
+
+    expect(await migrate(sql)).toEqual(["0005_studios.sql", "0006_drop_awaiting_review.sql"]);
+    expect((await sql`SELECT status FROM notes`)[0]!.status).toBe("Resolved");
     expect((await sql`SELECT path FROM scripts ORDER BY path`).map((r) => r.path)).toEqual(["lib/holes.ts", "studios/case.ts"]);
     const [v] = await sql`SELECT snapshot FROM versions`;
     expect(v!.snapshot).toEqual({ scripts: { "studios/case.ts": "a", "lib/holes.ts": "b" }, params: { configurations: [] } });

@@ -4,7 +4,7 @@ export type Vec3 = [number, number, number];
 export type BlobHash = string; // sha256 hex
 
 export type Role = "owner" | "editor" | "viewer";
-export type NoteStatus = "Open" | "AgentWorking" | "AwaitingReview" | "Resolved";
+export type NoteStatus = "Open" | "AgentWorking" | "Resolved";
 export type AgentStatus = "idle" | "working" | "writing" | "disconnected";
 export type VersionKind = "script" | "params" | "restore" | "import";
 

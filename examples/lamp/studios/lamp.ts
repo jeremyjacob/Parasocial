@@ -4,14 +4,14 @@ export const name = "Lamp";
 
 // An articulated desk lamp. Two parallelogram linkages (an arm plus a thinner rod, pinned to
 // knuckles at both ends) keep the elbow knuckle and the wrist level wherever the arms go, so
-// the shade keeps pointing where it was aimed. Every part is modeled in place at its home pose;
-// studios/mechanism.ts joins them (drag the arms, the shade or the turntable in the viewport).
+// the shade keeps pointing where it was aimed. Parts are modeled in place at their home pose and
+// stay put; studios/mechanism.ts assembles copies of them (drag the arms, shade or turntable).
 //
 // Side view: x forward, z up; every pivot axis runs along Y. The knuckles (turret fin, elbow,
 // wrist) are thin fins on the center plane; the arms ride on one side of them, the rods on the
 // other, so the two halves of each parallelogram never meet.
 
-// ---------- layout (shared by every part, so the loops close exactly) ----------
+// ---------- layout ----------
 const BASE_H = 18;
 const GAP = 0.5; // under the turntable
 const FIN = 4; // knuckle fins: |y| <= FIN
@@ -23,21 +23,26 @@ const HOLE_R = 3.8; // 0.3 mm running clearance on the pins
 const pt = (p: P2, d: P2): P2 => [p[0] + d[0], p[1] + d[1]];
 const polar = (p: P2, len: number, deg: number): P2 => pt(p, [len * Math.cos((deg * Math.PI) / 180), len * Math.sin((deg * Math.PI) / 180)]);
 
-/** Lower arm: 210 mm at 62° up; upper arm: 200 mm at 12° down (home pose). */
-const LOWER = { length: 210, angle: 62 };
-const UPPER = { length: 200, angle: -12 };
-
-// pivots, as (x, z). Arms pivot on +y, rods on -y.
-const A0: P2 = [0, 120]; // shoulder: lower arm on the turret
-const B0: P2 = pt(A0, [-26, 0]); // shoulder: lower rod
-const A1: P2 = polar(A0, LOWER.length, LOWER.angle); // elbow: lower arm
-const B1: P2 = polar(B0, LOWER.length, LOWER.angle); // elbow: lower rod
-const C0: P2 = pt(A1, [10, 34]); // elbow: upper arm
-const D0: P2 = pt(C0, [0, -26]); // elbow: upper rod
-const C1: P2 = polar(C0, UPPER.length, UPPER.angle); // wrist: upper arm
-const D1: P2 = polar(D0, UPPER.length, UPPER.angle); // wrist: upper rod
-const H: P2 = pt(C1, [40, -14]); // wrist: shade tilt
-const SHADE: P2 = pt(H, [0, -46]); // shade's socket plane, on the shade axis
+/**
+ * The linkage layout, as (x, z) pivots; arms pivot on +y, rods on -y. The arm lengths are shared
+ * params: every part that touches a loop reads the same value, so the loops close at any length.
+ * Home pose: the lower arm at 62° up, the upper arm at 12° down.
+ */
+function layout() {
+  const lower = param("lowerArm", 210, { min: 180, max: 240, unit: mm, shared: true, label: "lower arm" });
+  const upper = param("upperArm", 200, { min: 170, max: 230, unit: mm, shared: true, label: "upper arm" });
+  const A0: P2 = [0, 120]; // shoulder: lower arm on the turret
+  const B0: P2 = pt(A0, [-26, 0]); // shoulder: lower rod
+  const A1: P2 = polar(A0, lower, 62); // elbow: lower arm
+  const B1: P2 = polar(B0, lower, 62); // elbow: lower rod
+  const C0: P2 = pt(A1, [10, 34]); // elbow: upper arm
+  const D0: P2 = pt(C0, [0, -26]); // elbow: upper rod
+  const C1: P2 = polar(C0, upper, -12); // wrist: upper arm
+  const D1: P2 = polar(D0, upper, -12); // wrist: upper rod
+  const H: P2 = pt(C1, [40, -14]); // wrist: shade tilt
+  const SHADE: P2 = pt(H, [0, -46]); // shade's socket plane, on the shade axis
+  return { A0, B0, A1, B1, C0, D0, C1, D1, H, SHADE };
+}
 
 /** A frame on a pivot: axis along -Y, so positive angles swing counterclockwise in side view (arms up). */
 const pivot = (p: P2) => ({ origin: [p[0], 0, p[1]] as [number, number, number], axis: [0, -1, 0] as [number, number, number], x: "X" as const });
@@ -125,6 +130,7 @@ export default part("Base", () => {
 });
 
 export const turret = part("Turret", () => {
+  const { A0, B0 } = layout();
   const z0 = BASE_H + GAP;
   const ring = sketch(plane.XY.offset(z0)).circle([0, 0], 42, { tag: "ring" }).extrude(10, { tag: "table" });
   const table = ring.chamfer(ring.edges("table.cap.end"), 2, { tag: "tableEdge" });
@@ -144,36 +150,43 @@ export const turret = part("Turret", () => {
     .connector("rod", pivot(B0));
 });
 
-export const lowerArm = part("Lower arm", () =>
-  link(A0, A1, 18, 1, "lowerArm").color("#d8452e").appearance({ roughness: 0.35 }).material("aluminum").connector("elbow", pivot(A1)),
-);
+export const lowerArm = part("Lower arm", () => {
+  const { A0, A1 } = layout();
+  return link(A0, A1, 18, 1, "lowerArm").color("#d8452e").appearance({ roughness: 0.35 }).material("aluminum").connector("elbow", pivot(A1));
+});
 
-export const lowerRod = part("Lower rod", () =>
-  link(B0, B1, 11, -1, "lowerRod").color("#8b9097").appearance(ALU).material("steel").connector("elbow", pivot(B1)),
-);
+export const lowerRod = part("Lower rod", () => {
+  const { B0, B1 } = layout();
+  return link(B0, B1, 11, -1, "lowerRod").color("#8b9097").appearance(ALU).material("steel").connector("elbow", pivot(B1));
+});
 
-export const elbow = part("Elbow", () =>
-  knuckle([A1, B1, C0, D0], [[A1, 1], [B1, -1], [C0, 1], [D0, -1]], 11, "elbow")
+export const elbow = part("Elbow", () => {
+  const { A1, B1, C0, D0 } = layout();
+  return knuckle([A1, B1, C0, D0], [[A1, 1], [B1, -1], [C0, 1], [D0, -1]], 11, "elbow")
     .color("#c7cbd1")
     .appearance(ALU)
     .material("aluminum")
     .connector("arm", pivot(C0))
-    .connector("rod", pivot(D0)),
-);
+    .connector("rod", pivot(D0));
+});
 
-export const upperArm = part("Upper arm", () =>
-  link(C0, C1, 16, 1, "upperArm").color("#d8452e").appearance({ roughness: 0.35 }).material("aluminum").connector("wrist", pivot(C1)),
-);
+export const upperArm = part("Upper arm", () => {
+  const { C0, C1 } = layout();
+  return link(C0, C1, 16, 1, "upperArm").color("#d8452e").appearance({ roughness: 0.35 }).material("aluminum").connector("wrist", pivot(C1));
+});
 
-export const upperRod = part("Upper rod", () =>
-  link(D0, D1, 10, -1, "upperRod").color("#8b9097").appearance(ALU).material("steel").connector("wrist", pivot(D1)),
-);
+export const upperRod = part("Upper rod", () => {
+  const { D0, D1 } = layout();
+  return link(D0, D1, 10, -1, "upperRod").color("#8b9097").appearance(ALU).material("steel").connector("wrist", pivot(D1));
+});
 
-export const wrist = part("Wrist", () =>
-  knuckle([C1, D1, H], [[C1, 1], [D1, -1], [H, 1]], 10, "wrist").color("#c7cbd1").appearance(ALU).material("aluminum").connector("tilt", pivot(H)),
-);
+export const wrist = part("Wrist", () => {
+  const { C1, D1, H } = layout();
+  return knuckle([C1, D1, H], [[C1, 1], [D1, -1], [H, 1]], 10, "wrist").color("#c7cbd1").appearance(ALU).material("aluminum").connector("tilt", pivot(H));
+});
 
 export const shade = part("Shade", () => {
+  const { H, SHADE } = layout();
   const d = param("shade", 116, { min: 96, max: 130, unit: mm, label: "shade diameter" });
   const R = d / 2;
   // a bell, 3 mm wall, on a socket; revolved about the vertical shade axis
@@ -194,6 +207,7 @@ export const shade = part("Shade", () => {
 });
 
 export const bulb = part("Bulb", () => {
+  const { SHADE } = layout();
   // a globe under the socket, 0.3 mm below it
   const s = sketch(plane.XZ.at([SHADE[0], 0, SHADE[1]]), { tag: "globeSketch" })
     .moveTo([0, -6.3])

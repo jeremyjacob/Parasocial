@@ -192,6 +192,11 @@ export type LoadOptions = {
   cache?: Map<string, { exports: any }>;
   /** Called when a module finishes evaluating (dependencies finish before their importers). */
   onLoaded?: (path: string, exports: Record<string, any>) => void;
+  /**
+   * Collects every script path the load reads or looks for (including missing ones, and imports
+   * made later, while the part builds): what a change must touch to affect the result.
+   */
+  touched?: Set<string>;
 };
 
 /** Where frames from evaluated modules point, for mapping stack traces back to scripts. */
@@ -223,12 +228,16 @@ export function loadModule(entry: string, o: LoadOptions): Record<string, any> {
       } else parts.push(seg);
     }
     let p = parts.join("/");
-    for (const cand of [p, `${p}.ts`, `${p}/index.ts`]) if (o.scripts.has(cand)) return cand;
+    for (const cand of [p, `${p}.ts`, `${p}/index.ts`]) {
+      o.touched?.add(cand);
+      if (o.scripts.has(cand)) return cand;
+    }
     throw new ScriptError(`cannot find "${spec}" (looked for ${p}.ts)`, from, undefined, undefined, "runtime");
   };
 
   const load = (path: string): any => {
     if (path === "parasocial") return api;
+    o.touched?.add(path);
     const hit = cache.get(path);
     if (hit) return hit.exports;
     if (!/^(studios|lib)\//.test(path)) throw new ScriptError(`scripts must live under studios/ or lib/ (got ${path})`, path);

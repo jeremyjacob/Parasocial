@@ -1,9 +1,12 @@
 // CAD navigation (§8 Viewport): orbit about the point under the cursor, zoom to cursor, pan,
-// trackpad pinch/scroll, Space-drag pan, configurable presets. Z is up. Camera moves are
+// trackpad pinch/scroll, configurable presets. Z is up. Camera moves are
 // animated (ease-out, interruptible) and never delay input.
 import * as THREE from "three";
 
-export type NavPreset = "onshape" | "solidworks" | "fusion" | "trackpad";
+/** Mouse button mapping. Trackpad gestures are recognized under every preset. */
+export type NavPreset = "onshape" | "solidworks" | "fusion";
+/** What a two-finger scroll does on a trackpad (shift swaps to the other). */
+export type TrackpadScroll = "orbit" | "pan";
 type Gesture = "orbit" | "pan" | null;
 
 export type ControlsHost = {
@@ -22,10 +25,9 @@ const ease = (t: number) => 1 - Math.pow(1 - t, 3);
 export class CadControls {
   target = new THREE.Vector3();
   preset: NavPreset = "onshape";
+  trackpadScroll: TrackpadScroll = "orbit";
   enabled = true;
   reducedMotion = false;
-  /** Holding Space turns left-drag into pan (Figma convention). */
-  spaceHeld = false;
   private gesture: Gesture = null;
   private last = new THREE.Vector2();
   private pivot = new THREE.Vector3();
@@ -43,16 +45,18 @@ export class CadControls {
     el.addEventListener("pointerdown", this.onDown);
     el.addEventListener("wheel", this.onWheel, { passive: false });
     el.addEventListener("contextmenu", this.onContext);
-    window.addEventListener("keydown", this.onKey);
-    window.addEventListener("keyup", this.onKey);
+    el.addEventListener("gesturestart", this.onGestureStart);
+    el.addEventListener("gesturechange", this.onGestureChange);
+    el.addEventListener("gestureend", this.onGestureEnd);
   }
 
   dispose() {
     this.el.removeEventListener("pointerdown", this.onDown);
     this.el.removeEventListener("wheel", this.onWheel);
     this.el.removeEventListener("contextmenu", this.onContext);
-    window.removeEventListener("keydown", this.onKey);
-    window.removeEventListener("keyup", this.onKey);
+    this.el.removeEventListener("gesturestart", this.onGestureStart);
+    this.el.removeEventListener("gesturechange", this.onGestureChange);
+    this.el.removeEventListener("gestureend", this.onGestureEnd);
   }
 
   private suppressContext = false;
@@ -65,17 +69,8 @@ export class CadControls {
     }
   };
 
-  private onKey = (e: KeyboardEvent) => {
-    if (e.code !== "Space") return;
-    const t = e.target as HTMLElement | null;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    this.spaceHeld = e.type === "keydown";
-    this.el.style.cursor = this.spaceHeld ? "grab" : "";
-  };
-
   /** Which gesture a pointer-down starts, per preset. Left-drag stays with the app (select / box). */
   private gestureFor(e: PointerEvent): Gesture {
-    if (e.button === 0 && this.spaceHeld) return "pan";
     if (e.button === 0 && e.altKey && !e.shiftKey) return "orbit";
     switch (this.preset) {
       case "onshape":
@@ -88,10 +83,6 @@ export class CadControls {
         return null;
       case "fusion":
         if (e.button === 1) return e.shiftKey ? "orbit" : "pan";
-        return null;
-      case "trackpad":
-        if (e.button === 2) return "orbit";
-        if (e.button === 1) return "pan";
         return null;
     }
   }
@@ -167,55 +158,156 @@ export class CadControls {
     this.el.removeEventListener("pointermove", this.onMove);
     this.el.removeEventListener("pointerup", this.onUp);
     this.el.removeEventListener("pointercancel", this.onUp);
-    this.el.style.cursor = this.spaceHeld ? "grab" : "";
+    this.el.style.cursor = "";
     this.host.moving(false);
   };
+
+  /**
+   * Also take wheel and pinch input over `root`'s overlays (pins, pills, toolbars, the view cube),
+   * so a gesture doesn't die, or pinch-zoom the page, because the cursor crossed a chip. Anything
+   * that can itself scroll the way the fingers are going keeps its own scroll.
+   */
+  listenOn(root: HTMLElement): () => void {
+    const fromOverlay = (e: Event) => e.target !== this.el && !e.defaultPrevented && e.target instanceof Element;
+    const wheel = (e: WheelEvent) => {
+      if (fromOverlay(e) && (e.ctrlKey || !scrollsItself(e.target as Element, root, e))) this.onWheel(e);
+    };
+    const gesture = (e: Event) => {
+      if (!fromOverlay(e)) return;
+      if (e.type === "gesturestart") this.onGestureStart(e);
+      else if (e.type === "gesturechange") this.onGestureChange(e);
+      else this.onGestureEnd(e);
+    };
+    root.addEventListener("wheel", wheel, { passive: false });
+    for (const t of GESTURES) root.addEventListener(t, gesture);
+    return () => {
+      root.removeEventListener("wheel", wheel);
+      for (const t of GESTURES) root.removeEventListener(t, gesture);
+    };
+  }
 
   private onWheel = (e: WheelEvent) => {
     if (!this.enabled) return;
     e.preventDefault();
+    // Safari reports its pinch as gesture events; ignore any wheel echo of it
+    if (this.gestureScale !== null) return;
     this.stopAnim();
     const r = this.el.getBoundingClientRect();
     const x = e.clientX - r.left,
       y = e.clientY - r.top;
-    const scale = e.deltaMode === 1 ? 16 : 1;
-    const isPinch = e.ctrlKey; // trackpad pinch arrives as ctrl+wheel
-    if (this.preset === "trackpad" && !isPinch) {
-      const now = performance.now();
-      if (e.shiftKey) this.pan(-e.deltaX * scale, -e.deltaY * scale, this.depthAt(x, y));
-      else if (!this.isCoasting(Math.hypot(e.deltaX, e.deltaY) * scale, now)) this.orbit(-e.deltaX * scale * 0.6, -e.deltaY * scale * 0.6, this.target);
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.el.clientHeight || 800 : 1;
+    const dx = e.deltaX * unit,
+      dy = e.deltaY * unit;
+    const s = this.wheelStream(e, x, y);
+
+    if (e.ctrlKey && s.trackpad) {
+      // pinch: Chromium sends deltaY = −100·ln(scale), so this keeps the model under the fingers 1:1
+      this.zoomAt(x, y, Math.exp(THREE.MathUtils.clamp(dy / 100, -0.5, 0.5)));
+    } else if (s.trackpad && e.metaKey) {
+      // ⌘-scroll zooms (Figma convention), for when a pinch is awkward
+      this.zoomAt(x, y, Math.exp(THREE.MathUtils.clamp(dy * 0.005, -0.5, 0.5)));
+    } else if (s.trackpad) {
+      const mode = e.shiftKey ? (this.trackpadScroll === "orbit" ? "pan" : "orbit") : this.trackpadScroll;
+      if (mode === "pan") {
+        // natural scrolling: the content follows the fingers, the grabbed point stays under the cursor
+        s.panDepth ??= this.depthAt(x, y);
+        this.pan(-dx, -dy, s.panDepth);
+      } else {
+        const k = 1.0 * this.momentumDamping(dx, dy);
+        // about the view's center at the model's depth, not the cursor: on a trackpad the cursor is
+        // wherever it was left, not a point you grabbed (a mouse drag grabs one, so it pivots there)
+        s.pivot ??= this.viewCenterPivot();
+        if (k) this.orbit(-dx * k, -dy * k, s.pivot);
+      }
     } else {
-      // clamp each event so momentum bursts don't lurch, then accelerate gently while the wheel
-      // keeps turning (consecutive events within ~90 ms ramp up to 2.2×)
-      const raw = e.deltaY * scale;
+      // a notched wheel zooms: clamp each event so fast spins don't lurch, then accelerate gently
+      // while the wheel keeps turning (consecutive events within ~90 ms ramp up to 2.2×)
+      const raw = dy || dx;
       const now = performance.now();
       this.wheelStreak = now - this.lastWheel < 90 && Math.sign(raw) === this.wheelSign ? Math.min(this.wheelStreak + 1, 12) : 0;
       this.lastWheel = now;
       this.wheelSign = Math.sign(raw);
       const accel = 1 + this.wheelStreak * 0.1;
-      const d = isPinch ? THREE.MathUtils.clamp(raw * 0.012, -0.1, 0.1) : THREE.MathUtils.clamp(raw, -100, 100) * 0.0019 * accel;
-      this.zoomAt(x, y, Math.exp(d));
+      this.zoomAt(x, y, Math.exp(THREE.MathUtils.clamp(raw, -100, 100) * 0.0019 * accel));
     }
     this.pulseMoving();
   };
 
   /**
-   * macOS keeps sending scroll events after the fingers lift (momentum). CAD orbit shouldn't
-   * coast, so once a scroll stream decays smoothly for a few events, drop the rest of it until
-   * the stream ends (a gap) or picks up again (fingers back on the pad). Browsers don't expose
-   * the momentum phase, so this is a heuristic on the delta envelope.
+   * The scroll stream this event belongs to: events keep arriving every frame while fingers are down
+   * and through the momentum tail, so a gap (or the cursor moving) starts a new one. Per stream we
+   * decide trackpad vs wheel once, and fix the orbit pivot / pan depth once (a pick stalls on the GPU).
    */
-  private isCoasting(mag: number, now: number): boolean {
-    const c = this.coast;
-    if (now - c.t > 120) c.prev = Infinity, c.decays = 0, c.drop = false; // a new stream
-    c.t = now;
-    if (mag < c.prev * 0.97 && c.prev !== Infinity) c.decays++;
-    else if (mag > c.prev * 1.03) c.decays = 0, c.drop = false;
-    c.prev = mag;
-    if (c.decays >= 4) c.drop = true;
-    return c.drop;
+  private wheelStream(e: WheelEvent, x: number, y: number) {
+    const now = performance.now();
+    let s = this.stream;
+    if (!s || now - s.t > 200 || Math.abs(x - s.x) + Math.abs(y - s.y) > 3 || s.ctrl !== e.ctrlKey) {
+      s = this.stream = { t: now, x, y, ctrl: e.ctrlKey, trackpad: fromTrackpad(e), pivot: null, panDepth: null };
+      this.coast = { prev: 0, ratio: 0, dir: 0, run: 0 };
+    }
+    s.t = now;
+    // a mouse wheel only scrolls sideways with shift held: a diagonal delta is a trackpad
+    if (!s.trackpad && e.deltaMode === 0 && e.deltaX !== 0 && e.deltaY !== 0) s.trackpad = true;
+    return s;
   }
-  private coast = { t: 0, prev: Infinity, decays: 0, drop: false };
+  private stream: { t: number; x: number; y: number; ctrl: boolean; trackpad: boolean; pivot: THREE.Vector3 | null; panDepth: number | null } | null = null;
+
+  /**
+   * macOS keeps scrolling after the fingers lift (momentum). CAD orbit shouldn't coast far past the
+   * view you stopped on, so momentum gets extra friction: once a run looks like momentum (shrinking
+   * by a steady ratio in a fixed direction) each event is weighted 1/(1 + n/1.5)², n events into the
+   * run. That brakes hard at release, then glides out along macOS's own tail instead of stopping dead.
+   * Fingers slowing on purpose wobble in size and direction, which resets the run, so they keep
+   * control; a pickup (fingers back on the pad) ends it. Browsers don't expose the scroll phase, so
+   * this reads the delta envelope. Returns the weight to apply the event with.
+   */
+  private momentumDamping(dx: number, dy: number): number {
+    const c = this.coast;
+    const mag = Math.hypot(dx, dy);
+    if (!mag) return 0;
+    const dir = Math.atan2(dy, dx);
+    if (c.prev) {
+      const r = mag / c.prev;
+      if (c.run >= 3) {
+        // confirmed: follow the tail (integer rounding makes it stutter) until the fingers pick up
+        if (mag > c.prev * 1.2 + 1) (c.run = 0), (c.ratio = 0);
+        else c.run++;
+      } else {
+        // integer deltas make small vectors' directions coarse: only judge direction on bigger ones
+        const turn = Math.abs(Math.atan2(Math.sin(dir - c.dir), Math.cos(dir - c.dir)));
+        const straight = mag < 8 || turn < 0.08;
+        if (r === 1 && straight) {
+          // a repeated value (integer rounding) neither confirms nor breaks the run
+        } else if (r < 1 && r > 0.6 && straight && (!c.ratio || Math.abs(r - c.ratio) < 0.08)) c.run++, (c.ratio = r);
+        else (c.run = 0), (c.ratio = 0);
+      }
+    }
+    c.prev = mag;
+    c.dir = dir;
+    return 1 / (1 + c.run / 1.5) ** 2;
+  }
+  private coast = { prev: 0, ratio: 0, dir: 0, run: 0 };
+
+  // Safari reports pinches as gesture events (scale since the gesture began), not ctrl+wheel
+  private gestureScale: number | null = null;
+  private onGestureStart = (e: any) => {
+    e.preventDefault();
+    if (!this.enabled) return;
+    this.stopAnim();
+    this.gestureScale = e.scale ?? 1;
+  };
+  private onGestureChange = (e: any) => {
+    e.preventDefault();
+    if (!this.enabled || this.gestureScale === null || !e.scale) return;
+    const r = this.el.getBoundingClientRect();
+    this.zoomAt(e.clientX - r.left, e.clientY - r.top, this.gestureScale / e.scale);
+    this.gestureScale = e.scale;
+    this.pulseMoving();
+  };
+  private onGestureEnd = (e: any) => {
+    e.preventDefault();
+    this.gestureScale = null;
+  };
 
   private lastWheel = 0;
   private wheelSign = 0;
@@ -404,6 +496,36 @@ export class CadControls {
     cam.updateMatrixWorld();
     this.host.changed();
   }
+}
+
+const GESTURES = ["gesturestart", "gesturechange", "gestureend"];
+
+/**
+ * Whether a wheel event comes from a trackpad (or other precise device) rather than a notched wheel.
+ * Chromium and WebKit derive the legacy wheelDelta from a precise delta as exactly −3×delta; a
+ * notched wheel reports whole ticks (×120) against fractional or line deltas, so they don't match.
+ */
+function fromTrackpad(e: WheelEvent): boolean {
+  if (e.deltaMode !== 0) return false;
+  // a pinch arrives as ctrl+wheel with fractional or small deltas (ctrl+wheel on Windows steps by 100)
+  if (e.ctrlKey && (!Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 10)) return true;
+  const w = e as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
+  if (typeof w.wheelDeltaY === "number" && (e.deltaX || e.deltaY)) return w.wheelDeltaY === -3 * e.deltaY && w.wheelDeltaX === -3 * e.deltaX;
+  // no legacy delta (Firefox): pinches and small pixel deltas are a trackpad
+  return e.deltaX !== 0 || Math.abs(e.deltaY) < 50;
+}
+
+/** Whether something between `el` and `root` would scroll itself for this wheel event. */
+function scrollsItself(el: Element, root: Element, e: WheelEvent): boolean {
+  for (let n: Element | null = el; n && n !== root; n = n.parentElement) {
+    const st = getComputedStyle(n);
+    const canY = /auto|scroll/.test(st.overflowY) && n.scrollHeight > n.clientHeight + 1;
+    const canX = /auto|scroll/.test(st.overflowX) && n.scrollWidth > n.clientWidth + 1;
+    if (canY && ((e.deltaY < 0 && n.scrollTop > 0) || (e.deltaY > 0 && n.scrollTop + n.clientHeight < n.scrollHeight - 1))) return true;
+    if (canX && ((e.deltaX < 0 && n.scrollLeft > 0) || (e.deltaX > 0 && n.scrollLeft + n.clientWidth < n.scrollWidth - 1))) return true;
+    if (n instanceof HTMLTextAreaElement) return true;
+  }
+  return false;
 }
 
 export type CamState = { position: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3; orthoHeight: number };

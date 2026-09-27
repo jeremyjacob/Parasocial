@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus, Search, Focus, RotateCcw, MoreHorizontal, SlidersHorizontal } from '@lucide/svelte';
+	import { Plus, Search, RotateCcw, MoreHorizontal, SlidersHorizontal } from '@lucide/svelte';
 	import { partColors } from '$lib/styles/tokens';
 	import { TopBar } from '$lib/components/ui/top-bar';
 	import { Tabs } from '$lib/components/ui/tabs';
@@ -28,7 +28,7 @@
 
 	const evaluate = createEvaluator({ scope: { width: 120, height: 70, thickness: 4 } });
 	const pc = (id: string) => {
-		const p = partColors.find((x) => x.id === id)!;
+		const p = partColors.find((x) => x.id === id) ?? partColors[0];
 		return theme === 'dark' ? p.dark : p.light;
 	};
 
@@ -75,14 +75,14 @@
 			<Tabs
 				bind:value={left}
 				items={[
-					{ value: 'parts', label: 'Parts' },
+					{ value: 'parts', label: 'Studios' },
 					{ value: 'scripts', label: 'Scripts' },
 					{ value: 'history', label: 'History' }
 				]}
 				listClass="border-b border-line-subtle"
 			/>
 			<div class="px-2 pt-2">
-				<Input placeholder="Filter parts" aria-label="Filter parts" size="sm">
+				<Input placeholder="Filter studios and parts" aria-label="Filter studios and parts" size="sm">
 					{#snippet leading()}<Search size={14} />{/snippet}
 				</Input>
 			</div>
@@ -93,7 +93,7 @@
 			<div class="flex flex-col gap-px px-2" role="listbox" aria-label="Parts">
 				<ListRow name="Bracket" color={pc('graphite')} selected />
 				<ListRow name="Lid" color={pc('iris')} status="error">
-					{#snippet actions()}<IconButton label="Isolate" size="sm"><Focus /></IconButton>{/snippet}
+					{#snippet actions()}<IconButton label="More" size="sm"><MoreHorizontal /></IconButton>{/snippet}
 				</ListRow>
 				<ListRow name="Gasket" color={pc('teal')} busy>
 					{#snippet trailing()}<Avatar name="Claude Code" kind="agent" status="working" size={20} />{/snippet}
@@ -124,7 +124,7 @@
 			style="background-image: radial-gradient(var(--canvas-grid) 1px, transparent 1px); background-size: 16px 16px"
 		>
 			<div class="absolute top-3 left-3">
-				<StatusPill tone="error" title="Lid didn't regenerate" detail="agents notified" message="Shell failed on face:inner." source="lid.ts:22" />
+				<StatusPill tone="error" title="Lid didn't regenerate" message="Shell failed on face:inner." source="lid.ts:22" />
 			</div>
 			<div class="absolute top-3 right-3 flex flex-col items-end gap-2">
 				<ViewCube size={64} />

@@ -5,6 +5,8 @@
 
 	export type NoteMessageData = {
 		author: import('$lib/components/ui/avatar').Person;
+		/** Secondary author line, e.g. the agent's session label. */
+		detail?: string;
 		time: string;
 		body: NoteSegment[];
 		version?: { version: number; time?: string; summary?: string; onclick?: () => void };
@@ -28,32 +30,21 @@
 <article class={cn('flex gap-2.5', className)}>
 	<Avatar {...message.author} size={24} class="mt-0.5" />
 	<div class="flex min-w-0 flex-1 flex-col gap-1.5">
-		<header class="flex h-5 items-baseline gap-1.5">
-			<span class="truncate text-ui font-semibold text-fg">{message.author.name}</span>
-			{#if isAgent}<span class="text-label text-fg-tertiary">Agent</span>{/if}
-			<time class="ml-auto shrink-0 text-label text-fg-tertiary tabular">{message.time}</time>
+		<header class="flex h-5 min-w-0 items-baseline gap-1.5">
+			<span class="max-w-[70%] shrink-0 truncate text-ui font-semibold text-fg">{message.author.name}</span>
+			{#if message.detail || isAgent}<span class="min-w-0 truncate text-label text-fg-tertiary" title={message.detail}>{message.detail ?? 'Agent'}</span>{/if}
+			<time class="ml-auto shrink-0 pl-1 text-label whitespace-nowrap text-fg-tertiary tabular">{message.time}</time>
 		</header>
-		<p class="text-body text-fg [overflow-wrap:anywhere]">
-			{#each message.body as seg, i (i)}{#if typeof seg === 'string'}{seg}{:else}<MentionChip
-						kind={seg.kind}
-						name={seg.name}
-						color={seg.color}
-						broken={seg.broken}
-					/>{/if}{/each}
-		</p>
-		{#if message.version}
-			<VersionChip {...message.version} class="self-start" />
-		{/if}
 		{#if message.activity?.length}
 			<div class="flex flex-col">
 				<button
 					type="button"
 					aria-expanded={logOpen}
 					onclick={() => (logOpen = !logOpen)}
-					class="-ml-1 inline-flex h-6 w-fit items-center gap-1 rounded-sm px-1 text-label text-fg-tertiary hover:text-fg-secondary focus-ring"
+					class="-my-0.5 -ml-1 inline-flex h-6 w-fit items-center gap-1 rounded-sm px-1 text-label text-fg-tertiary hover:text-fg-secondary focus-ring"
 				>
 					<ChevronRight size={12} class={cn('transition-transform duration-[var(--duration-fast)]', logOpen && 'rotate-90')} />
-					{message.activity.length} steps
+					{message.activity.length} {message.activity.length === 1 ? 'step' : 'steps'}
 				</button>
 				{#if logOpen}
 					<ol class="ml-1.5 flex flex-col gap-1 border-l border-line py-1 pl-3">
@@ -63,6 +54,17 @@
 					</ol>
 				{/if}
 			</div>
+		{/if}
+		{#if message.body.length}<p class="text-body text-fg [overflow-wrap:anywhere]">
+			{#each message.body as seg, i (i)}{#if typeof seg === 'string'}{seg}{:else}<MentionChip
+						kind={seg.kind}
+						name={seg.name}
+						color={seg.color}
+						broken={seg.broken}
+					/>{/if}{/each}
+		</p>{/if}
+		{#if message.version}
+			<VersionChip {...message.version} class="mt-0.5 w-full" />
 		{/if}
 	</div>
 </article>

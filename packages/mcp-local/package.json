@@ -1,0 +1,17 @@
+{
+  "name": "@parasocial/mcp-local",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "parasocial-mcp": "src/main.ts"
+  },
+  "scripts": {
+    "bundle": "bun build src/main.ts --target=node --outfile=../app/static/parasocial-mcp.js",
+    "test": "bun test",
+    "typecheck": "bun ../../node_modules/typescript/bin/tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.1"
+  }
+}

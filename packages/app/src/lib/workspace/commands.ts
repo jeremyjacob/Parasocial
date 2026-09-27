@@ -46,6 +46,7 @@ export function comboOf(e: KeyboardEvent): string {
 	else if (e.shiftKey && /^[a-z]$/i.test(e.key)) parts.push('shift');
 	let k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
 	if (e.code === 'Backslash') k = '\\';
+	if (e.code === 'Space') k = 'space';
 	if (e.altKey && /^Digit\d$/.test(e.code)) k = e.code.slice(5);
 	if (e.altKey && /^Key[A-Z]$/.test(e.code)) k = e.code.slice(3).toLowerCase();
 	parts.push(k);

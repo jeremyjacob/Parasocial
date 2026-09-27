@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
 	import { onMount } from 'svelte';
 	import {
 		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Scissors, ArrowLeft
@@ -80,6 +81,19 @@
 		prefetchMonaco();
 	});
 
+	// Retain the last activity after leaving; MCP treats freshness as a hint, not an open-tab guarantee.
+	$effect(() => {
+		if (!ws.synced || !ws.doc) return;
+		const touch = () => ws.touchPresence();
+		touch();
+		const heartbeat = setInterval(touch, 30_000);
+		window.addEventListener('focus', touch);
+		return () => {
+			clearInterval(heartbeat);
+			window.removeEventListener('focus', touch);
+		};
+	});
+
 	// anything the engine consumes -> sync (latest-wins inside)
 	$effect(() => {
 		ws.scripts;
@@ -116,23 +130,28 @@
 		if (fly && n) ws.viewer?.setCameraState({ position: n.anchor.camera.position, target: n.anchor.camera.target, up: n.anchor.camera.up, ortho: n.anchor.camera.ortho });
 	}
 
-	/** C with a selection: note the selection directly (Figma convention). */
-	function noteTool() {
+	/** C with a selection: note the selection directly, staying in the current tool (Figma convention). */
+	function noteTool(refs = ws.selection) {
 		if (ws.dirty.length) return toast('Save to add notes');
-		if (ws.selection.length && ws.viewer) {
+		if (refs.length && ws.viewer) {
 			const v = ws.viewer;
-			const targets = ws.selection.map((ref) => {
-				const c = v.entityCenter(ref)!;
-				return { ref, point: [c.x, c.y, c.z] as [number, number, number] };
+			const targets = refs.flatMap((ref) => {
+				const center = v.entityCenter(ref);
+				if (!center) return [];
+				const c = v.toLocal(ref.part, center);
+				return [{ ref, point: [c.x, c.y, c.z] as [number, number, number] }];
 			});
-			const s = v.project(v.entityCenter(ws.selection[ws.selection.length - 1])!) ?? { x: 200, y: 200 };
-			nc.startFromTargets(targets, s);
+			if (!targets.length) return toast('The model is still loading. Try again once it’s ready.');
+			const s = v.project(v.entityCenter(targets[targets.length - 1].ref)!) ?? { x: 200, y: 200 };
+			return nc.startFromTargets(targets, s);
 		}
 		ws.tool = 'note';
 	}
 
 	let paletteOpen = $state(false);
 	let cheatsOpen = $state(false);
+	/** ⌘\ hides the chrome (top bar and side panels), like Figma; panels stay mounted so their state survives. */
+	let uiHidden = $state(false);
 	let renameOpen = $state(false);
 	let renameName = $state('');
 	function rename(e?: Event) {
@@ -149,16 +168,28 @@
 		exportTarget = parts;
 		exportOpen = true;
 	}
-	/** ⌘E: the selected parts, or the whole model when nothing is selected. */
+	/** ⌘E: the selected parts, or the studio in the viewport when nothing is selected. */
 	const exportSelection = () => openExport([...new Set(ws.selection.map((s) => s.part))]);
 	let prefsOpen = $state(false);
-	let navPreset = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('parasocial:nav') ?? 'onshape') : 'onshape');
+	const stored = (k: string) => {
+		try {
+			return localStorage.getItem(k);
+		} catch {
+			return null;
+		}
+	};
+	// the old "trackpad" preset was Onshape's mouse buttons plus two-finger orbit, now the defaults
+	let navPreset = $state(((n) => (n && n !== 'trackpad' ? n : 'onshape'))(stored('parasocial:nav')));
+	let trackpadScroll = $state(stored('parasocial:scroll') ?? 'orbit');
 	$effect(() => {
-		const n = navPreset;
+		const n = navPreset,
+			sc = trackpadScroll;
 		try {
 			localStorage.setItem('parasocial:nav', n);
+			localStorage.setItem('parasocial:scroll', sc);
 		} catch {}
 		ws.viewer?.setNavPreset(n as any);
+		ws.viewer?.setTrackpadScroll(sc as any);
 	});
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
@@ -184,7 +215,7 @@
 	}
 
 	function centerZ() {
-		const b = Object.values(ws.results).filter((r) => r.bbox);
+		const b = ws.shownSources.flatMap((p) => (ws.results[p]?.bbox ? [ws.results[p]] : []));
 		if (!b.length) return 0;
 		return (Math.min(...b.map((r) => r.bbox!.min[2])) + Math.max(...b.map((r) => r.bbox!.max[2]))) / 2;
 	}
@@ -217,6 +248,7 @@
 		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => ws.toggleSection(centerZ()) },
 		{ id: 'view.grid', label: 'Toggle ground grid', group: 'View', keys: ['G'], run: () => ws.setHelpers({ grid: !ws.showGrid }) },
 		{ id: 'view.interference', label: 'Toggle interference (red where assembly parts overlap)', group: 'View', keys: ['I'], run: () => ws.asm.setShowInterference(!ws.asm.showInterference) },
+		{ id: 'view.interferenceOnTop', label: 'Toggle interference through parts (red overlaps show through what covers them)', group: 'View', run: () => ws.asm.setInterferenceOnTop(!ws.asm.interferenceOnTop) },
 		{ id: 'asm.reset', label: 'Reset assembly positions', group: 'View', keywords: ['assembly', 'joints', 'pose', 'home'], run: () => ws.asm.resetPoses() },
 		{ id: 'view.origin', label: 'Toggle origin', group: 'View', keys: ['shift', 'G'], run: () => ws.setHelpers({ origin: !ws.showOrigin }) },
 		{ id: 'display.shaded', label: 'Display: shaded', group: 'View', keys: ['alt', '1'], icon: Box, run: () => (ws.display = 'shaded') },
@@ -224,10 +256,13 @@
 		{ id: 'display.wire', label: 'Display: wireframe', group: 'View', keys: ['alt', '3'], icon: Grid3x3, run: () => (ws.display = 'wireframe') },
 		{ id: 'display.hidden', label: 'Display: hidden line', group: 'View', keys: ['alt', '4'], icon: SquareDashed, run: () => (ws.display = 'hidden-line') },
 		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (nc.draft ? nc.discard() : ws.tool !== 'select' ? (ws.tool = 'select') : ws.clearSelection()) },
-		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => (ws.hidden.forEach((p) => ws.setHidden(p, false)), ws.isolate(null)) },
+		{ id: 'sel.none', label: 'Deselect all', group: 'Selection', keys: ['Space'], run: () => ws.clearSelection() },
+		{ id: 'sel.visibility', label: 'Toggle selected parts visibility', group: 'Selection', keys: ['H'], icon: Eye, run: () => ws.setVisibility(ws.selection.map((r) => ({ part: r.part, hidden: !ws.hidden.includes(r.part) }))) },
+		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => ws.setVisibility(ws.hidden.map((part) => ({ part, hidden: false }))) },
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
-		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', keys: ['mod', '\\'], icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
+		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
+		{ id: 'view.hideUI', label: 'Show/hide UI', group: 'View', keys: ['mod', '\\'], run: () => (uiHidden = !uiHidden) },
 		{ id: 'doc.save', label: 'Save script', group: 'Document', keys: ['mod', 'S'], run: async () => { for (const p of ws.dirty) { const err = await ws.saveBuffer(p); if (err) toast.error(err); } } },
 		{ id: 'doc.export', label: 'Export…', group: 'Document', keys: ['mod', 'E'], icon: Download, run: exportSelection },
 		{ id: 'doc.addStudio', label: 'Add a studio', group: 'Document', icon: Plus, run: addStudio },
@@ -259,10 +294,14 @@
 		// ⌘K and Escape work everywhere; single keys never fire while typing
 		const always = combo === 'mod+k' || combo === 'escape';
 		if (!cmd || (isTyping(e) && !always && !combo.startsWith('mod+'))) return;
+		// Space on a focused button, checkbox, tab… activates it, not Deselect all
+		if (combo === 'space' && (e.target as HTMLElement | null)?.closest?.('button, a[href], summary, input, [role="button"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="radio"]')) return;
 		if (combo === 'escape' && isTyping(e)) return (e.target as HTMLElement).blur();
 		// text inputs own their undo; numeric fields commit on every change, so ⌘Z is the app's
+		// (an empty note composer hands ⌘Z to the app too, so pencil strokes stay undoable)
 		const numeric = (e.target as HTMLElement | null)?.getAttribute?.('role') === 'spinbutton';
-		if (isTyping(e) && combo.includes('+z') && !numeric) return;
+		const appUndo = numeric || (e.target as HTMLElement | null)?.hasAttribute?.('data-app-undo');
+		if (isTyping(e) && combo.includes('+z') && !appUndo) return;
 		if (numeric && combo.includes('+z')) (e.target as HTMLElement).blur();
 		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || prefsOpen || exportOpen)) return;
 		e.preventDefault();
@@ -277,11 +316,13 @@
 		})),
 		{
 			heading: 'Parts',
-			items: ws.parts.map((p) => ({ id: `part.${p}`, label: ws.results[p]?.name ?? p, hint: ws.scriptOf(p), onSelect: () => ((paletteOpen = false), ws.select([{ part: p, kind: 'part' as any, index: 0 }]), ws.viewer?.fitSelection()) }))
+			items: ws.partTree.flatMap((g) =>
+				g.ids.map((p) => ({ id: `part.${p}`, label: ws.results[p]?.name ?? p, hint: g.name, onSelect: () => ((paletteOpen = false), ws.setActiveStudio(g.file), ws.select([{ part: p, kind: 'part' as any, index: 0 }]), ws.viewer?.fitSelection()) }))
+			)
 		},
 		{
 			heading: 'Params',
-			items: Object.values(ws.results).flatMap((r) =>
+			items: ws.partResults.flatMap((r) =>
 				r.params.map((p) => ({ id: `param.${r.part}.${p.name}`, label: p.name, hint: `${r.name} · ${typeof p.value === 'number' ? p.value : p.value}${p.unit ? ' ' + p.unit : ''}`, onSelect: () => ((paletteOpen = false), (ws.rightTab = 'params')) }))
 			)
 		},
@@ -327,7 +368,7 @@
 		{ label: 'Sign out', onSelect: async () => (await signOut(), (location.href = '/signin')) }
 	];
 	const leftTabs = $derived([
-		{ value: 'parts', label: 'Parts' },
+		{ value: 'parts', label: 'Studios' },
 		{ value: 'scripts', label: 'Scripts' },
 		{ value: 'history', label: 'History' }
 	]);
@@ -350,16 +391,17 @@
 		</div>
 	</div>
 {:else}
-	<div class="grid h-dvh grid-rows-[auto_minmax(0,1fr)] bg-app text-fg" data-testid="workspace">
+	<div class={cn('grid h-dvh bg-app text-fg', uiHidden ? 'grid-rows-[minmax(0,1fr)]' : 'grid-rows-[auto_minmax(0,1fr)]')} data-testid="workspace">
+		{#if !uiHidden}
 		<TopBar document={ws.doc?.name ?? ''} bind:mode={ws.mode} agents={agentPeople} user={{ name: user.name, kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
 			{#snippet presence()}
 				{#if agentPeople.length}
 					<Tooltip label={liveAgents.map((a) => `${a.clientName}${a.label ? ` (${a.label})` : ''}: ${a.status}`).join('\n')}>
 						{#snippet trigger(props)}
-							<span {...props} class="mr-1 flex items-center gap-1.5" data-testid="agent-presence">
+							<button {...props} type="button" class="focus-ring mr-1 flex items-center gap-1.5 rounded-md py-0.5 pr-1.5 pl-0.5 hover:bg-hover active:bg-active" onclick={(e) => { (props.onclick as ((e: MouseEvent) => void) | undefined)?.(e); connectOpen = true; }} aria-label="Connect an agent" data-testid="agent-presence">
 								<AvatarStack people={agentPeople} size={24} />
 								<span class="text-label text-fg-secondary tabular-nums">{agentPeople.length}</span>
-							</span>
+							</button>
 						{/snippet}
 					</Tooltip>
 				{:else}
@@ -374,12 +416,13 @@
 				</DropdownMenu>
 			{/snippet}
 		</TopBar>
+		{/if}
 
-		<div class="grid min-h-0 grid-cols-[240px_minmax(0,1fr)_288px]">
-			<aside class="flex min-h-0 flex-col border-r border-line-subtle bg-panel" aria-label="Document">
+		<div class={cn('grid min-h-0', uiHidden ? 'grid-cols-1' : 'grid-cols-[240px_minmax(0,1fr)_256px] 2xl:grid-cols-[240px_minmax(0,1fr)_288px]')}>
+			<aside class={cn('flex min-h-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
 				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
-						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} />
+						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} onAddNote={(parts) => noteTool(parts.map((part) => ({ part, kind: 'part' as any, index: 0 })))} />
 						{:else if tab === 'scripts'}<ScriptsPanel {ws} />
 						{:else}<HistoryPanel {ws} onOpen={(id) => cmp.view(id)} onCompare={(id) => cmp.open(id)} viewing={cmp.viewing} />{/if}
 					{/snippet}
@@ -406,7 +449,7 @@
 				</div>
 			</main>
 
-			<aside class="flex min-h-0 flex-col border-l border-line-subtle bg-panel" aria-label="Inspector">
+			<aside class={cn('flex min-h-0 flex-col border-l border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Inspector">
 				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'properties'}<PropertiesPanel {ws} />
@@ -420,8 +463,8 @@
 {/if}
 
 <CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
-<ConnectAgentDialog bind:open={connectOpen} {documentID} />
-<PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} />
+<ConnectAgentDialog bind:open={connectOpen} {documentID} documentName={ws.doc?.name} />
+<PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} bind:scroll={trackpadScroll} bind:additiveSelection={ws.additiveSelection} />
 <ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={async () => void (await exportZip())} />
 <ConfirmDialog bind:open={deleteOpen} title={`Delete “${ws.doc?.name}”?`} description="This can't be undone." onconfirm={deleteDocument} />
 <Dialog bind:open={renameOpen} title="Rename document">
@@ -443,8 +486,9 @@
 			{/each}
 		{/each}
 		<div class="col-span-2 mt-2 text-label font-medium text-fg-secondary">Viewport</div>
-		<div class="flex h-7 items-center justify-between text-ui"><span>Pan</span><span class="text-label text-fg-secondary">Space-drag · middle-drag</span></div>
-		<div class="flex h-7 items-center justify-between text-ui"><span>Orbit</span><span class="text-label text-fg-secondary">Right-drag · Alt-drag</span></div>
-		<div class="flex h-7 items-center justify-between text-ui"><span>Add to selection</span><span class="text-label text-fg-secondary">Shift / ⌘-click</span></div>
+		<div class="flex h-7 items-center justify-between text-ui"><span>Pan</span><span class="text-label text-fg-secondary">Middle-drag · {trackpadScroll === 'pan' ? 'Two-finger scroll' : 'Shift + two-finger scroll'}</span></div>
+		<div class="flex h-7 items-center justify-between text-ui"><span>Orbit</span><span class="text-label text-fg-secondary">Right-drag · Alt-drag · {trackpadScroll === 'pan' ? 'Shift + two-finger scroll' : 'Two-finger scroll'}</span></div>
+		<div class="flex h-7 items-center justify-between text-ui"><span>Zoom</span><span class="text-label text-fg-secondary">Wheel · Pinch · ⌘ + two-finger scroll</span></div>
+		<div class="flex h-7 items-center justify-between text-ui"><span>Add to selection</span><span class="text-label text-fg-secondary">{ws.additiveSelection ? 'Click' : 'Shift / ⌘ / Ctrl-click'}</span></div>
 	</div>
 </Dialog>

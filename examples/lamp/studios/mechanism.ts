@@ -3,7 +3,7 @@ import base, { turret, lowerArm, lowerRod, elbow, upperArm, upperRod, wrist, sha
 
 export const name = "Mechanism";
 
-// How the lamp moves. Every joint is 0 where the parts are modeled. Two closed loops: the lower
+// How the lamp moves (this studio holds its own copies of the parts). Every joint is 0 where the parts are modeled. Two closed loops: the lower
 // arm, lower rod, turret and elbow form a parallelogram, and so do the upper arm, upper rod,
 // elbow and wrist, so the elbow and the wrist stay level. Four degrees of freedom: swivel,
 // shoulder, elbow and the shade's tilt. Drag the arms, the shade or the turret.

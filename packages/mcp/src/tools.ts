@@ -9,6 +9,7 @@ import { runMutator, readVersion, exportDocument, importDocument, buildDocumentZ
 import type { PoolClient } from "@parasocial/engine-pool/client";
 import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
 import { NoteCursor, type NoteEvents } from "./note-events";
+import { documentContext } from "./document-context";
 
 export type Session = {
   id: string;
@@ -233,23 +234,66 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   const document = z.string().optional().describe("Document id (defaults to this session's document)");
 
   // ---------------- documents ----------------
-  tool("list_documents", "Documents you can access.", {}, async () => {
-    const rows = await db.sql`SELECT d.id, d.name, d.updated_at, d.head_version, m.role FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${s.userID} ORDER BY d.updated_at DESC`;
-    return text({ default: s.defaultDocument, documents: rows.map((r: any) => ({ id: r.id, name: r.name, role: r.role, version: Number(r.head_version), updated: new Date(Number(r.updated_at)).toISOString() })) });
-  });
+  const documentURL = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, deps.config.appOrigin).href;
+  const documentName = z.string().trim().min(1).max(200);
 
-  tool("create_document", "Create an empty document (then write studios/<name>.ts).", { name: z.string().min(1).max(200) }, async ({ name }) => {
+  tool("list_documents", "Find documents you can access, newest edits first. Search by name; use offset to paginate.", { query: z.string().max(200).optional(), limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0) }, async ({ query, limit, offset }) => {
+    const rows = await db.sql`SELECT d.id, d.name, d.updated_at, d.head_version, m.role FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${s.userID}
+      WHERE strpos(lower(d.name), lower(${query ?? ""})) > 0 ORDER BY d.updated_at DESC, d.id LIMIT ${limit + 1} OFFSET ${offset}`;
+    return text({ default: s.defaultDocument, documents: rows.slice(0, limit).map((r) => ({ id: r.id, name: r.name, url: documentURL(r.id), role: r.role, version: Number(r.head_version), updated: new Date(Number(r.updated_at)).toISOString() })), nextOffset: rows.length > limit ? offset + limit : null });
+  }, { readOnlyHint: true });
+
+  tool("get_document_context", "This user's recent browser activity and the agent's current default. Activity is a hint, not an exact list of open tabs; it never changes the default.", {}, async () =>
+    text({ default: s.defaultDocument, ...await documentContext(db, s.userID, deps.config.appOrigin) }), { readOnlyHint: true });
+
+  tool("open_document", "Select a document as this agent session's default and return its details. Accepts an ID or a Parasocial document URL. Does not navigate the human's browser.", { document: z.string().min(1) }, async ({ document: target }) => {
+    let id = target;
+    if (/^https?:\/\//i.test(target)) {
+      const url = new URL(target);
+      const match = url.pathname.match(/^\/d\/([^/]+)\/?$/);
+      if (url.origin !== new URL(deps.config.appOrigin).origin || !match) throw new ToolError("Use a document URL from this Parasocial instance.");
+      id = decodeURIComponent(match[1]!);
+    }
+    const d = await loadDoc(db, s.userID, id);
+    s.defaultDocument = id;
+    await setStatus("idle", id);
+    return text({ id, name: d.name, url: documentURL(id), units: d.units, scripts: d.scripts.map((f) => f.path), configurations: d.configurations.map((c) => ({ id: c.id, name: c.name })) });
+  }, { readOnlyHint: true });
+
+  tool("create_document", "Create an empty document (then write studios/<name>.ts). Becomes the default only if the session has none; use open_document to switch.", { name: documentName }, async ({ name }) => {
     const id = newID();
     await mutate(mutators.document.create({ id, name }));
     s.defaultDocument ??= id;
-    return text({ id, name });
+    return text({ id, name, url: documentURL(id) });
   });
+
+  tool("rename_document", "Rename a document. Requires editor access.", { document, name: documentName }, async ({ document: dd, name }) => {
+    const id = docID(dd);
+    await mutate(mutators.document.rename({ id, name }));
+    return text({ id, name, url: documentURL(id) });
+  });
+
+  tool("duplicate_document", "Copy a document's scripts, settings and configurations into a new document you own. Notes and version history are not copied. Does not change the session default.", { document, name: documentName.optional() }, async ({ document: dd, name }) => {
+    const payload = await exportDocument(db, docID(dd), s.userID, { notes: false });
+    const copyName = name ?? `${payload.manifest.name.slice(0, 193)} (copy)`;
+    const { documentID: id } = await importDocument(db, payload, ctx(), { name: copyName });
+    return text({ id, name: copyName, url: documentURL(id) });
+  });
+
+  tool("delete_document", "Permanently delete a document and its contents, including notes and version history. Requires owner access and an explicit document ID. Only use when the user requests deletion.", { document: z.string().min(1) }, async ({ document: id }) => {
+    await mutate(mutators.document.delete({ id }));
+    if (s.defaultDocument === id) s.defaultDocument = undefined;
+    s.activeConfig.delete(id);
+    s.lastVersion.delete(id);
+    s.noteCursors.delete(id);
+    return text({ id, deleted: true });
+  }, { destructiveHint: true });
 
   // ---------------- notes ----------------
   tool(
     "list_notes",
     "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link.",
-    { document, status: z.enum(["Open", "AgentWorking", "AwaitingReview", "Resolved", "all"]).optional(), part: z.string().optional() },
+    { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional() },
     async ({ document: dd, status, part }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
@@ -273,25 +317,39 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   tool(
     "wait_for_notes",
     "Block until a human adds a note or replies on one (notes held by other agents are skipped), then return those notes described like list_notes, each with a `reason` (created, and/or the new replies). Returns { notes: [] } at the timeout; call it again to keep waiting. Each call continues where the previous one stopped, starting from when this session connected, so call list_notes first for what was already there.",
-    { document, timeoutSeconds: z.number().int().min(1).max(600).optional().describe("default 50; some clients time out tool calls after 60 s") },
-    async ({ document: dd, timeoutSeconds }, extra) => {
-      const documentID = docID(dd);
-      await requireMember(db, s.userID, documentID);
-      let cursor = s.noteCursors.get(documentID);
-      if (!cursor) s.noteCursors.set(documentID, (cursor = new NoteCursor(s.startedAt)));
+    {
+      document,
+      allDocuments: z.boolean().optional().describe("wait across every document you can access instead of one; each note then carries its `document`"),
+      timeoutSeconds: z.number().int().min(1).max(600).optional().describe("default 50; some clients time out tool calls after 60 s"),
+    },
+    async ({ document: dd, allDocuments, timeoutSeconds }, extra) => {
+      let documentIDs: string[];
+      if (allDocuments) {
+        // re-read per call so documents created or shared since the last one are included
+        documentIDs = (await db.sql`SELECT document_id FROM document_members WHERE user_id = ${s.userID}`).map((r: any) => r.document_id);
+      } else {
+        documentIDs = [docID(dd)];
+        await requireMember(db, s.userID, documentIDs[0]);
+      }
+      const key = allDocuments ? "*" : documentIDs[0];
+      let cursor = s.noteCursors.get(key);
+      if (!cursor) s.noteCursors.set(key, (cursor = new NoteCursor(s.startedAt)));
       // progress keeps clients that reset their timeout on progress from giving up on a long wait
       const token = extra._meta?.progressToken;
       let tick = 0;
       const beat = token === undefined ? undefined : setInterval(() => extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++tick, message: "waiting for notes" } }).catch(() => {}), 15_000);
       try {
-        const found = await deps.noteEvents.wait([documentID], cursor, s.id, { timeoutMs: (timeoutSeconds ?? 50) * 1000, signal: extra.signal });
+        const found = await deps.noteEvents.wait(documentIDs, cursor, s.id, { timeoutMs: (timeoutSeconds ?? 50) * 1000, signal: extra.signal });
         if (!found.length) return text({ notes: [], hint: "Nothing new. Call wait_for_notes again to keep waiting." });
-        const d = await loadDoc(db, s.userID, documentID);
+        const docs = new Map<string, DocState>();
         const notes = [];
         for (const a of found) {
           const [n] = await db.sql`SELECT * FROM notes WHERE id = ${a.noteID}`;
           if (!n) continue;
-          notes.push({ reason: { created: a.created || undefined, replies: a.replies.length ? a.replies.map((r) => ({ author: r.author, text: r.text })) : undefined }, ...(await noteView(documentID, n, d)) });
+          let d = docs.get(a.documentID);
+          if (!d) docs.set(a.documentID, (d = await loadDoc(db, s.userID, a.documentID)));
+          const reason = { created: a.created || undefined, replies: a.replies.length ? a.replies.map((r) => ({ author: r.author, text: r.text })) : undefined };
+          notes.push({ reason, ...(allDocuments ? { document: { id: d.id, name: d.name, url: documentURL(d.id) } } : {}), ...(await noteView(a.documentID, n, d)) });
         }
         return text({ notes });
       } finally {
@@ -303,8 +361,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "reply_to_note",
-    "Reply on a note thread. Links the version you created (default: your latest write) and moves the note to Awaiting review.",
-    { document, id: z.string(), text: z.string().min(1), version: z.string().optional().describe("version id to link (default: your latest)"), status: z.enum(["AwaitingReview", "Open"]).optional().describe("default AwaitingReview") },
+    "Reply on a note thread and resolve it by default after completing and verifying the work. Links the version you created (default: your latest write) and releases your claim. Use Open for unfinished work or questions.",
+    { document, id: z.string(), text: z.string().min(1), version: z.string().optional().describe("version id to link (default: your latest)"), status: z.enum(["Resolved", "Open"]).optional().describe("default Resolved; Open for unfinished work or questions") },
     async ({ document: dd, id, text: body, version, status }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID);
@@ -315,12 +373,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         versionID = v?.id;
       }
       // status first: it fails (with the holder) if another agent has the note, and then nothing is posted
-      await mutate(mutators.note.setStatus({ noteID: id, status: status ?? "AwaitingReview" }));
+      await mutate(mutators.note.setStatus({ noteID: id, status: status ?? "Resolved" }));
       await mutate(mutators.note.reply({ id: newID(), noteID: id, text: body, versionID } as any));
       const [n] = await db.sql`SELECT claimed_by FROM notes WHERE id = ${id}`;
       if (n?.claimed_by === s.id) await mutate(mutators.note.release({ noteID: id }));
       await setStatus("idle", documentID, null);
-      return text({ ok: true, linkedVersion: versionID ?? null, status: status ?? "AwaitingReview" });
+      return text({ ok: true, linkedVersion: versionID ?? null, status: status ?? "Resolved" });
     },
   );
 
@@ -339,7 +397,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ ok: true });
   });
 
-  tool("set_note_status", "Set a note's status.", { document, id: z.string(), status: z.enum(["Open", "AwaitingReview", "Resolved"]) }, async ({ document: dd, id, status }) => {
+  tool("set_note_status", "Set a note's status and release its claim. Resolve completed, verified work without asking for permission. No completion reply is required. Use reply_to_note only when you have useful information to add.", { document, id: z.string(), status: z.enum(["Open", "Resolved"]) }, async ({ document: dd, id, status }) => {
     await requireMember(db, s.userID, docID(dd));
     await mutate(mutators.note.setStatus({ noteID: id, status }));
     return text({ ok: true });
@@ -420,18 +478,25 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right"] as const;
   tool(
     "render",
-    'PNG of the model. view: "iso" | "top" | "front" | … or "note:<id>" for a note\'s own view; or a custom camera. highlight: stable names or selectors to mark in orange.',
+    'PNG of the model. view: "iso" | "top" | "front" | … or "note:<id>" for a note\'s own view; or a custom camera. highlight: stable names or selectors to mark in orange. section: optional cutting plane for a hatched section view of this render only.',
     {
       document,
       view: z.string().optional(),
       camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional() }).optional(),
+      section: z.object({
+        origin: z.array(z.number().finite()).length(3).describe("Point on the cutting plane in model coordinates (mm)."),
+        normal: z.array(z.number().finite()).length(3).refine((n) => {
+          const lengthSquared = n.reduce((sum, x) => sum + x * x, 0);
+          return lengthSquared > 0 && Number.isFinite(lengthSquared);
+        }, "Section normal must have a finite, nonzero length.").describe("Direction toward the removed side; need not be normalized. Negate to flip the cut."),
+      }).optional().describe("Clips points where dot(point - origin, normal) > 0. Omit for the full model. Example: { origin: [0, 0, 5], normal: [0, 0, 1] } keeps z <= 5."),
       highlight: z.array(z.object({ part: z.string(), name: z.string() })).optional(),
       parts: z.array(z.string()).optional(),
       style: z.enum(["shaded", "shadedEdges", "wireframe", "hiddenLine"]).optional(),
       width: z.number().int().min(128).max(2048).optional(),
       height: z.number().int().min(128).max(2048).optional(),
     },
-    async ({ document: dd, view, camera, highlight, parts, style, width, height }) => {
+    async ({ document: dd, view, camera, section, highlight, parts, style, width, height }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       await regen(d, parts);
@@ -451,7 +516,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           for (const index of r.indices) refs.push({ part: h.part, kind: r.kind, index });
         } catch {}
       }
-      const [img] = await engine(d, [{ op: "render", view: v, camera: cam && { ...cam, up: cam.up ?? [0, 0, 1] }, highlight: refs, parts, style, width: width ?? 1024, height: height ?? 768 }]);
+      const [img] = await engine(d, [{ op: "render", view: v, camera: cam && { ...cam, up: cam.up ?? [0, 0, 1] }, section, highlight: refs, parts, style, width: width ?? 1024, height: height ?? 768 }]);
       await activity(documentID, `render ${view ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
       return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
     },
@@ -697,6 +762,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   tool("import_document", "Create a document from a plain-file zip (base64).", { zip: z.string().describe("base64 zip"), name: z.string().optional() }, async ({ zip, name }) => {
     const payload = parseDocumentZip(new Uint8Array(Buffer.from(zip, "base64")));
     const { documentID } = await importDocument(db, payload, ctx(), { name });
-    return text({ id: documentID, name: name ?? payload.manifest.name });
+    s.defaultDocument ??= documentID;
+    return text({ id: documentID, name: name ?? payload.manifest.name, url: documentURL(documentID) });
   });
 }

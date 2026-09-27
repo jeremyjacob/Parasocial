@@ -3,7 +3,7 @@
 // untrusted, and mutations are never reachable through this channel.
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
-import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyJoint, Interference, PartPose } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
 
 export type EngineRequest =
   | { op: "setDocument"; doc: DocumentState }
@@ -13,7 +13,9 @@ export type EngineRequest =
   /** The parts of a snapshot (another version), from the snapshot engine. */
   | { op: "snapshotParts"; key: string; doc: DocumentState }
   | { op: "setOverrides"; part: string; overrides: Record<string, string | number> }
-  | { op: "regenerate"; part: string; quality?: MeshQuality }
+  | { op: "regenerate"; part: string; quality?: MeshQuality; known?: string }
+  /** Parts a change to these script paths can affect (the rest can keep their results). */
+  | { op: "affected"; paths: string[] }
   | { op: "names"; part: string }
   | { op: "describe"; part: string; kind: EntityKind; index: number }
   | { op: "fromOperation"; part: string; opId: string }
@@ -60,7 +62,19 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyJoint, Interference, PartPose };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose };
+
+/**
+ * The part an id's geometry comes from: itself, or an instance's source part. Instance ids are
+ * `mechanism/lamp:turret`, `cart/cart:wheel@fl` (a named copy) and `cart/axle@front/cart:wheel@left`
+ * (inside an inserted assembly): the part is the last segment, less its copy name. Part ids never
+ * contain "/".
+ */
+export const sourcePart = (id: string) => {
+  const last = id.slice(id.lastIndexOf("/") + 1);
+  const at = last.indexOf("@");
+  return at < 0 ? last : last.slice(0, at);
+};
 
 // ---------- validation (app side) ----------
 
@@ -89,15 +103,19 @@ export function validatePartInfos(v: unknown): PartInfo[] | null {
 
 const isVec3 = (x: unknown) => Array.isArray(x) && x.length === 3 && x.every(isNum);
 const JOINT_TYPES = ["fastened", "revolute", "slider", "cylindrical", "planar", "ball"];
+const isPose = (x: unknown) => isObj(x) && Array.isArray(x.r) && x.r.length === 9 && x.r.every(isNum) && isVec3(x.t);
+const isConnectorAt = (x: unknown) => isObj(x) && isStr(x.connector) && (x.index === undefined || (Number.isInteger(x.index) && (x.index as number) >= 0));
 
-/** The assembly list: part ids, joint types, finite frames and limits. */
+/** The assembly list: instances, joint types, finite frames and limits. */
 export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
   if (!Array.isArray(v)) return null;
   for (const a of v) {
     if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
+    if (!Array.isArray(a.instances) || !a.instances.every((i: unknown) => isObj(i) && isStr(i.id) && isStr(i.part) && isStr(i.scope) && (i.name === undefined || isStr(i.name)) && (i.place === undefined || isPose(i.place)))) return null;
+    if (!Array.isArray(a.subs) || !a.subs.every((s: unknown) => isObj(s) && isStr(s.id) && isStr(s.parent) && isStr(s.assembly) && (s.place === undefined || isPose(s.place)))) return null;
     for (const p of a.problems) if (!isObj(p) || !isStr(p.message)) return null;
     for (const j of a.joints) {
-      if (!isObj(j) || !isStr(j.name) || !JOINT_TYPES.includes(j.type as string) || !isStr(j.a) || !isStr(j.b) || typeof j.overlap !== "boolean") return null;
+      if (!isObj(j) || !isStr(j.name) || !JOINT_TYPES.includes(j.type as string) || !isStr(j.a) || !isStr(j.b) || !isStr(j.scope) || typeof j.overlap !== "boolean" || typeof j.named !== "boolean") return null;
       if (!Array.isArray(j.value) || !j.value.every(isNum) || !Array.isArray(j.limits)) return null;
       for (const l of j.limits) if (l !== null && (!isObj(l) || (l.min !== undefined && !isNum(l.min)) || (l.max !== undefined && !isNum(l.max)))) return null;
       const at = j.at;
@@ -105,7 +123,10 @@ export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
       if ("frame" in at) {
         const f = at.frame;
         if (!isObj(f) || !isVec3(f.origin) || !isVec3(f.z) || !isVec3(f.x)) return null;
-      } else if (!isStr(at.part) || !isStr(at.connector)) return null;
+      } else if ("mate" in at) {
+        const m = at.mate;
+        if (!isObj(m) || !isConnectorAt(m.a) || !isConnectorAt(m.b) || typeof at.flip !== "boolean") return null;
+      } else if (!isStr(at.part) || !isConnectorAt(at) || (at.owner !== undefined && !isStr(at.owner))) return null;
     }
   }
   return v as AssemblyInfo[];
@@ -141,7 +162,7 @@ export function validatePartResult(r: unknown): PartResult | null {
   if (r.mesh !== undefined && !validMesh(r.mesh, (r.faces as unknown[]).length, (r.edges as unknown[]).length)) return null;
   if (r.connectors !== undefined) {
     if (!isObj(r.connectors)) return null;
-    for (const f of Object.values(r.connectors)) if (!isObj(f) || !isVec3(f.origin) || !isVec3(f.z) || !isVec3(f.x)) return null;
+    for (const fs of Object.values(r.connectors)) if (!Array.isArray(fs) || !fs.every((f) => isObj(f) && isVec3(f.origin) && isVec3(f.z) && isVec3(f.x))) return null;
   }
   return r as unknown as PartResult;
 }

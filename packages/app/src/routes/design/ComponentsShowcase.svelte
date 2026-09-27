@@ -18,7 +18,6 @@
 		Dot,
 		Copy,
 		Trash2,
-		Focus,
 		EyeOff,
 		MessageCircle,
 		Ruler,
@@ -108,7 +107,6 @@
 		{ label: 'Measure', icon: Ruler, shortcut: ['M'] },
 		{ label: 'Select all from this operation', icon: Crosshair },
 		{ type: 'separator' },
-		{ label: 'Isolate', icon: Focus, shortcut: ['I'] },
 		{ label: 'Hide', icon: EyeOff, shortcut: ['H'] },
 		{ label: 'Zoom to', icon: Scan, shortcut: ['shift', 'F'] },
 		{ type: 'separator' },
@@ -136,7 +134,7 @@
 		},
 		{
 			heading: 'Notes',
-			items: [{ id: 'n-12', label: 'Wall too thin here', icon: MessageCircle, hint: '#12 · Awaiting review' }]
+			items: [{ id: 'n-12', label: 'Wall too thin here', icon: MessageCircle, hint: '#12 · Resolved' }]
 		}
 	];
 
@@ -149,7 +147,7 @@
 	];
 
 	const pc = (id: string) => {
-		const p = partColors.find((x) => x.id === id)!;
+		const p = partColors.find((x) => x.id === id) ?? partColors[0];
 		return theme === 'dark' ? p.dark : p.light;
 	};
 </script>
@@ -492,7 +490,7 @@
 
 		<Specimen title="Chips" note="notes, mentions, versions">
 			<div class="flex flex-wrap items-center gap-1.5">
-				<NoteStatusChip status="open" /><NoteStatusChip status="working" /><NoteStatusChip status="review" /><NoteStatusChip status="resolved" /><NoteStatusChip status="orphaned" />
+				<NoteStatusChip status="open" /><NoteStatusChip status="working" /><NoteStatusChip status="resolved" /><NoteStatusChip status="orphaned" />
 			</div>
 			<p class="text-body">
 				Set <MentionChip kind="param" name="thickness" /> on <MentionChip kind="part" name="lid" color={pc('iris')} /> to match
@@ -538,7 +536,7 @@
 		<Specimen title="ListRow" note="parts list" bodyClass="p-1.5 gap-0.5">
 			<ListRow name="Bracket" color={pc('graphite')} selected />
 			<ListRow name="Lid" color={pc('iris')} class="bg-hover" showActions status="error">
-				{#snippet actions()}<IconButton label="Isolate" size="sm"><Focus /></IconButton>{/snippet}
+				{#snippet actions()}<IconButton label="More" size="sm"><MoreHorizontal /></IconButton>{/snippet}
 			</ListRow>
 			<ListRow name="Gasket" color={pc('teal')} status="warning" />
 			<ListRow name="Hinge pin" color={pc('straw')} status="error" statusLabel="Error" />
@@ -582,7 +580,7 @@
 
 		<Specimen title="StatusPill" surface="canvas">
 			<div class="flex flex-col items-start gap-2">
-				<StatusPill tone="error" title="Bracket didn't regenerate" detail="agents notified" message="Fillet failed: radius 4 mm is larger than the adjacent 3.5 mm wall." source="bracket.ts:18" bind:expanded={pillOpen} />
+				<StatusPill tone="error" title="Bracket didn't regenerate" message="Fillet failed: radius 4 mm is larger than the adjacent 3.5 mm wall." source="bracket.ts:18" bind:expanded={pillOpen} />
 				<StatusPill tone="warning" title="Slow regeneration" detail="2.4 s" message="corners (fillet) took 1.9 s. Agents can see this in list_problems." />
 				<StatusPill tone="pending" title="Regenerating Lid" />
 				<StatusPill tone="preview" title="Unsaved preview" detail="⌘S to save" />
@@ -627,8 +625,9 @@
 
 <Section id="notes" title="Notes" description="Threads pinned to geometry. Humans and agents share one grammar; agent activity is inspectable but folded away.">
 	<NoteThread
+		class="max-w-[300px]"
 		number={12}
-		status="review"
+		status="resolved"
 		target="Face · Bracket"
 		source="bracket.ts:42"
 		messages={[
@@ -639,9 +638,10 @@
 			},
 			{
 				author: { name: 'Claude Code', kind: 'agent' },
+				detail: 'parasocial',
 				time: '14:02',
 				body: ['Raised ', { kind: 'param', name: 'thickness' }, ' from 3 to 4 mm and re-ran the fillet on ', { kind: 'entity', name: 'edge:corners[2]' }, '. Min wall is now 2.1 mm.'],
-				version: { version: 14, time: '14:02', summary: 'thickness 3 → 4' },
+				version: { version: 14, summary: 'thickness 3 → 4' },
 				activity: ['edit_script bracket.ts (+2 −1)', 'regenerate · 412 ms · ok', 'measure face:inner → face:outer = 2.1 mm', 'render iso, front']
 			}
 		]}

@@ -1,0 +1,13 @@
+{
+  "volume": 14802.5501,
+  "area": 3117.7776,
+  "faces": 3,
+  "edges": 5,
+  "vertices": 3,
+  "valid": true,
+  "faceNames": [
+    "lamp:bulb/globe · side · glass",
+    "lamp:bulb/globe · side · neck",
+    "lamp:bulb/globe · side · neckTop"
+  ]
+}

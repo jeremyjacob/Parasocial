@@ -256,7 +256,7 @@ describe("notes", () => {
     expect(b?.refcount).toBe(1);
   });
 
-  test("lifecycle: claim, conflicting claim, awaiting review, human reply reopens", async () => {
+  test("lifecycle: claim, conflicting claim, resolve, human reply reopens", async () => {
     const doc = await newDoc(db, ada);
     const hash = await putBlob();
     const noteID = crypto.randomUUID();
@@ -277,14 +277,14 @@ describe("notes", () => {
     const wrongRelease = await runMutator(db, mutators.note.release({ noteID }), { userID: ada, agentSessionID: a2 });
     expect(wrongRelease).toMatchObject({ ok: false, details: { code: "claimed" } });
 
-    // agent logs activity, writes a version, replies with it and asks for review
+    // agent logs activity, writes a version, replies with it and resolves
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "render iso", kind: "activity", data: { action: "render" } }), { userID: ada, agentSessionID: a1 });
     const versionID = crypto.randomUUID();
     await run(db, mutators.script.write({ documentID: doc, path: "studios/p.ts", content: "p", baseVersion: null, noteID, versionID }), { userID: ada, agentSessionID: a1 });
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "Done, 2mm now", versionID }), { userID: ada, agentSessionID: a1 });
-    await run(db, mutators.note.setStatus({ noteID, status: "AwaitingReview" }), { userID: ada, agentSessionID: a1 });
+    await run(db, mutators.note.setStatus({ noteID, status: "Resolved" }), { userID: ada, agentSessionID: a1 });
     note = await db.zql.run(zql.notes.where("id", noteID).one());
-    expect(note).toMatchObject({ status: "AwaitingReview", claimedBy: null });
+    expect(note).toMatchObject({ status: "Resolved", claimedBy: null });
 
     // a human reply moves it back to Open
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "Still thin on the left" }), { userID: ada });

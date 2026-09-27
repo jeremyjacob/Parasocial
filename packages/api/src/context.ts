@@ -13,13 +13,13 @@ export type ContextOptions = {
   cache: OpCache;
   /** Param overrides for the active configuration: name -> expression or value. */
   overrides?: Record<string, string | number>;
+  /** Overrides of shared params (`param(..., { shared: true })`), one set for the whole document. */
+  sharedOverrides?: Record<string, string | number>;
   units?: DocUnits;
   /** Map a raw stack frame to source (sourceURL / source maps). Return null to drop it. */
   mapFrame?: (f: Frame) => Frame | null;
   /** Is this (mapped) file user code? Default: under studios/ or lib/. */
   isUserFile?: (file: string) => boolean;
-  /** Color index for `color.auto()` (round-robin by part order). */
-  partIndex?: number;
   /** Param values from a previous pass, so overrides can refer to params declared later. */
   paramHints?: Record<string, number>;
 };
@@ -29,8 +29,8 @@ export class PartContext {
   readonly file: string;
   readonly cache: OpCache;
   readonly overrides: Record<string, string | number>;
+  readonly sharedOverrides: Record<string, string | number>;
   readonly units: DocUnits;
-  readonly partIndex: number;
   readonly params: ParamDecl[] = [];
   readonly ops: OpRecord[] = [];
   readonly problems: Problem[] = [];
@@ -49,8 +49,8 @@ export class PartContext {
     this.file = o.file;
     this.cache = o.cache;
     this.overrides = o.overrides ?? {};
+    this.sharedOverrides = o.sharedOverrides ?? {};
     this.units = o.units ?? SI_DEFAULT;
-    this.partIndex = o.partIndex ?? 0;
     this.mapFrame = o.mapFrame ?? ((f) => f);
     this.isUserFile = o.isUserFile ?? ((f) => /(^|\/)(studios|lib)\/[^/]+/.test(f));
   }

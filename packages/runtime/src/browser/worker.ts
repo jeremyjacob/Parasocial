@@ -33,14 +33,18 @@ async function boot(cfg: WorkerInit): Promise<EngineInfo> {
   return { threads, crossOriginIsolated: (self as any).crossOriginIsolated === true, kernelMs: performance.now() - t0, build: cfg.build };
 }
 
-const regen = new LatestWins<{ part: string; quality: "coarse" | "fine" }, PartResult>(({ part, quality }) => engine.regenerate(part, quality));
+const regen = new LatestWins<{ id: number; part: string; quality: "coarse" | "fine"; known?: string }, PartResult>(({ id, part, quality, known }) => {
+  // Arm the host's watchdog only when computation starts, not while waiting in a queue.
+  (self as any).postMessage({ type: "started", id });
+  return engine.regenerate(part, quality, known);
+});
 // interference follows drags: only the newest layout is worth computing
 const overlaps = new LatestWins<{ parts: string[]; ignore?: [string, string][]; poses?: Record<string, PartPose> }, Interference[]>((r) => {
   if (r.poses) engine.setPoses(r.poses);
   return engine.interferences(r.parts, r.ignore);
 });
 
-async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: Transferable[] }> {
+async function handle(req: EngineRequest, id: number): Promise<{ value: unknown; transfer?: Transferable[] }> {
   switch (req.op) {
     case "ping":
       return { value: { pong: true, ...stats } };
@@ -62,10 +66,12 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       engine.setOverrides(req.part, req.overrides);
       return { value: true };
     case "regenerate": {
-      const r = await regen.request(req.part, { part: req.part, quality: req.quality ?? "fine" });
+      const r = await regen.request(req.part, { id, part: req.part, quality: req.quality ?? "fine", known: req.known });
       if (!r) return { value: null }; // superseded by a newer request
       return { value: r, transfer: r.mesh ? meshTransferables(r.mesh) : [] };
     }
+    case "affected":
+      return { value: engine.affected(req.paths) };
     case "names":
       return { value: engine.names(req.part) };
     case "describe":
@@ -116,6 +122,7 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
     default:
       throw new Error(`unknown engine op "${(req as any).op}"`);
     case "regenerateSnapshot": {
+      (self as any).postMessage({ type: "started", id });
       if (snapshot.key !== req.key) {
         snapshot.engine.setDocument(req.doc);
         snapshot.key = req.key;
@@ -141,7 +148,7 @@ self.onmessage = async (ev: MessageEvent) => {
   if (typeof m?.id !== "number") return;
   try {
     await ready;
-    const { value, transfer } = await handle(m.req as EngineRequest);
+    const { value, transfer } = await handle(m.req as EngineRequest, m.id);
     (self as any).postMessage({ type: "result", id: m.id, ok: true, value }, transfer ?? []);
     if (transfer?.length) {
       stats.results++;

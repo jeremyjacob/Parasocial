@@ -1,0 +1,31 @@
+{
+  "volume": 105266.9827,
+  "area": 43532.1083,
+  "faces": 21,
+  "edges": 43,
+  "vertices": 26,
+  "valid": true,
+  "faceNames": [
+    "lamp:shade/bell · side · bellSketch/line1",
+    "lamp:shade/bell · side · bellSketch/line2",
+    "lamp:shade/bell · side · bellSketch/line3",
+    "lamp:shade/bell · side · bellSketch/line4",
+    "lamp:shade/bell · side · bellSketch/line5",
+    "lamp:shade/bell · side · bellSketch/line6",
+    "lamp:shade/bell · side · bellSketch/line7",
+    "lamp:shade/bell · side · bellSketch/line8",
+    "lamp:shade/bell · side · bellSketch/line9",
+    "lamp:shade/ear · cap.end",
+    "lamp:shade/ear · cap.start",
+    "lamp:shade/ear · side · hole1",
+    "lamp:shade/ear · side · outline/end1",
+    "lamp:shade/ear · side · outline/side1",
+    "lamp:shade/ear · side · outline/side2",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.end) & (lamp:shade/ear · side · outline/end1))",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.end) & (lamp:shade/ear · side · outline/side1))",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.end) & (lamp:shade/ear · side · outline/side2))",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.start) & (lamp:shade/ear · side · outline/end1))",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.start) & (lamp:shade/ear · side · outline/side1))",
+    "lamp:shade/earEdge · chamfer · ((lamp:shade/ear · cap.start) & (lamp:shade/ear · side · outline/side2))"
+  ]
+}

@@ -3,6 +3,7 @@ import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import Harness from '$lib/test/harness.svelte';
 import NumberField from './number-field.svelte';
 import { createEvaluator } from './evaluate';
+import { RotateCw } from '@lucide/svelte';
 
 afterEach(() => cleanup());
 
@@ -89,6 +90,26 @@ describe('NumberField', () => {
 		await fireEvent.focus(input);
 		await fireEvent.keyDown(input, { key: 'Backspace', metaKey: true });
 		expect(onreset).toHaveBeenCalled();
+	});
+
+	it('double-clicking a joint icon resets to its nonzero default and clears the expression', async () => {
+		const { input, getByTitle, onreset, oncommit } = setup({
+			icon: RotateCw, value: 45, defaultValue: 15, expression: '=90/2', unit: '°'
+		});
+		await fireEvent.doubleClick(getByTitle('Drag to adjust · Double-click to reset to 15 °'));
+		expect(input.value).toBe('15');
+		expect(onreset).toHaveBeenCalledOnce();
+		expect(oncommit).toHaveBeenCalledExactlyOnceWith(15, undefined);
+	});
+
+	it('does not reset disabled handles or handles without defaults', async () => {
+		const disabled = setup({ disabled: true, defaultValue: 5 });
+		await fireEvent.doubleClick(disabled.getByTitle('Drag to adjust · Double-click to reset to 5'));
+		expect(disabled.oncommit).not.toHaveBeenCalled();
+		disabled.unmount();
+		const noDefault = setup();
+		await fireEvent.doubleClick(noDefault.getByTitle('Drag to adjust'));
+		expect(noDefault.oncommit).not.toHaveBeenCalled();
 	});
 
 	it('Escape reverts the draft', async () => {

@@ -10,8 +10,10 @@
 		open = $bindable(false),
 		commands,
 		custom = $bindable({}),
-		nav = $bindable('onshape')
-	}: { open?: boolean; commands: Command[]; custom?: Record<string, string[]>; nav?: string } = $props();
+		nav = $bindable('onshape'),
+		scroll = $bindable('orbit'),
+		additiveSelection = $bindable(false)
+	}: { open?: boolean; commands: Command[]; custom?: Record<string, string[]>; nav?: string; scroll?: string; additiveSelection?: boolean } = $props();
 
 	let recording = $state<string | null>(null);
 	let error = $state('');
@@ -48,17 +50,41 @@
 <Dialog bind:open title="Preferences" class="max-w-[560px]">
 	<div class="flex flex-col gap-4" data-testid="preferences">
 		<div class="flex items-center gap-3 text-ui">
-			<span class="w-28 text-fg-secondary">Navigation</span>
+			<span class="w-28 text-fg-secondary">Mouse</span>
 			<Select
 				bind:value={nav}
 				items={[
 					{ value: 'onshape', label: 'Onshape', hint: 'right-drag orbit' },
 					{ value: 'solidworks', label: 'SolidWorks', hint: 'middle-drag orbit' },
-					{ value: 'fusion', label: 'Fusion', hint: 'shift+middle orbit' },
-					{ value: 'trackpad', label: 'Trackpad', hint: 'two-finger orbit' }
+					{ value: 'fusion', label: 'Fusion', hint: 'shift+middle orbit' }
 				]}
 				class="w-56"
 				aria-label="Navigation preset"
+			/>
+		</div>
+		<div class="flex items-center gap-3 text-ui">
+			<span class="w-28 text-fg-secondary">Trackpad</span>
+			<Select
+				bind:value={scroll}
+				items={[
+					{ value: 'orbit', label: 'Two-finger orbit', hint: 'shift pans' },
+					{ value: 'pan', label: 'Two-finger pan', hint: 'shift orbits' }
+				]}
+				class="w-56"
+				aria-label="Two-finger scroll"
+			/>
+		</div>
+		<div class="flex items-center gap-3 text-ui">
+			<span class="w-28 text-fg-secondary">Selection</span>
+			<Select
+				value={additiveSelection ? 'additive' : 'replace'}
+				onValueChange={(value) => (additiveSelection = value === 'additive')}
+				items={[
+					{ value: 'additive', label: 'Additive', hint: 'click to add or remove' },
+					{ value: 'replace', label: 'Replace', hint: 'hold Shift / ⌘ / Ctrl to add' }
+				]}
+				class="w-56"
+				aria-label="Selection behavior"
 			/>
 		</div>
 		<div class="flex flex-col">

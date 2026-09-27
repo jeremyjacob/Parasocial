@@ -23,6 +23,8 @@ export type PartData = {
   id: string;
   mesh: PartMesh;
   faceEdges: number[][];
+  /** vertex positions (part coordinates), by vertex index */
+  vertices?: readonly (readonly [number, number, number])[];
   /** edges to leave out of the drawn edge set (seams) */
   hiddenEdges?: Set<number>;
   color: string;
@@ -67,6 +69,7 @@ void main() {
 }`;
 const FACE_PICK_FRAG = /* glsl */ `
 uniform float slotKind;
+uniform bool pickable;
 varying float vFaceId;
 #include <logdepthbuf_pars_fragment>
 #include <clipping_planes_pars_fragment>
@@ -77,7 +80,71 @@ void main() {
   float r = floor(v / 65536.0);
   float g = floor((v - r * 65536.0) / 256.0);
   float b = v - r * 65536.0 - g * 256.0;
-  gl_FragColor = vec4(r / 255.0, g / 255.0, b / 255.0, slotKind / 255.0);
+  gl_FragColor = pickable ? vec4(r / 255.0, g / 255.0, b / 255.0, slotKind / 255.0) : vec4(0.0);
+}`;
+
+/** Vertex pick proxy: a disc per vertex, `size` device px across, id in rgb and kind/slot in alpha. */
+const VERT_PICK_VERT = /* glsl */ `
+attribute vec3 idColor;
+uniform float size;
+varying vec3 vId;
+#include <common>
+#include <logdepthbuf_pars_vertex>
+#include <clipping_planes_pars_vertex>
+void main() {
+  vId = idColor;
+  #include <begin_vertex>
+  #include <project_vertex>
+  #include <logdepthbuf_vertex>
+  #include <clipping_planes_vertex>
+  gl_PointSize = size;
+}`;
+const VERT_PICK_FRAG = /* glsl */ `
+uniform float slotKind;
+varying vec3 vId;
+#include <logdepthbuf_pars_fragment>
+#include <clipping_planes_pars_fragment>
+void main() {
+  if (length(gl_PointCoord - 0.5) > 0.5) discard;
+  #include <clipping_planes_fragment>
+  #include <logdepthbuf_fragment>
+  gl_FragColor = vec4(vId, slotKind / 255.0);
+}`;
+
+/** Highlighted vertices: a disc fading from transparent at the centre to the full colour at its rim, `size` CSS px across. */
+const MARKER_VERT = /* glsl */ `
+attribute vec3 color;
+uniform float size;
+uniform float pixelRatio;
+varying vec3 vColor;
+varying float vPx;
+#include <common>
+#include <logdepthbuf_pars_vertex>
+#include <clipping_planes_pars_vertex>
+void main() {
+  vColor = color;
+  #include <begin_vertex>
+  #include <project_vertex>
+  #include <logdepthbuf_vertex>
+  #include <clipping_planes_vertex>
+  gl_PointSize = size * pixelRatio;
+  vPx = 2.0 / gl_PointSize; // one device pixel, in units of the disc's radius
+}`;
+const MARKER_FRAG = /* glsl */ `
+varying vec3 vColor;
+varying float vPx;
+#include <logdepthbuf_pars_fragment>
+#include <clipping_planes_pars_fragment>
+void main() {
+  float r = length(gl_PointCoord - 0.5) * 2.0;
+  if (r > 1.0) discard;
+  #include <clipping_planes_fragment>
+  #include <logdepthbuf_fragment>
+  // the rim is at full colour: fade its last pixel so the edge is antialiased
+  // centre at 40% (not clear) rising smoothly to full at the rim
+  float a = mix(0.4, 1.0, smoothstep(0.0, 1.0, r));
+  gl_FragColor = vec4(vColor, a * (1.0 - smoothstep(1.0 - vPx, 1.0, r)));
+  #include <colorspace_fragment>
 }`;
 
 /** Silhouette: back faces pushed out a fixed number of pixels along their screen-space normal. */
@@ -114,7 +181,12 @@ export class PartObject {
   edgeLines!: LineSegments2;
   pickFaces!: THREE.Mesh;
   pickEdges!: LineSegments2;
+  pickVerts!: THREE.Points;
   overlay!: LineSegments2;
+  /** highlighted vertices (selected, preselected, errors) */
+  markers!: THREE.Points;
+  /** vertex indices worth picking: corners and ends of drawn edges (not a circle's lone seam vertex) */
+  pickableVertices!: Set<number>;
   silhouette!: THREE.Mesh;
   private silMaterial!: THREE.ShaderMaterial;
   /** Selected-part outline: stencil mask of the whole part, then a screen-space hull outside it. */
@@ -129,10 +201,18 @@ export class PartObject {
   private overlayMaterial: LineMaterial;
   private pickFaceMaterial: THREE.ShaderMaterial;
   private pickEdgeMaterial: LineMaterial;
+  private pickVertMaterial: THREE.ShaderMaterial;
+  private markerMaterial: THREE.ShaderMaterial;
+  private edgesVisibleBeforePick = true;
   /** Opacity the script asked for; display fades multiply into it. */
   readonly baseOpacity: number;
 
-  constructor(data: PartData, slot: number, private resolution: THREE.Vector2) {
+  constructor(
+    data: PartData,
+    slot: number,
+    private resolution: THREE.Vector2,
+    pixelRatio: { value: number } = { value: 1 },
+  ) {
     this.id = data.id;
     this.slot = slot;
     this.data = data;
@@ -155,7 +235,7 @@ export class PartObject {
     this.pickFaceMaterial = new THREE.ShaderMaterial({
       vertexShader: FACE_PICK_VERT,
       fragmentShader: FACE_PICK_FRAG,
-      uniforms: { slotKind: { value: (KIND_CODE.face << 6) | slot } },
+      uniforms: { slotKind: { value: (KIND_CODE.face << 6) | slot }, pickable: { value: true } },
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: 4,
@@ -163,8 +243,20 @@ export class PartObject {
       toneMapped: false,
       blending: THREE.NoBlending,
     });
-    this.pickEdgeMaterial = new LineMaterial({ vertexColors: true, linewidth: 15, resolution, worldUnits: false, toneMapped: false, blending: THREE.NoBlending });
+    // Wide edge proxies test against surfaces, but must not hide the vertices at their ends.
+    this.pickEdgeMaterial = new LineMaterial({ vertexColors: true, linewidth: 15, resolution, worldUnits: false, depthWrite: false, toneMapped: false, blending: THREE.NoBlending });
     (this.pickEdgeMaterial as any).fog = false;
+    this.pickVertMaterial = new THREE.ShaderMaterial({
+      vertexShader: VERT_PICK_VERT,
+      fragmentShader: VERT_PICK_FRAG,
+      uniforms: { slotKind: { value: (KIND_CODE.vertex << 6) | slot }, size: { value: 16 } },
+      toneMapped: false,
+      blending: THREE.NoBlending,
+    });
+    this.markerMaterial = withDepthBias(
+      new THREE.ShaderMaterial({ vertexShader: MARKER_VERT, fragmentShader: MARKER_FRAG, uniforms: { size: { value: 10 }, pixelRatio }, transparent: true, depthWrite: false }),
+      0.002,
+    ) as THREE.ShaderMaterial;
     this.build(data);
   }
 
@@ -251,16 +343,82 @@ export class PartObject {
     }
     pg.setColors(ids);
     this.pickEdges = new LineSegments2(pg, this.pickEdgeMaterial);
+    this.pickEdges.renderOrder = 1;
+    const pickViewport = new THREE.Vector4();
+    this.pickEdges.onBeforeRender = (renderer) => {
+      // LineSegments2 uses the canvas viewport by default, but picking renders into a small target.
+      renderer.getCurrentViewport(pickViewport);
+      this.pickEdgeMaterial.resolution.set(pickViewport.z, pickViewport.w);
+    };
     this.pickEdges.visible = false;
     // alpha carries kind + slot; LineMaterial writes alpha = opacity, so encode it there
     this.pickEdgeMaterial.opacity = ((KIND_CODE.edge << 6) | this.slot) / 255;
     this.pickEdgeMaterial.transparent = false;
 
+    // vertex pick proxy: a disc per pickable vertex, id colors per point
+    this.pickableVertices = this.cornerVertices(d);
+    const vIds = [...this.pickableVertices];
+    const vPos = new Float32Array(vIds.length * 3);
+    const vCol = new Float32Array(vIds.length * 3);
+    vIds.forEach((v, k) => {
+      vPos.set(d.vertices![v], k * 3);
+      const c = encodeId(this.slot, "vertex", v);
+      vCol.set([c[0] / 255, c[1] / 255, c[2] / 255], k * 3);
+    });
+    const vg = new THREE.BufferGeometry();
+    vg.setAttribute("position", new THREE.BufferAttribute(vPos, 3));
+    vg.setAttribute("idColor", new THREE.BufferAttribute(vCol, 3));
+    this.pickVerts = new THREE.Points(vg, this.pickVertMaterial);
+    this.pickVerts.renderOrder = 2;
+    this.pickVerts.visible = false;
+    this.pickVerts.frustumCulled = false;
+
     this.overlay = new LineSegments2(new LineSegmentsGeometry(), this.overlayMaterial);
     this.overlay.renderOrder = 2;
     this.overlay.visible = false;
+    this.markers = new THREE.Points(new THREE.BufferGeometry(), this.markerMaterial);
+    this.markers.renderOrder = 3;
+    this.markers.visible = false;
+    this.markers.frustumCulled = false;
 
-    this.group.add(this.faceMesh, this.silhouette, this.edgeLines, this.overlay, this.pickFaces, this.pickEdges, this.outlineMask, this.outline);
+    this.group.add(this.faceMesh, this.silhouette, this.edgeLines, this.overlay, this.markers, this.pickFaces, this.pickEdges, this.pickVerts, this.outlineMask, this.outline);
+  }
+
+  /**
+   * Vertices where a drawn edge starts or ends, except those on only one closed edge: a full
+   * circle's seam vertex is a kernel artifact, not a corner anyone means to pick.
+   */
+  private cornerVertices(d: PartData): Set<number> {
+    const out = new Set<number>();
+    const vs = d.vertices;
+    if (!vs?.length) return out;
+    const m = d.mesh;
+    const box = new THREE.Box3().setFromArray(m.positions);
+    const tol = Math.max(box.min.distanceTo(box.max) * 1e-5, 1e-7);
+    const key = (x: number, y: number, z: number) => `${Math.round(x / tol / 4)},${Math.round(y / tol / 4)},${Math.round(z / tol / 4)}`;
+    // endpoint -> [drawn edges touching it, whether any of them is open]
+    const ends = new Map<string, { edges: Set<number>; open: boolean }>();
+    const P = m.edgePositions;
+    for (let e = 0; e < m.edgeRanges.length / 2; e++) {
+      const s = m.edgeRanges[e * 2],
+        c = m.edgeRanges[e * 2 + 1];
+      if (!c || d.hiddenEdges?.has(e)) continue;
+      const a = s * 3,
+        b = (s + c - 1) * 3;
+      const open = Math.hypot(P[a] - P[b], P[a + 1] - P[b + 1], P[a + 2] - P[b + 2]) > tol;
+      for (const o of [a, b]) {
+        const k = key(P[o], P[o + 1], P[o + 2]);
+        const r = ends.get(k) ?? { edges: new Set(), open: false };
+        r.edges.add(e);
+        r.open ||= open;
+        ends.set(k, r);
+      }
+    }
+    vs.forEach(([x, y, z], i) => {
+      const r = ends.get(key(x, y, z));
+      if (r && (r.open || r.edges.size > 1)) out.add(i);
+    });
+    return out;
   }
 
   /** Line segment positions for the given edges, plus which edge each segment belongs to. */
@@ -285,7 +443,9 @@ export class PartObject {
     this.slot = slot;
     this.pickFaceMaterial.uniforms.slotKind.value = (KIND_CODE.face << 6) | slot;
     this.pickEdgeMaterial.opacity = ((KIND_CODE.edge << 6) | slot) / 255;
-    // edge ids don't include the slot (it's in alpha), nothing else to update
+    this.pickVertMaterial.uniforms.slotKind.value = (KIND_CODE.vertex << 6) | slot;
+    // edge ids don't include the slot (it's in alpha); the section cap's draw order does
+    this.orderCap();
   }
 
   /** Recolor faces: base color, with per-face overrides (selection tint, error tint). */
@@ -328,6 +488,22 @@ export class PartObject {
     this.overlay.geometry.dispose();
     this.overlay.geometry = g;
     this.overlay.visible = true;
+  }
+
+  /** Dots on highlighted vertices. */
+  setMarkers(marks: { vertex: number; color: THREE.Color }[]) {
+    const vs = this.data.vertices ?? [];
+    const ok = marks.filter((m) => vs[m.vertex]);
+    const pos = new Float32Array(ok.length * 3),
+      col = new Float32Array(ok.length * 3);
+    ok.forEach((m, k) => (pos.set(vs[m.vertex], k * 3), col.set([m.color.r, m.color.g, m.color.b], k * 3)));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    this.markers.geometry.dispose();
+    this.markers.geometry = g;
+    this.markers.userData.active = ok.length > 0;
+    this.markers.visible = ok.length > 0;
   }
 
   setEmissive(amount: number) {
@@ -376,17 +552,28 @@ export class PartObject {
     this.faceMaterial.needsUpdate = true;
   }
 
-  /** Swap to pick materials for the ID pass. */
-  pickMode(on: boolean, edgesPickable: boolean, facesPickable: boolean) {
-    if (this.cap) this.cap.visible = !on && !!this.faceMaterial.clippingPlanes;
+  /**
+   * Swap to pick materials for the ID pass. `px` sizes the proxies in device pixels: edge proxy
+   * width and vertex disc diameter.
+   */
+  pickMode(on: boolean, edgesPickable: boolean, facesPickable: boolean, verticesPickable = false, px = { edge: 15, vertex: 16 }) {
+    this.showCap(!on && !!this.faceMaterial.clippingPlanes && this.cap?.userData.shown === true);
     if (this.capBorder) this.capBorder.visible = !on && !!this.faceMaterial.clippingPlanes && this.capBorder.geometry.attributes.instanceStart !== undefined;
     this.faceMesh.visible = !on && this.faceMesh.userData.shown !== false;
     this.silhouette.visible = !on && this.silhouette.userData.shown === true;
     this.outlineMask.visible = this.outline.visible = !on && this.outlineMask.userData.shown === true;
-    this.edgeLines.visible = !on;
+    // Picking is temporary: preserve display-mode and comparison-fade visibility.
+    if (on) this.edgesVisibleBeforePick = this.edgeLines.visible;
+    this.edgeLines.visible = !on && this.edgesVisibleBeforePick;
     this.overlay.visible = !on && this.overlay.geometry.attributes.instanceStart !== undefined && this.overlay.userData.active === true;
-    this.pickFaces.visible = on && facesPickable;
+    // Filtered-out faces still occlude edges and vertices; a zero ID keeps them unselectable.
+    this.pickFaces.visible = on;
+    this.pickFaceMaterial.uniforms.pickable.value = facesPickable;
     this.pickEdges.visible = on && edgesPickable;
+    this.pickVerts.visible = on && verticesPickable && this.pickableVertices.size > 0;
+    this.markers.visible = !on && this.markers.userData.active === true;
+    this.pickEdgeMaterial.linewidth = px.edge;
+    this.pickVertMaterial.uniforms.size.value = px.vertex;
   }
 
   faceCenter(f: number, target: THREE.Vector3): THREE.Vector3 {
@@ -399,18 +586,22 @@ export class PartObject {
   }
 
   private cap: THREE.Mesh | null = null;
+  /** Stencil passes that mark where the section plane lies inside the part (back +1, front −1). */
+  private capStencil: THREE.Mesh[] = [];
   private capColor = new THREE.Color();
   /** Outline of the cut: where the section plane crosses the part's surface. */
   private capBorder: LineSegments2 | null = null;
 
   /**
-   * Section view: clip everything of this part. Inside (back) faces seen through the cut render as
-   * a flat cap in the part's colour, hatched with thin dark lines. The hatch is laid out on the
-   * section plane in world space (each back-face fragment is projected along its view ray onto the
-   * plane), so it stays attached to the model while orbiting; angle and spacing vary per part.
+   * Section view: clip everything of this part, and fill the cut with a solid cap on the plane
+   * itself, in the part's colour, hatched with thin dark lines. The cap is a quad on the plane,
+   * drawn only where the plane is inside the solid: the clipped surfaces' back faces add one to
+   * the stencil and front faces subtract one, so the count is nonzero exactly there. Being on the
+   * plane, it hides everything inside the part behind the cut. The hatch is laid out on the plane
+   * in world space, so it stays attached to the model while orbiting; angle and spacing vary per part.
    */
   setClip(planes: THREE.Plane[], hatch?: { angle: number; spacing: number; pixelRatio: number }) {
-    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial, this.outlineMask.material, this.outline.material] as THREE.Material[];
+    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.pickVertMaterial, this.markerMaterial, this.silMaterial, this.outlineMask.material, this.outline.material] as THREE.Material[];
     for (const m of mats) {
       m.clippingPlanes = planes.length ? planes : null;
       (m as any).clipping = planes.length > 0;
@@ -422,11 +613,18 @@ export class PartObject {
     this.silMaterial.visible = !planes.length;
     if (planes.length) {
       if (!this.cap) {
-        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+        const mat = new THREE.MeshBasicMaterial({
+          side: THREE.DoubleSide,
+          stencilWrite: true,
+          stencilRef: 0,
+          stencilFunc: THREE.NotEqualStencilFunc,
+          stencilFail: THREE.KeepStencilOp,
+          stencilZFail: THREE.KeepStencilOp,
+          stencilZPass: THREE.KeepStencilOp,
+        });
         mat.userData.hatch = {
           hatchColor: { value: new THREE.Color() },
           hatchPx: { value: 1 },
-          hatchPlane: { value: new THREE.Vector4() },
           hatchDir: { value: new THREE.Vector3() },
           hatchSpacing: { value: 1 },
         };
@@ -436,19 +634,11 @@ export class PartObject {
             .replace("void main() {", "varying vec3 vHatchWorld;\nvoid main() {")
             .replace("#include <project_vertex>", "#include <project_vertex>\nvHatchWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
           sh.fragmentShader = sh.fragmentShader
-            .replace(
-              "void main() {",
-              "uniform vec3 hatchColor;\nuniform float hatchPx;\nuniform vec4 hatchPlane;\nuniform vec3 hatchDir;\nuniform float hatchSpacing;\nvarying vec3 vHatchWorld;\nvoid main() {",
-            )
+            .replace("void main() {", "uniform vec3 hatchColor;\nuniform float hatchPx;\nuniform vec3 hatchDir;\nuniform float hatchSpacing;\nvarying vec3 vHatchWorld;\nvoid main() {")
             .replace(
               "#include <color_fragment>",
               `#include <color_fragment>
-            // project this back-face fragment along its view ray onto the section plane
-            vec3 rd = isOrthographic ? vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]) : vHatchWorld - cameraPosition;
-            float den = dot(hatchPlane.xyz, rd);
-            float tHit = abs(den) > 1e-8 ? -(dot(hatchPlane.xyz, vHatchWorld) + hatchPlane.w) / den : 0.0;
-            vec3 onPlane = vHatchWorld + rd * tHit;
-            float s = dot(onPlane, hatchDir) / hatchSpacing;
+            float s = dot(vHatchWorld, hatchDir) / hatchSpacing;
             float fw = max(fwidth(s), 1e-6);
             float px = abs(fract(s + 0.5) - 0.5) / fw;
             float line = 1.0 - smoothstep(0.3 * hatchPx - 0.5, 0.3 * hatchPx + 0.5, px);
@@ -457,15 +647,33 @@ export class PartObject {
             diffuseColor.rgb = mix(diffuseColor.rgb, hatchColor, line * 0.85);`,
             );
         };
-        this.cap = new THREE.Mesh(this.faceMesh.geometry, mat);
-        this.cap.renderOrder = -0.5;
-        this.group.add(this.cap);
+        this.cap = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+        // the stencil passes must be followed by this cap every frame, which then clears them
+        this.cap.frustumCulled = false;
+        this.cap.onAfterRender = (r) => r.clearStencil();
+        this.capStencil = [
+          [THREE.BackSide, THREE.IncrementWrapStencilOp],
+          [THREE.FrontSide, THREE.DecrementWrapStencilOp],
+        ].map(([side, op]) => {
+          const m = new THREE.Mesh(
+            this.faceMesh.geometry,
+            new THREE.MeshBasicMaterial({ side: side as THREE.Side, colorWrite: false, depthWrite: false, depthTest: false, stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: op as THREE.StencilOp }),
+          );
+          m.frustumCulled = false;
+          return m;
+        });
+        this.group.add(this.cap, ...this.capStencil);
       }
+      this.orderCap();
       const cm = this.cap.material as THREE.MeshBasicMaterial;
       const u = cm.userData.hatch;
       this.syncCapColor();
       const pl = planes[0];
-      u.hatchPlane.value.set(pl.normal.x, pl.normal.y, pl.normal.z, pl.constant);
+      for (const m of this.capStencil) {
+        const sm = m.material as THREE.Material;
+        sm.clippingPlanes = planes;
+        sm.needsUpdate = true;
+      }
       if (hatch) {
         // in-plane basis from a stable world reference, then rotate by the part's hatch angle
         const n = pl.normal;
@@ -476,14 +684,40 @@ export class PartObject {
         u.hatchSpacing.value = hatch.spacing;
         u.hatchPx.value = hatch.pixelRatio;
       }
-      cm.clippingPlanes = planes;
-      cm.needsUpdate = true;
-      this.cap.visible = true;
+      this.placeCap(pl);
       this.updateCapBorder(pl);
     } else {
-      if (this.cap) this.cap.visible = false;
+      this.showCap(false);
       if (this.capBorder) this.capBorder.visible = false;
     }
+  }
+
+  /** Parts share the stencil buffer: each part's passes and cap run back to back, before any faces. */
+  private orderCap() {
+    if (!this.cap) return;
+    const order = -3 + this.slot * 0.01;
+    for (const m of this.capStencil) m.renderOrder = order;
+    this.cap.renderOrder = order + 0.005;
+  }
+
+  private showCap(on: boolean) {
+    if (this.cap) this.cap.visible = on;
+    for (const m of this.capStencil) m.visible = on;
+  }
+
+  /** The cap quad: on the plane, centred on the part, covering its bounding sphere's cross-section. */
+  private placeCap(world: THREE.Plane) {
+    const cap = this.cap!;
+    const pl = world.clone().applyMatrix4(this.group.matrix.clone().invert());
+    const sphere = this.faceMesh.geometry.boundingSphere!;
+    const d = pl.distanceToPoint(sphere.center);
+    const on = Math.abs(d) < sphere.radius;
+    this.showCap(on);
+    cap.userData.shown = on;
+    if (!on) return;
+    cap.position.copy(sphere.center).addScaledVector(pl.normal, -d);
+    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), pl.normal);
+    cap.scale.setScalar(sphere.radius * 2.2);
   }
 
   /** Intersect every triangle with the plane; the crossing segments outline the cut face. */
@@ -537,12 +771,15 @@ export class PartObject {
   }
 
   dispose() {
-    if (this.cap) (this.cap.material as THREE.Material).dispose();
+    if (this.cap) this.cap.geometry.dispose(), (this.cap.material as THREE.Material).dispose();
+    for (const m of this.capStencil) (m.material as THREE.Material).dispose();
     if (this.capBorder) this.capBorder.geometry.dispose(), (this.capBorder.material as THREE.Material).dispose();
     this.faceMesh.geometry.dispose();
     this.edgeLines.geometry.dispose();
     this.pickEdges.geometry.dispose();
+    this.pickVerts.geometry.dispose();
     this.overlay.geometry.dispose();
+    this.markers.geometry.dispose();
     this.faceMaterial.dispose();
     this.silMaterial.dispose();
     (this.outlineMask.material as THREE.Material).dispose();
@@ -551,6 +788,8 @@ export class PartObject {
     this.overlayMaterial.dispose();
     this.pickFaceMaterial.dispose();
     this.pickEdgeMaterial.dispose();
+    this.pickVertMaterial.dispose();
+    this.markerMaterial.dispose();
   }
 }
 

@@ -19,5 +19,9 @@ export const MIGRATIONS: readonly (readonly [name: string, sql: string])[] = [
  [
   "0005_studios.sql",
   "-- parts/ is now studios/: a studio script exports one or more parts. Moves existing scripts and\n-- the script paths recorded in version snapshots, and re-points the path CHECK.\nALTER TABLE scripts DROP CONSTRAINT scripts_path_check;\n\nUPDATE scripts SET path = 'studios/' || substr(path, length('parts/') + 1) WHERE path LIKE 'parts/%';\n\nUPDATE versions SET snapshot = jsonb_set(snapshot, '{scripts}', (\n  SELECT jsonb_object_agg(CASE WHEN k LIKE 'parts/%' THEN 'studios/' || substr(k, length('parts/') + 1) ELSE k END, v)\n  FROM jsonb_each(snapshot->'scripts') AS e(k, v)\n))\nWHERE EXISTS (SELECT 1 FROM jsonb_object_keys(snapshot->'scripts') AS k WHERE k LIKE 'parts/%');\n\nALTER TABLE scripts ADD CONSTRAINT scripts_path_check\n  CHECK (path ~ '^(studios/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts|lib/([A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts)$');\n"
+ ],
+ [
+  "0006_drop_awaiting_review.sql",
+  "-- Notes no longer have a review state: once the agent marks a note done, it's done.\nUPDATE notes SET status = 'Resolved' WHERE status = 'AwaitingReview';\nALTER TABLE notes DROP CONSTRAINT notes_status_check;\nALTER TABLE notes ADD CONSTRAINT notes_status_check CHECK (status IN ('Open', 'AgentWorking', 'Resolved'));\n"
  ]
 ];

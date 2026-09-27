@@ -1,34 +1,43 @@
 // Assemblies in the workspace: a solver per assembly (joints resolved against each part's
-// connectors), the parts' poses in the viewer, dragging, saving where things were dragged to, and
-// interference (red where parts overlap). Parts are modeled in place, so "no pose" means "where
-// the script put it"; a pose is a transform from there.
+// connectors), the poses of its instances in the viewer, dragging, saving where things were dragged
+// to, and interference (red where instances overlap). An assembly holds its own copies of the parts
+// (instances, `<assembly>/<part>`, `<assembly>/<part>@<name>` for more copies): moving them never
+// moves the parts in their studios. A pose is an instance's transform from where its part is
+// modeled: copies placed elsewhere (or put against another by connector-to-connector joints) have
+// one even at home.
 import { Mechanism, toMatrix, isIdentity, type JointSpec, type Pose, type Vec3 } from '@parasocial/assembly';
-import type { AssemblyInfo, PartPose } from '@parasocial/runtime/protocol';
+import { sourcePart, type AssemblyInfo, type PartPose } from '@parasocial/runtime/protocol';
+import { resolveAssembly } from '@parasocial/runtime/mechanism';
 import { mutators } from '@parasocial/sync';
 import type { WorkspaceState } from './state.svelte';
 
-type Built = { info: AssemblyInfo; mech: Mechanism; key: string; movable?: Map<string, boolean> };
+type Built = { info: AssemblyInfo; mech: Mechanism; key: string; movable?: Map<string, boolean>; driverList?: string[] };
 export type Overlap = { a: string; b: string; volume: number };
 export type AssemblyProblem = { assembly: string; message: string; source?: { file: string; line: number } };
 
 const PREF = 'parasocial:interference';
+const PREF_ON_TOP = 'parasocial:interference-on-top';
 
 export class AssemblyController {
 	/** Assemblies the studios export (from the engine). */
 	assemblies = $state.raw<AssemblyInfo[]>([]);
-	/** Joints that couldn't be set up (a missing connector, a part in two assemblies), plus script errors. */
+	/** Joints that couldn't be set up (a missing connector), plus script errors. */
 	problems = $state.raw<AssemblyProblem[]>([]);
-	/** Where visible parts overlap right now. */
+	/** Where the shown assembly's instances overlap right now. */
 	overlaps = $state.raw<Overlap[]>([]);
-	/** Red overlap volumes between assembly parts (on by default; remembered per browser). Other parts are never checked. */
+	/** Red overlap volumes between assembly instances (on by default; remembered per browser). Parts in their studios are never checked. */
 	showInterference = $state(pref(PREF, true));
-	/** The part being dragged, if any. */
+	/** Overlap volumes drawn through the geometry covering them (x-ray), or only where visible. Remembered per browser. */
+	interferenceOnTop = $state(pref(PREF_ON_TOP, true));
+	/** The instance being dragged, if any. */
 	dragging = $state<string | null>(null);
+	/** Per assembly, the joints that drive it (the rest follow them around closed loops). */
+	drivers = $state.raw<Record<string, string[]>>({});
 	/** Current joint values per assembly (for display). */
 	values = $state.raw<Record<string, Record<string, number[]>>>({});
 
 	private built = new Map<string, Built>();
-	/** Parts currently moved from their modeled pose. */
+	/** Instances currently moved from their modeled pose. */
 	private posed = new Set<string>();
 	private drag: { built: Built; part: string; local: Vec3 } | null = null;
 	private seq = 0;
@@ -46,10 +55,11 @@ export class AssemblyController {
 		} catch {
 			return;
 		}
+		this.ws.syncInstances();
 		this.rebuild();
 	}
 
-	/** Parts that belong to some assembly. */
+	/** Instances in some assembly. */
 	get members(): Set<string> {
 		const out = new Set<string>();
 		for (const b of this.built.values()) for (const p of b.mech.bodies) out.add(p);
@@ -63,51 +73,38 @@ export class AssemblyController {
 	rebuild() {
 		const results = this.ws.results;
 		const problems: AssemblyProblem[] = [];
-		const claimed = new Map<string, string>();
 		const next = new Map<string, Built>();
 		for (const info of this.assemblies) {
 			for (const p of info.problems) problems.push({ assembly: info.id, message: p.message, source: p.source });
-			const joints: JointSpec[] = [];
-			let pending = false;
-			for (const j of info.joints) {
-				const owner = [j.a, j.b].find((p) => claimed.has(p) && claimed.get(p) !== info.id);
-				if (owner) {
-					problems.push({ assembly: info.id, message: `${this.nameOf(owner)} is already in the assembly "${this.asmName(claimed.get(owner)!)}"; a part can be in one assembly`, source: j.source });
-					continue;
-				}
-				let frame = 'frame' in j.at ? j.at.frame : undefined;
-				if ('connector' in j.at) {
-					const r = results[j.at.part];
-					if (!r || r.empty) {
-						pending = true; // not regenerated yet: build once it has
-						continue;
-					}
-					frame = r.connectors?.[j.at.connector];
-					if (!frame) {
-						problems.push({ assembly: info.id, message: `${this.nameOf(j.at.part)} has no connector "${j.at.connector}": add .connector("${j.at.connector}", ...) to its body`, source: j.source });
-						continue;
-					}
-				}
-				joints.push({ name: j.name, type: j.type, a: j.a, b: j.b, frame: frame!, limits: j.limits, value: j.value });
-			}
-			if (pending || !joints.length) continue;
-			for (const j of joints) for (const p of [j.a, j.b]) claimed.set(p, info.id);
+			// connectors from each part's regeneration (null: not regenerated yet, build once it has)
+			const resolved = resolveAssembly(
+				info,
+				(part) => {
+					const r = results[part];
+					return !r || r.empty ? null : (r.connectors ?? {});
+				},
+				(part) => this.nameOf(part)
+			);
+			for (const p of resolved.problems) problems.push({ assembly: info.id, ...p });
+			const { joints, home } = resolved.spec;
+			if (resolved.pending || (!joints.length && Object.values(home ?? {}).every((p) => isIdentity(p)))) continue;
 			const fixed = info.fixed;
-			const key = JSON.stringify([joints, fixed]);
+			const key = JSON.stringify([joints, fixed, home]);
 			const prev = this.built.get(info.id);
 			if (prev && prev.key === key) {
 				next.set(info.id, { ...prev, info });
 				continue;
 			}
-			const mech = new Mechanism({ joints, fixed, scale: this.scale(joints) });
+			const mech = new Mechanism({ ...resolved.spec, scale: this.scale(joints) });
 			// where it was left: saved values, else the current ones of the previous build, else the script's
 			const saved = this.saved(info.id) ?? (prev ? prev.mech.values() : null);
 			const err = saved ? mech.setValues(saved) : mech.settle();
-			if (err > 1e-3) problems.push({ assembly: info.id, message: `the joints of "${info.name}" can't all be satisfied (off by ${err.toFixed(2)}): check that connectors line up where the parts are modeled` });
+			if (err > 1e-3) problems.push({ assembly: info.id, message: `the joints of "${info.name}" can't all be satisfied (off by ${err.toFixed(2)}): check that connectors line up where the parts are modeled or placed` });
 			next.set(info.id, { info, mech, key });
 		}
 		this.built = next;
 		this.problems = problems;
+		this.drivers = Object.fromEntries([...next].map(([id, b]) => [id, b.driverList ??= b.mech.drivers()]));
 		this.apply();
 	}
 
@@ -127,7 +124,7 @@ export class AssemblyController {
 		if (changed) this.apply();
 	}
 
-	/** Could this part be dragged? (Asked on every hover: cached per solver.) */
+	/** Could this instance be dragged? (Asked on every hover: cached per solver.) Parts in their studios never move. */
 	movable(part: string): boolean {
 		const b = this.builtWith(part);
 		if (!b) return false;
@@ -166,7 +163,26 @@ export class AssemblyController {
 		await this.ws.mutate(mutators.document.setPose({ id: this.ws.documentID, assembly: d.built.info.id, joints: values }), `Move ${this.nameOf(d.part)}`);
 	}
 
-	/** Put every assembly back where it's modeled (clears saved positions). */
+	/** Set one joint's value (degrees, millimetres) while it's being edited; the rest settle around it. */
+	setJoint(assembly: string, joint: string, value: number[]) {
+		const b = this.built.get(assembly);
+		if (!b) return;
+		b.mech.setValues({ [joint]: value });
+		this.apply();
+	}
+
+	/** Finish editing a joint: save where the assembly ended up (undoable). */
+	async commitJoint(assembly: string, joint: string, value: number[], label = joint) {
+		const b = this.built.get(assembly);
+		if (!b) return;
+		this.setJoint(assembly, joint, value);
+		const values = b.mech.values();
+		const saved = this.saved(assembly);
+		if (saved && JSON.stringify(saved) === JSON.stringify(values)) return;
+		await this.ws.mutate(mutators.document.setPose({ id: this.ws.documentID, assembly, joints: values }), `Set ${label}`);
+	}
+
+	/** Put every assembly back in its home pose (clears saved positions). */
 	async resetPoses() {
 		for (const [id, b] of this.built) {
 			b.mech.setValues(Object.fromEntries(b.info.joints.map((j) => [j.name, j.value])));
@@ -183,7 +199,14 @@ export class AssemblyController {
 		this.check();
 	}
 
-	/** Current poses (parts moved from their modeled position). */
+	setInterferenceOnTop(on: boolean) {
+		this.interferenceOnTop = on;
+		try {
+			localStorage.setItem(PREF_ON_TOP, String(on));
+		} catch {}
+	}
+
+	/** Current poses (instances away from where their part is modeled). */
 	poses(): Record<string, PartPose> {
 		const out: Record<string, PartPose> = {};
 		for (const b of this.built.values()) for (const [p, pose] of b.mech.poses()) if (!isIdentity(pose)) out[p] = pose;
@@ -227,9 +250,9 @@ export class AssemblyController {
 		if (ws.scrubbing || ws.typing) return void (this.checkTimer = setTimeout(() => this.runCheck(), 250));
 		const poses = this.poses();
 		const seq = ++this.seq;
-		// only parts in an assembly: elsewhere, overlapping parts are just how things are modeled
+		// only the shown assembly's instances: in a studio, overlapping parts are just how things are modeled
 		const members = this.members;
-		const parts = ws.parts.filter((p) => members.has(p) && ws.results[p] && !ws.results[p].empty && !ws.hidden.includes(p) && (!ws.isolated.length || ws.isolated.includes(p)));
+		const parts = ws.shownParts.filter((p) => members.has(p) && ws.results[p] && !ws.results[p].empty && !ws.hidden.includes(p));
 		if (!this.showInterference || parts.length < 2) {
 			this.shownSeq = seq;
 			if (this.overlaps.length) (this.overlaps = []), ws.viewer?.setInterferences([]);
@@ -266,17 +289,14 @@ export class AssemblyController {
 		let s = 0;
 		for (const j of joints)
 			for (const p of [j.a, j.b]) {
-				const bb = this.ws.results[p]?.bbox;
+				const bb = this.ws.results[sourcePart(p)]?.bbox;
 				if (bb) s = Math.max(s, Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) / 2);
 			}
 		return s || 50;
 	}
 
 	private nameOf(part: string) {
-		return this.ws.results[part]?.name ?? this.ws.partInfos.find((p) => p.id === part)?.name ?? part;
-	}
-	private asmName(id: string) {
-		return this.assemblies.find((a) => a.id === id)?.name ?? id;
+		return this.ws.results[part]?.name ?? this.ws.partInfos.find((p) => p.id === sourcePart(part))?.name ?? part;
 	}
 }
 

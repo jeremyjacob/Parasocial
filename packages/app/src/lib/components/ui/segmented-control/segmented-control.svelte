@@ -39,9 +39,10 @@
 		onValueChange
 	}: Props = $props();
 
-	const index = $derived(Math.max(0, items.findIndex((i) => i.value === value)));
+	const found = $derived(items.findIndex((i) => i.value === value));
+	const index = $derived(Math.max(0, found));
 
-	// Figma-style: a segmented control always has exactly one value; ignore deselection.
+	// Figma-style: a segmented control has at most one value (none shows no thumb); ignore deselection.
 	function change(v: string) {
 		if (!v) return;
 		value = v;
@@ -70,8 +71,8 @@
 >
 	<span
 		aria-hidden="true"
-		class="absolute top-[var(--segment-pad)] bottom-[var(--segment-pad)] left-[var(--segment-pad)] -z-10 rounded-[var(--segment-item-radius)] bg-control shadow-thumb transition-transform duration-[var(--duration-base)] ease-spring"
-		style="width: calc((100% - 2 * var(--segment-pad)) / var(--count)); transform: translateX({index * 100}%)"
+		class="absolute top-[var(--segment-pad)] bottom-[var(--segment-pad)] left-[var(--segment-pad)] -z-10 rounded-[var(--segment-item-radius)] bg-control shadow-thumb transition-[transform,opacity] duration-[var(--duration-base)] ease-spring"
+		style="width: calc((100% - 2 * var(--segment-pad)) / var(--count)); transform: translateX({index * 100}%); opacity: {found < 0 ? 0 : 1}"
 	></span>
 	{#each items as item (item.value)}
 		{#snippet seg(extra: Record<string, unknown>)}

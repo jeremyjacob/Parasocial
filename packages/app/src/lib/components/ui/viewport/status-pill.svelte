@@ -7,8 +7,10 @@
 		tone: 'error' | 'warning' | 'pending' | 'preview';
 		/** One calm line: "Bracket didn't regenerate". */
 		title: string;
-		/** Quiet suffix: "agents notified". */
+		/** Quiet suffix. */
 		detail?: string;
+		/** Action for the pill; takes precedence over expanding the message. */
+		onClick?: () => void;
 		/** Expanded body: the actual message. Omit for non-expandable pills. */
 		message?: string;
 		/** Source link text ("bracket.ts:18"). */
@@ -21,6 +23,7 @@
 		tone,
 		title,
 		detail,
+		onClick,
 		message,
 		source,
 		onSourceClick,
@@ -34,7 +37,7 @@
 		pending: '',
 		preview: 'bg-accent'
 	};
-	const expandable = $derived(!!message);
+	const expandable = $derived(!!message && !onClick);
 </script>
 
 <!-- Quiet viewport status (never a banner). The pill grows into a small card when expanded. -->
@@ -48,10 +51,10 @@
 >
 	<button
 		type="button"
-		disabled={!expandable}
+		disabled={!expandable && !onClick}
 		aria-expanded={expandable ? expanded : undefined}
 		aria-controls={expandable ? `sp-${uid}` : undefined}
-		onclick={() => (expanded = !expanded)}
+		onclick={() => onClick ? onClick() : (expanded = !expanded)}
 		class="flex h-7 items-center gap-2 pr-2 pl-3 text-left focus-ring enabled:hover:bg-hover"
 		style="border-radius:inherit"
 	>
@@ -61,7 +64,10 @@
 			<span class={cn('size-1.5 shrink-0 rounded-full', dot[tone])}></span>
 		{/if}
 		<span class="truncate font-medium text-fg">{title}</span>
-		{#if detail}<span class="shrink-0 text-fg-tertiary">· {detail}</span>{/if}
+		{#if detail}
+			<span aria-hidden="true" class="shrink-0 text-fg-tertiary">·</span>
+			<span class="shrink-0 text-fg-tertiary">{detail}</span>
+		{/if}
 		{#if expandable}
 			<ChevronDown
 				size={14}

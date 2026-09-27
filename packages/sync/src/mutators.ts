@@ -673,6 +673,7 @@ export const mutators = defineMutators({
             z.object({
               id: id.optional(),
               anchor: anchorSchema.extend({ snapshot: z.string().optional() }),
+              // AwaitingReview: accepted from older exports, imported as Resolved
               status: z.enum(["Open", "AgentWorking", "AwaitingReview", "Resolved"]).optional(),
               orphaned: z.boolean().optional(),
               messages: z.array(z.object({ text: z.string(), author: z.string().optional(), kind: z.enum(["message", "activity"]).optional() })).default([]),
@@ -743,7 +744,7 @@ export const mutators = defineMutators({
             authorAgentID: null,
             anchor: anchor as NoteAnchor,
             snapshotHash: null,
-            status: note.status === "AgentWorking" ? "Open" : (note.status ?? "Open"),
+            status: note.status === "AgentWorking" ? "Open" : note.status === "AwaitingReview" ? "Resolved" : (note.status ?? "Open"),
             orphaned: note.orphaned ?? false,
             claimedBy: null,
             removedAt: null,
@@ -1018,7 +1019,7 @@ export const mutators = defineMutators({
 
     /**
      * Reply, or (kind "activity") an agent activity-log entry. A human reply
-     * moves an AwaitingReview/Resolved note back to Open. It does not yank an
+     * moves a Resolved note back to Open. It does not yank an
      * active agent claim: the agent sees the reply in its thread.
      */
     reply: defineMutator(
@@ -1049,7 +1050,7 @@ export const mutators = defineMutators({
           createdAt: now,
         });
         const humanReply = args.kind === "message" && !who.agentID;
-        if (humanReply && (note.status === "AwaitingReview" || note.status === "Resolved")) {
+        if (humanReply && note.status === "Resolved") {
           await tx.mutate.notes.update({ id: note.id, status: "Open", updatedAt: now });
         } else {
           await tx.mutate.notes.update({ id: note.id, updatedAt: now });
@@ -1108,7 +1109,7 @@ export const mutators = defineMutators({
 
     /** set_note_status. AgentWorking is only entered through claim; any other status releases the claim. */
     setStatus: defineMutator(
-      z.object({ noteID: id, status: z.enum(["Open", "AwaitingReview", "Resolved"]) }),
+      z.object({ noteID: id, status: z.enum(["Open", "Resolved"]) }),
       async ({ tx, ctx, args }) => {
         const l = await loadNote(tx, ctx, args.noteID, "viewer");
         if (!l) return;

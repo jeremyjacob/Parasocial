@@ -1,12 +1,49 @@
 <script lang="ts">
 	// Note pins (§6 UX): sit on their geometry, hide when occluded, cluster when zoomed out,
-	// ghost (dashed) when orphaned. Avatars distinguish the human from each agent.
+	// ghost (dashed) when orphaned. Numbers indicate cluster counts. Hovering a pin
+	// for a beat expands it into a peek at the note (Figma-style).
 	import { onMount, onDestroy } from 'svelte';
 	import * as THREE from 'three';
 	import type { Viewer } from '@parasocial/viewer';
+	import { LoaderCircle } from '@lucide/svelte';
+	import { Avatar } from '$lib/components/ui/avatar';
+	import { relativeTime } from '$lib/format';
+	import { fadeOut } from '$lib/styles/motion';
 	import type { NotesController, Pin } from './notes.svelte';
+	import type { WorkspaceState } from './state.svelte';
 
-	let { viewer, nc, onopen }: { viewer: Viewer; nc: NotesController; onopen: (noteID: string) => void } = $props();
+	let { ws, viewer, nc, onopen }: { ws: WorkspaceState; viewer: Viewer; nc: NotesController; onopen: (noteID: string) => void } = $props();
+
+	const PEEK_DELAY = 200;
+	const PEEK_WIDTH = 248;
+	let peek = $state<{ id: string; flip: boolean } | null>(null);
+	let peekTimer: ReturnType<typeof setTimeout> | undefined;
+	function enter(p: Pin, e: MouseEvent) {
+		nc.hovered = p.noteID;
+		clearTimeout(peekTimer);
+		const host = (e.currentTarget as HTMLElement).offsetParent as HTMLElement | null;
+		const x = (e.currentTarget as HTMLElement).offsetLeft;
+		peekTimer = setTimeout(() => (peek = { id: p.noteID, flip: !!host && x + PEEK_WIDTH > host.clientWidth - 8 }), PEEK_DELAY);
+	}
+	function leave(p: Pin) {
+		clearTimeout(peekTimer);
+		peek = null;
+		if (nc.hovered === p.noteID) nc.hovered = null;
+	}
+	function open(p: Pin) {
+		clearTimeout(peekTimer);
+		peek = null;
+		onopen(p.noteID);
+	}
+	/** First message, author and reply count for the peek. */
+	const peeked = $derived.by(() => {
+		if (!peek) return null;
+		const note = ws.notes.find((n) => n.id === peek!.id) as any;
+		const msgs = ((note?.messages ?? []) as { kind?: string; text: string }[]).filter((m) => m.kind !== 'activity');
+		if (!note) return null;
+		const agent = note.status === 'AgentWorking' ? (note.claimant ?? ws.agents.find((a) => a.id === note.claimedBy)) : null;
+		return { text: msgs[0]?.text ?? '', replies: Math.max(0, msgs.length - 1), time: relativeTime(note.createdAt), working: note.status === 'AgentWorking' ? (agent?.clientName ?? 'Agent') : null };
+	});
 
 	type Placed = { pins: Pin[]; x: number; y: number };
 	let placed = $state.raw<Placed[]>([]);
@@ -14,7 +51,8 @@
 	let raf = 0;
 	let offs: (() => void)[] = [];
 
-	const shown = $derived(nc.pins.filter((p) => !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
+	// only the studio in the viewport: pins on other studios' parts (or other assemblies' copies) wait there
+	const shown = $derived(nc.pins.filter((p) => ws.shownParts.includes(p.part) && !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
 	/** Pins are in part coordinates; assembly parts may have moved. */
 	const at = (p: Pin) => viewer.toWorld(p.part, new THREE.Vector3(...p.point));
 
@@ -51,6 +89,7 @@
 		occlusion();
 	});
 	onDestroy(() => {
+		clearTimeout(peekTimer);
 		offs.forEach((f) => f());
 		cancelAnimationFrame(raf);
 	});
@@ -79,38 +118,104 @@
 			data-testid="pin-cluster"
 		>{c.pins.length}</button>
 	{:else}
-		<button
-			class="pin focus-ring"
-			class:agent={p.authorKind === 'agent'}
-			class:ghost={p.orphaned}
-			class:active={nc.active === p.noteID || nc.hovered === p.noteID}
-			class:resolved={p.status === 'Resolved'}
-			class:working={p.status === 'AgentWorking'}
-			style="left:{c.x}px;top:{c.y}px"
-			onclick={() => onopen(p.noteID)}
-			onmouseenter={() => (nc.hovered = p.noteID)}
-			onmouseleave={() => nc.hovered === p.noteID && (nc.hovered = null)}
-			aria-label="Note #{p.number}{p.orphaned ? ' (orphaned)' : ''}"
-			title="{p.authorName}{p.orphaned ? ' · lost its geometry' : ''}"
-			data-testid="pin"
-		>{p.number}</button>
+		<!-- zero-size anchor at the pin's point: pin and peek share its hover -->
+		<div class="anchor" class:peeking={peek?.id === p.noteID} style="left:{c.x}px;top:{c.y}px" role="presentation" onmouseenter={(e) => enter(p, e)} onmouseleave={() => leave(p)}>
+			<button
+				class="pin focus-ring"
+				class:ghost={p.orphaned}
+				class:active={nc.active === p.noteID || nc.hovered === p.noteID}
+				class:resolved={p.status === 'Resolved'}
+				class:working={p.status === 'AgentWorking'}
+				onclick={() => open(p)}
+				aria-label="Note #{p.number}{p.orphaned ? ' (orphaned)' : ''}"
+				data-testid="pin"
+			>
+				<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+					<path d="M2 4h8M2 8h5" />
+				</svg>
+			</button>
+			{#if peek?.id === p.noteID && peeked}
+				<button class="peek focus-ring" class:flip={peek.flip} style="width:{PEEK_WIDTH}px" onclick={() => open(p)} out:fadeOut={{ duration: 80 }} data-testid="pin-peek">
+					<span class="flex items-center gap-2">
+						<Avatar name={p.authorName} kind={p.authorKind} size={20} />
+						<span class="truncate text-ui font-semibold text-fg">{p.authorName}</span>
+						<span class="ml-auto shrink-0 text-label text-fg-tertiary">{peeked.time}</span>
+					</span>
+					{#if peeked.text}<span class="line-clamp-3 text-body text-fg [overflow-wrap:anywhere]">{peeked.text}</span>{/if}
+					{#if p.orphaned}<span class="text-label text-error">Lost its geometry</span>{/if}
+					{#if peeked.working}<span class="flex items-center gap-1.5 text-label font-medium text-accent-fg"
+							><LoaderCircle size={12} strokeWidth={2} class="shrink-0 animate-[ps-spin_1s_linear_infinite] motion-reduce:animate-none" /><span class="truncate">{peeked.working} is working on this…</span></span
+						>{/if}
+					{#if peeked.replies}<span class="text-label text-fg-tertiary">{peeked.replies} {peeked.replies === 1 ? 'reply' : 'replies'}</span>{/if}
+				</button>
+			{/if}
+		</div>
 	{/if}
 {/each}
 
 <style>
-	.pin {
+	.anchor {
 		position: absolute;
 		z-index: 6;
+		width: 0;
+		height: 0;
+	}
+	.anchor.peeking {
+		z-index: 7;
+	}
+	/* Keep the hover target in place while the note replaces the visible pin. */
+	.anchor.peeking .pin {
+		opacity: 0;
+	}
+	/* Grows out of the pin: same bottom-left "tail" corner, same anchor. */
+	.peek {
+		position: absolute;
+		left: -12px;
+		bottom: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 10px 12px;
+		border-radius: 14px 14px 14px 3px;
+		background: var(--color-elevated);
+		box-shadow: var(--shadow-popover);
+		text-align: left;
+		cursor: default;
+		transform-origin: 0 100%;
+		animation: peek-grow var(--duration-base) var(--ease-out);
+	}
+	.peek.flip {
+		left: auto;
+		right: -12px;
+		border-radius: 14px 14px 3px 14px;
+		transform-origin: 100% 100%;
+	}
+	@keyframes peek-grow {
+		from {
+			opacity: 0;
+			transform: scale(0.12);
+		}
+		40% {
+			opacity: 1;
+		}
+	}
+	.pin {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		left: 0;
+		top: 0;
 		transform: translate(-50%, -100%) translateY(-4px);
-		min-width: 24px;
+		width: 24px;
 		height: 24px;
-		padding: 0 6px;
+		padding: 0;
 		border-radius: 12px 12px 12px 3px;
-		background: var(--color-fg);
-		color: var(--color-panel);
+		background: #fff;
+		color: #202023;
 		font: 600 11px/24px var(--font-sans);
 		font-variant-numeric: tabular-nums;
-		box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 1.5px var(--color-panel);
+		box-shadow: var(--pin-inset, 0 0 transparent), 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(0 0 0 / 0.16);
 		transform-origin: 50% 100%;
 		transition:
 			transform var(--duration-fast) var(--ease-out),
@@ -124,11 +229,11 @@
 	}
 	.pin:hover,
 	.pin.active {
-		transform: translate(-50%, -100%) translateY(-5px) scale(1.12);
-		box-shadow: 0 3px 8px rgb(0 0 0 / 0.22), 0 0 0 1.5px var(--color-panel);
+		transform: translate(-50%, -100%) translateY(-5px);
+		box-shadow: var(--pin-inset, 0 0 transparent), 0 3px 8px rgb(0 0 0 / 0.22), 0 0 0 1px rgb(0 0 0 / 0.25);
 	}
 	.pin:active {
-		transform: translate(-50%, -100%) translateY(-4px) scale(1.04);
+		transform: translate(-50%, -100%) translateY(-4px);
 		transition-duration: var(--duration-instant);
 	}
 	@keyframes pin-drop {
@@ -137,13 +242,10 @@
 			transform: translate(-50%, -100%) translateY(-12px) scale(0.6);
 		}
 	}
-	.pin.agent {
-		background: var(--color-agent, #2a2a30);
-		color: #fff;
-	}
+	/* Claimed by an agent: stays white, with an accent glow fading in from the rim
+	   (inset shadow, so it follows the tail corner). */
 	.pin.working {
-		background: var(--color-accent);
-		color: var(--color-fg-on-accent);
+		--pin-inset: inset 0 0 5px 1px color-mix(in oklab, var(--color-accent) 75%, transparent);
 	}
 	.pin.resolved {
 		opacity: 0.6;
@@ -155,13 +257,18 @@
 		box-shadow: none;
 	}
 	.pin.cluster {
+		z-index: 6;
+		width: auto;
+		min-width: 24px;
+		padding: 0 6px;
 		border-radius: 12px;
 		background: var(--color-elevated);
 		color: var(--color-fg);
 		box-shadow: var(--shadow-popover);
 	}
 	@media (prefers-reduced-motion: reduce) {
-		.pin {
+		.pin,
+		.peek {
 			transition: none;
 			animation: none;
 		}

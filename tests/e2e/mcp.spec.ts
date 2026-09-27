@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createHash, randomBytes } from "node:crypto";
+import sharp from "sharp";
 
 // The agent loop over MCP (§7): a human pins a note; an agent (OAuth'd as that human) lists
 // notes, claims one, edits the script and replies; the workspace shows it live.
@@ -15,7 +16,8 @@ const CLIENT_NAME = "E2E Agent";
  * with PKCE through the consent page (approved by the signed-in human), then the token exchange.
  * The code is read off the loopback redirect in the browser instead of running a callback server.
  */
-async function connectAgent(page: Page, documentID: string) {
+async function connectAgent(page: Page, documentID?: string) {
+  const endpoint = `${BASE}/mcp${documentID ? `?document=${documentID}` : ""}`;
   const redirect = "http://127.0.0.1:43219/callback";
   const reg = await page.request.post("/oauth/register", { data: { client_name: CLIENT_NAME, redirect_uris: [redirect], token_endpoint_auth_method: "none" } });
   expect(reg.status()).toBe(201);
@@ -23,7 +25,7 @@ async function connectAgent(page: Page, documentID: string) {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(8).toString("hex");
-  const q = new URLSearchParams({ response_type: "code", client_id, redirect_uri: redirect, code_challenge: challenge, code_challenge_method: "S256", state, resource: `${BASE}/mcp?document=${documentID}` });
+  const q = new URLSearchParams({ response_type: "code", client_id, redirect_uri: redirect, code_challenge: challenge, code_challenge_method: "S256", state, resource: endpoint });
 
   const back = page.url();
   await page.goto(`/oauth/authorize?${q}`);
@@ -42,7 +44,9 @@ async function connectAgent(page: Page, documentID: string) {
   expect(access_token).toBeTruthy();
 
   const client = new Client({ name: "e2e", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp?document=${documentID}&label=e2e`), { requestInit: { headers: { Authorization: `Bearer ${access_token}` } } });
+  const transportURL = new URL(endpoint);
+  transportURL.searchParams.set("label", "e2e");
+  const transport = new StreamableHTTPClientTransport(transportURL, { requestInit: { headers: { Authorization: `Bearer ${access_token}` } } });
   await client.connect(transport);
   await page.goto(back);
   return {
@@ -64,7 +68,101 @@ async function connectAgent(page: Page, documentID: string) {
   };
 }
 
-test("agent loop: human note → agent claims, edits, replies → Awaiting review in the UI", async ({ page, user }) => {
+test("MCP renders optional section cuts and rejects invalid planes", async ({ page, user }) => {
+  void user;
+  test.setTimeout(180_000);
+  const documentID = await openExample(page, "bracket", ["bracket"]);
+  const agent = await connectAgent(page, documentID);
+  try {
+    const { tools } = await agent.client.listTools();
+    expect(tools.find((t) => t.name === "render")?.inputSchema.properties).toHaveProperty("section");
+    let renderIndex = 0;
+    const render = async (section?: { origin: number[]; normal: number[] }) => {
+      const result = await agent.client.callTool({ name: "render", arguments: { parts: ["bracket"], view: "top", width: 256, height: 256, ...(section ? { section } : {}) } });
+      expect(result.isError).not.toBe(true);
+      const img = (result.content as { type: string; data: string; mimeType: string }[]).find((c) => c.type === "image")!;
+      expect(img.mimeType).toBe("image/png");
+      await test.info().attach(`render-${renderIndex++}`, { body: Buffer.from(img.data, "base64"), contentType: "image/png" });
+      const { data, info } = await sharp(Buffer.from(img.data, "base64")).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      expect([info.width, info.height]).toEqual([256, 256]);
+      // Inspect the central plate area, away from the grid and triad.
+      let dark = 0;
+      for (let y = 96; y < 160; y++) for (let x = 96; x < 160; x++) {
+        const i = (y * info.width + x) * info.channels;
+        if (data[i] + data[i + 1] + data[i + 2] < 600) dark++;
+      }
+      return { data, dark };
+    };
+    const full = await render();
+    const cut = await render({ origin: [0, 0, 1.5], normal: [0, 0, 2] });
+    expect(cut.data.equals(full.data)).toBe(false);
+    expect(cut.dark).toBeGreaterThan(100);
+    const removed = await render({ origin: [0, 0, 10], normal: [0, 0, -1] });
+    expect(removed.dark).toBeLessThan(cut.dark / 4);
+    // A section is local to one image, including on a reused engine-pool page.
+    const restored = await render();
+    // Ambient-occlusion sampling can vary slightly between fresh viewers.
+    const meanDifference = restored.data.reduce((sum, value, i) => sum + Math.abs(value - full.data[i]), 0) / full.data.length;
+    expect(meanDifference).toBeLessThan(2);
+    for (const section of [
+      { origin: [0, 0, 0], normal: [0, 0, 0] },
+      { origin: [0, 0], normal: [0, 0, 1] },
+      { origin: [0, 0, 0], normal: [0, 1] },
+      { origin: [0, 0, 0], normal: [0, 0, 1e-300] },
+      { origin: [0, 0, 0], normal: [0, 0, 1e300] },
+    ]) {
+      const result = await agent.client.callTool({ name: "render", arguments: { section } });
+      expect(result.isError).toBe(true);
+    }
+  } finally {
+    await agent.close();
+  }
+});
+
+test("general connection, document handoff and browser context", async ({ page, user }) => {
+  void user;
+  await page.getByTestId("connect-agent-button").click();
+  await expect(page.getByTestId("mcp-url")).toHaveText(`${BASE}/mcp`);
+  await expect(page.getByTestId("copy-agent-prompt")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByTestId("new-document").click();
+  await page.getByTestId("new-document-name").fill("Browser context document");
+  await page.getByTestId("create-document").click();
+  await page.waitForURL(/\/d\//);
+  const documentID = page.url().split("/d/")[1]!;
+  await page.getByTestId("connect-agent-button").click();
+  await expect(page.getByTestId("mcp-url")).toHaveText(`${BASE}/mcp`);
+  await expect(page.getByTestId("agent-prompt")).toContainText(`http://localhost:5173/d/${documentID}`);
+  await expect(page.getByTestId("agent-prompt")).toContainText('"Browser context document"');
+  await page.getByRole("checkbox", { name: "Use this document by default" }).click();
+  await expect(page.getByTestId("mcp-url")).toHaveText(`${BASE}/mcp?document=${documentID}`);
+  await page.keyboard.press("Escape");
+
+  const agent = await connectAgent(page);
+  try {
+    expect(agent.client.getInstructions()).toContain(documentID);
+    expect(agent.client.getInstructions()).toContain("Browser context document");
+    expect(agent.client.getInstructions()).toContain("Session default document: null");
+    const context = await agent.call("get_document_context");
+    expect(context.default).toBeUndefined();
+    expect(context.recentBrowserDocuments).toEqual(expect.arrayContaining([expect.objectContaining({ id: documentID, recentlyActive: true })]));
+    await agent.call("open_document", { document: `${BASE}/d/${documentID}` });
+    await agent.call("rename_document", { name: "Renamed by agent" });
+    const copy = await agent.call("duplicate_document");
+    expect(copy.name).toBe("Renamed by agent (copy)");
+    await agent.call("delete_document", { document: copy.id });
+    const docs = await agent.call("list_documents");
+    expect(docs.documents.map((d: { id: string }) => d.id)).toEqual([documentID]);
+    expect(docs.default).toBe(documentID);
+  } finally {
+    await agent.close();
+  }
+  await page.goto("/settings");
+  await page.getByTestId("connect-agent-button").click();
+  await expect(page.getByTestId("mcp-url")).toHaveText(`${BASE}/mcp`);
+});
+
+test("agent loop: human note → agent claims, edits, replies → Resolved in the UI", async ({ page, user }) => {
   void user;
   test.setTimeout(180_000); // sign-up, OAuth round trip and several regenerations
   const documentID = await openExample(page, "bracket", ["bracket"]);
@@ -124,15 +222,28 @@ test("agent loop: human note → agent claims, edits, replies → Awaiting revie
     expect(res.version).toBeTruthy();
     expect(JSON.stringify(res.regeneration)).not.toMatch(/"ok":\s*false/);
 
-    // reply: links the version and moves the note to Awaiting review
+    // completed work can be resolved silently, without adding a thread message
+    // The edit's activity entry must reach the browser before taking the baseline.
+    await expect.poll(() => wsEval<boolean>(page, "ws.notes[0].messages.some(m => m.kind === 'activity')")).toBe(true);
+    const messagesBefore = await wsEval<number>(page, "ws.notes[0].messages.length");
+    await agent.call("set_note_status", { id: noteID, status: "Resolved" });
+    await expect.poll(() => wsEval(page, "({ status: ws.notes[0].status, claimedBy: ws.notes[0].claimedBy })")).toEqual({ status: "Resolved", claimedBy: null });
+    expect(await wsEval<number>(page, "ws.notes[0].messages.length")).toBe(messagesBefore);
+
+    // an optional useful reply still links the version and resolves by default
+    await agent.call("claim_note", { id: noteID });
     const reply = "Made the plate 5 mm thick and the corner fillets 4 mm.";
     const r = await agent.call<any>("reply_to_note", { id: noteID, text: reply });
-    expect(r).toMatchObject({ ok: true, status: "AwaitingReview" });
+    expect(r).toMatchObject({ ok: true, status: "Resolved" });
     expect(r.linkedVersion).toBe(res.version.id);
 
     // the human sees it all in the workspace
-    await expect.poll(() => wsEval<string>(page, "ws.notes[0].status")).toBe("AwaitingReview");
-    await expect(card).toContainText("Awaiting review");
+    await expect.poll(() => wsEval(page, "({ status: ws.notes[0].status, claimedBy: ws.notes[0].claimedBy })")).toEqual({ status: "Resolved", claimedBy: null });
+    await expect(card).toHaveCount(0); // completed notes leave the default open queue
+    await page.getByLabel("Filter by status", { exact: true }).click();
+    await page.getByRole("option", { name: "Resolved", exact: true }).click();
+    await expect(card).toContainText("Resolved");
+    await expect(card.getByRole("button", { name: "Reopen", exact: true })).toBeVisible();
     await expect(card).toContainText(reply);
     await expect(card).toContainText(CLIENT_NAME);
     await expect(card).toContainText("Thicker plate, larger corner fillets"); // linked version summary
@@ -169,6 +280,13 @@ test("agent loop: human note → agent claims, edits, replies → Awaiting revie
         }),
       { timeout: 30_000 })
       .toMatchObject({ pins: 1 });
+
+    // callers can still ask for review, leave questions open, or explicitly resolve
+    for (const status of ["AwaitingReview", "Open", "Resolved"]) {
+      await agent.call("claim_note", { id: noteID });
+      expect(await agent.call("reply_to_note", { id: noteID, text: `Reply with ${status}`, status })).toMatchObject({ ok: true, status });
+      await expect.poll(() => wsEval(page, "({ status: ws.notes[0].status, claimedBy: ws.notes[0].claimedBy })")).toEqual({ status, claimedBy: null });
+    }
   } finally {
     await agent.close();
   }

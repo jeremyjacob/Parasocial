@@ -120,3 +120,17 @@ test("ball joint has three freedoms", () => {
   expect(distance(m.pointAt("stick", [0, 0, 50]), [0, 0, 0])).toBeCloseTo(50, 6);
   expect(m.pointAt("stick", [0, 0, 50])[0]).toBeGreaterThan(15);
 });
+
+test("drivers: the first joint of a loop drives, the rest follow", () => {
+  const four = new Mechanism({
+    joints: [
+      { name: "A", type: "revolute", a: "ground", b: "crank", frame: Z([0, 0, 0]) },
+      { name: "B", type: "revolute", a: "crank", b: "coupler", frame: Z([0, 20, 0]) },
+      { name: "C", type: "revolute", a: "coupler", b: "rocker", frame: Z([40, 30, 0]) },
+      { name: "D", type: "revolute", a: "rocker", b: "ground", frame: Z([40, 0, 0]) },
+      { name: "tip", type: "revolute", a: "coupler", b: "flag", frame: Z([20, 25, 0]) },
+      { name: "glue", type: "fastened", a: "flag", b: "sticker", frame: Z([0, 0, 0]) },
+    ],
+  });
+  expect(four.drivers()).toEqual(["A", "tip"]);
+});

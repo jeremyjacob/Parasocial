@@ -22,7 +22,7 @@ export class NotesController {
 	pins = $state.raw<Pin[]>([]);
 	hovered = $state<string | null>(null);
 	active = $state<string | null>(null);
-	filter = $state<{ status: 'all' | 'open' | 'review' | 'resolved' | 'removed'; part: string; author: string }>({ status: 'all', part: 'all', author: 'all' });
+	filter = $state<{ status: 'all' | 'open' | 'resolved' | 'removed'; part: string; author: string }>({ status: 'all', part: 'all', author: 'all' });
 	strokes = $state.raw<MarkupStroke[]>([]);
 	penColor = $state<string>(STROKE_COLORS[0]);
 	eraser = $state(false);
@@ -49,6 +49,8 @@ export class NotesController {
 	startFromTargets(targets: DraftTarget[], screen: { x: number; y: number }, text?: string) {
 		if (!targets.length) return;
 		this.draft = { targets, strokeIDs: this.draft?.strokeIDs ?? [], screen, text };
+		// a new note, not the one already on this geometry
+		this.active = null;
 		clearTimeout(this.composerTimer);
 		this.composerShown = true;
 		this.ws.rightTab = 'notes';
@@ -65,7 +67,7 @@ export class NotesController {
 		this.draft = { targets, strokeIDs: [...(cur?.strokeIDs ?? []), strokeID], screen };
 		if (!cur) this.composerShown = false;
 		clearTimeout(this.composerTimer);
-		if (!this.composerShown) this.composerTimer = setTimeout(() => (this.composerShown = true), 900);
+		if (!this.composerShown) this.composerTimer = setTimeout(() => (this.composerShown = true), 650);
 	}
 
 	/** A new pencil stroke started: keep the composer out of the way until the drawing pauses. */
@@ -115,7 +117,7 @@ export class NotesController {
 			await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs: this.draftStrokeIDs } as any), 'Add note').then((r) => r.client);
 			this.draft = null;
 			this.active = id;
-			ws.tool = 'select';
+			if (ws.tool === 'note') ws.tool = 'select';
 			return true;
 		} catch (e) {
 			toast.error((e as Error).message);

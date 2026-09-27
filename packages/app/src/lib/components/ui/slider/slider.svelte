@@ -6,7 +6,7 @@
 		value?: number;
 		min?: number;
 		max?: number;
-		step?: number;
+		step?: number | number[];
 		disabled?: boolean;
 		class?: string;
 		'aria-label'?: string;

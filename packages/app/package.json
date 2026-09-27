@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun --bun vite dev --port 5173 --strictPort",
-    "build": "bun --bun vite build",
+    "build": "bun run --cwd ../mcp-local bundle && bun --bun vite build",
     "preview": "bun --bun vite preview",
     "check": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json",
     "test": "bun --bun vitest run",

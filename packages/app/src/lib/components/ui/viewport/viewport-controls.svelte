@@ -24,6 +24,8 @@
 		section?: boolean;
 		grid?: boolean;
 		origin?: boolean;
+		/** Assembly overlaps drawn through covering geometry (x-ray) or depth-tested; the menu item shows only when bound. */
+		overlapsOnTop?: boolean;
 		ortho?: boolean;
 		zoom?: number;
 		orientation?: 'horizontal' | 'vertical';
@@ -35,6 +37,7 @@
 		section = $bindable(false),
 		grid = $bindable(true),
 		origin = $bindable(true),
+		overlapsOnTop = $bindable(),
 		ortho = $bindable(false),
 		zoom = $bindable(100),
 		orientation = 'horizontal',
@@ -61,7 +64,10 @@
 		})),
 		{ type: 'separator' },
 		{ type: 'checkbox', label: 'Ground grid', checked: grid, shortcut: ['G'], keepOpen: true, onCheckedChange: (v: boolean) => (grid = v) },
-		{ type: 'checkbox', label: 'Origin', checked: origin, shortcut: ['shift', 'G'], keepOpen: true, onCheckedChange: (v: boolean) => (origin = v) }
+		{ type: 'checkbox', label: 'Origin', checked: origin, shortcut: ['shift', 'G'], keepOpen: true, onCheckedChange: (v: boolean) => (origin = v) },
+		...(overlapsOnTop === undefined
+			? []
+			: [{ type: 'checkbox' as const, label: 'Interference through parts', checked: overlapsOnTop, keepOpen: true, onCheckedChange: (v: boolean) => (overlapsOnTop = v) }])
 	]);
 
 	const zoomItems: MenuEntry[] = [

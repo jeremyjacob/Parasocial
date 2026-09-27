@@ -77,7 +77,7 @@ All ids are client-generated and passed in args, so optimistic and authoritative
 | `version` | `restore` | Copies scripts and param state to the tip as a new version, "Restored from v12". |
 | `param` | `set`, `reset`, `resetAll`, `apply` | Coalesced: the same author's changes within 10 s, with nothing committed in between, fold into one version ("Params: thickness 3 → 5"). The expression is stored as typed, alongside the evaluated value. **`Default` holds no overrides**: overrides need a named configuration (PLAN §8). |
 | `configuration` | `create`, `duplicate`, `rename`, `delete` | Coalesced into the same params versions (`+M3`, `M3 → M4`, `−M3`). |
-| `note` | `create`, `reply`, `deleteMessage`, `claim`, `release`, `setStatus`, `remove`, `restore`, `reanchor`, `setOrphaned` | `create` requires the snapshot blob to already exist. `claim` is for agent sessions only and fails with "Claimed by Claude Code (label)". A human reply moves AwaitingReview or Resolved back to Open. `kind: "activity"` replies form the agent log. |
+| `note` | `create`, `reply`, `deleteMessage`, `claim`, `release`, `setStatus`, `remove`, `restore`, `reanchor`, `setOrphaned` | `create` requires the snapshot blob to already exist. `claim` is for agent sessions only and fails with "Claimed by Claude Code (label)". A human reply moves Resolved back to Open. `kind: "activity"` replies form the agent log. |
 | `markup` | `add`, `remove` | Draft strokes (no note) get attached by `note.create({ strokeIDs })`. |
 | `presence` | `set`, `clear` | Per tab or agent session: selection and active configuration. |
 | `agent` | `start`, `setStatus` | Called by the MCP server with `ctx.agentSessionID`. |

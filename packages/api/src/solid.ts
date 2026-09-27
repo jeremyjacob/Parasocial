@@ -14,7 +14,7 @@ type OpOpts = { tag?: string };
 
 export class Solid {
   /** @internal */ readonly record: OpRecord;
-  /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame> };
+  /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame[]> };
 
   constructor(record: OpRecord, meta: Solid["meta"] = {}) {
     this.record = record;
@@ -269,11 +269,19 @@ export class Solid {
    * `at` is one face, edge or vertex (a hole's cylindrical face gives its axis, a planar face its
    * center and normal), a plane, or `{ origin: [x, y, z], axis: "X" }`. Built from geometry, it
    * follows the part when params change; later moves (translate, rotate, mirror) carry it along.
+   * Several faces/edges/vertices (a pattern of holes), or an array of frames, give one frame each:
+   * pick one in an assembly with `base.at("bolt", i)` (0-based; a selection is ordered by x, then
+   * y, then z of each frame's origin; an array keeps its order).
    */
-  connector(name: string, at: FrameSpec): Solid {
+  connector(name: string, at: FrameSpec | FrameSpec[]): Solid {
     if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) userError(`connector name "${name}" must be an identifier (letters, digits, _ or -)`);
-    const frame = toFrame(at, `connector("${name}")`);
-    return new Solid(this.record, { ...this.meta, connectors: { ...this.meta.connectors, [name]: frame } });
+    const what = `connector("${name}")`;
+    let frames: ConnectorFrame[];
+    if (Array.isArray(at)) frames = at.map((a) => toFrame(a, what));
+    else if (at instanceof EntitySet && at.length > 1) frames = at.indices.map((i) => toFrame(new EntitySet(at.record, at.kind, [i]), what)).sort(byOrigin);
+    else frames = [toFrame(at, what)];
+    if (!frames.length) userError(`${what}: nothing to attach to (the selection or array is empty)`);
+    return new Solid(this.record, { ...this.meta, connectors: { ...this.meta.connectors, [name]: frames } });
   }
   material(m: Material | string): Solid {
     const mat = typeof m === "string" ? (MATERIALS[m.toLowerCase()] ?? userError(`unknown material "${m}"; use one of ${Object.keys(MATERIALS).join(", ")} or { density }`)) : m;
@@ -367,7 +375,7 @@ function transformOp(s: Solid, type: string, t: Parameters<typeof kTransform>[1]
       };
     },
   });
-  const connectors = s.meta.connectors && Object.fromEntries(Object.entries(s.meta.connectors).map(([k, f]) => [k, transformFrame(f, t)]));
+  const connectors = s.meta.connectors && Object.fromEntries(Object.entries(s.meta.connectors).map(([k, fs]) => [k, fs.map((f) => transformFrame(f, t))]));
   return new Solid(rec, connectors ? { ...s.meta, connectors } : s.meta);
 }
 
@@ -486,3 +494,12 @@ export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}):
   });
   return new Solid(rec);
 }
+
+/** Frames in a stable order: by origin x, then y, then z (to a hundredth of a mm). */
+const byOrigin = (a: ConnectorFrame, b: ConnectorFrame) => {
+  for (let i = 0; i < 3; i++) {
+    const d = Math.round(a.origin[i] * 100) - Math.round(b.origin[i] * 100);
+    if (d) return d;
+  }
+  return 0;
+};

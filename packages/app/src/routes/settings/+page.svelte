@@ -8,8 +8,10 @@
 	import AppHeader from '$lib/components/app/app-header.svelte';
 	import { addPasskey, isCancel } from '$lib/auth';
 	import { relativeTime } from '$lib/format';
+	import ConnectAgentDialog from '$lib/workspace/ConnectAgentDialog.svelte';
 
 	let { data } = $props();
+	let connectOpen = $state(false);
 	type Passkey = { id: string; name: string | null; synced: boolean; createdAt: string; lastUsedAt: string | null };
 	let passkeys = $state.raw<Passkey[]>([]);
 	let signupMode = $state<'open' | 'invite'>('open');
@@ -85,6 +87,7 @@
 		<section class={section} data-testid="connected-agents">
 			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
 				<Bot size={16} class="text-fg-secondary" /><h2 class="text-section">Connected agents</h2>
+				<Button size="sm" class="ml-auto" onclick={() => (connectOpen = true)} data-testid="connect-agent-button"><Plus size={14} /> Connect agent</Button>
 			</header>
 			<ul class="divide-y divide-line-subtle">
 				{#each data.agents as a (a.id)}
@@ -121,3 +124,5 @@
 		{/if}
 	</main>
 </div>
+
+<ConnectAgentDialog bind:open={connectOpen} />

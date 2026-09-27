@@ -1,0 +1,26 @@
+{
+  "volume": 19574.8988,
+  "area": 9185.0909,
+  "faces": 16,
+  "edges": 34,
+  "vertices": 20,
+  "valid": true,
+  "faceNames": [
+    "lamp:upperArm/upperArm · cap.end",
+    "lamp:upperArm/upperArm · cap.start",
+    "lamp:upperArm/upperArm · side · hole1",
+    "lamp:upperArm/upperArm · side · hole2",
+    "lamp:upperArm/upperArm · side · outline/end1",
+    "lamp:upperArm/upperArm · side · outline/end2",
+    "lamp:upperArm/upperArm · side · outline/side1",
+    "lamp:upperArm/upperArm · side · outline/side2",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.end) & (lamp:upperArm/upperArm · side · outline/end1))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.end) & (lamp:upperArm/upperArm · side · outline/end2))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.end) & (lamp:upperArm/upperArm · side · outline/side1))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.end) & (lamp:upperArm/upperArm · side · outline/side2))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.start) & (lamp:upperArm/upperArm · side · outline/end1))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.start) & (lamp:upperArm/upperArm · side · outline/end2))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.start) & (lamp:upperArm/upperArm · side · outline/side1))",
+    "lamp:upperArm/upperArmEdge · chamfer · ((lamp:upperArm/upperArm · cap.start) & (lamp:upperArm/upperArm · side · outline/side2))"
+  ]
+}

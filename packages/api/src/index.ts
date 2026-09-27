@@ -2,7 +2,7 @@
 export { part, param } from "./part";
 export type { PartDef, PartTools, ParamOptions, ConnectorRef } from "./part";
 export { assembly } from "./assembly";
-export type { AssemblyDef, AssemblyTools, JointAt, JointOpts, Range } from "./assembly";
+export type { AssemblyDef, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement } from "./assembly";
 export type { FrameSpec } from "./connector";
 export { sketch, Sketch, loft } from "./sketch";
 export type { P2, ExtrudeOpts, RevolveOpts } from "./sketch";

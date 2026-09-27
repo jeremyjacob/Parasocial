@@ -71,8 +71,8 @@ test("note actions and markup round-trip", async () => {
     return n && n.removedAt === null ? { status: n.status, anchor: n.anchor, messages: n.messages.map((m) => m.text).sort(), strokes: n.strokes.map((s) => s.id) } : undefined;
   };
   await roundTrip(mutators.note.create({ id: noteID, documentID: doc, anchor, text: "thin" }), note);
-  await run(db, mutators.note.setStatus({ noteID, status: "AwaitingReview" }), { userID: ada });
-  await roundTrip(mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "still thin" }), note); // reopens, undo restores AwaitingReview
+  await run(db, mutators.note.setStatus({ noteID, status: "Resolved" }), { userID: ada });
+  await roundTrip(mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "still thin" }), note); // reopens, undo restores Resolved
   await roundTrip(mutators.note.setStatus({ noteID, status: "Resolved" }), note);
   await roundTrip(mutators.note.reanchor({ noteID, anchor: { ...anchor, targets: [{ kind: "edge", name: "e", point: [1, 0, 0] }] } }), note);
   await roundTrip(mutators.markup.add({ id: crypto.randomUUID(), documentID: doc, noteID, part: "p", points: [[0, 0, 0]], color: "#f00" }), note);

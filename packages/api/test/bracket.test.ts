@@ -53,3 +53,17 @@ test("override validation", () => {
   const r2 = run(cache, { thickness: "=width/10" });
   expect(r2.params[0].value).toBe(4);
 });
+
+test("a sketch and the solid made from it can share a tag", async () => {
+  const { loadKernel } = await import("@parasocial/kernel");
+  await loadKernel();
+  const { OpCache } = await import("@parasocial/naming");
+  const { PartContext, runPart } = await import("../src/internal");
+  const { part, sketch, plane } = await import("../src");
+  const def = part("Rib", () => sketch(plane.XY, { tag: "rib" }).rect(10, 4).extrude(3, { tag: "rib" }));
+  const cache = new OpCache();
+  cache.begin();
+  const r = runPart(def, new PartContext({ part: "rib", file: "studios/rib.ts", cache }));
+  expect(r.problems).toEqual([]);
+  expect(r.record?.id).toBe("rib/rib");
+});

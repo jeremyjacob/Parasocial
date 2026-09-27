@@ -225,3 +225,16 @@ export function edgeTangent(edge: Shape, atEnd: boolean): Vec3 {
     return [t[0] / l, t[1] / l, t[2] / l];
   });
 }
+
+/**
+ * Whether the two faces meet tangent-continuously (G1 or better) along `edge`: fillet
+ * boundaries, coplanar splits. CAD viewers leave these out of the drawn edges.
+ */
+export function isSmoothEdge(edge: Shape, f1: Shape, f2: Shape, angTolRad = (1 * Math.PI) / 180): boolean {
+  const O = oc();
+  try {
+    return O.BRepLib.ContinuityOfFaces(edge, f1, f2, angTolRad) !== O.GeomAbs_Shape.GeomAbs_C0;
+  } catch {
+    return false;
+  }
+}
