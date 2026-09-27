@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import { tv } from 'tailwind-variants';
+	import { tv } from '$lib/tv';
 
 	export const iconButtonVariants = tv({
 		base: [

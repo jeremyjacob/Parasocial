@@ -384,7 +384,7 @@
 						</div>
 					{/if}
 					{#if cmp.against}
-						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 [&>*]:pointer-events-auto" in:rise={{ y: 8, scale: 0.98, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, duration: 100 }}><CompareBar {ws} {cmp} /></div>
+						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 *:pointer-events-auto" in:rise={{ y: 8, scale: 0.98, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, duration: 100 }}><CompareBar {ws} {cmp} /></div>
 					{/if}
 					<Viewport {ws} {nc} onAddPart={addPart} onConnect={() => (connectOpen = true)} onOpenNote={(id) => openNote(id)} />
 				</div>

@@ -3,7 +3,7 @@ import { extendTailwindMerge } from 'tailwind-merge';
 
 // Teach tailwind-merge about our custom type scale and radii so `cn('text-ui', 'text-label')`
 // resolves to the last one instead of keeping both.
-const merge = extendTailwindMerge({
+export const twMergeConfig = {
 	extend: {
 		classGroups: {
 			'font-size': [{ text: ['caption', 'label', 'ui', 'body', 'title', 'heading', 'display'] }],
@@ -11,7 +11,8 @@ const merge = extendTailwindMerge({
 			shadow: [{ shadow: ['xs', 'control', 'thumb', 'toolbar', 'popover', 'dialog', 'focus'] }]
 		}
 	}
-});
+};
+const merge = extendTailwindMerge(twMergeConfig);
 
 export function cn(...inputs: ClassValue[]) {
 	return merge(clsx(inputs));

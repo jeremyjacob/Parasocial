@@ -69,23 +69,16 @@
 </script>
 
 <!-- 32px row. Selection in lists is neutral (orange is only for 3D selection). -->
+<!-- The name button carries keyboard access; the row itself is a larger mouse target. -->
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div
-	role="option"
-	aria-selected={selected}
-	tabindex="0"
 	class={cn(
 		'group/row relative flex h-8 items-center gap-2 overflow-hidden rounded-control pr-1 pl-2 text-ui select-none',
-		'outline-none transition-colors-fast focus-visible:shadow-[inset_0_0_0_1px_var(--border-focus)]',
+		'outline-none transition-colors-fast has-[.row-main:focus-visible]:shadow-[inset_0_0_0_1px_var(--border-focus)]',
 		selected ? 'bg-active' : 'hover:bg-hover',
 		className
 	)}
 	{onclick}
-	onkeydown={(e) => {
-		if (e.key === 'Enter' || e.key === ' ') {
-			e.preventDefault();
-			onclick?.();
-		}
-	}}
 >
 	{#if busy}
 		<span
@@ -104,8 +97,10 @@
 			{/if}
 		</span>
 	{/if}
-	<span class={cn('min-w-0 flex-1 truncate', visible ? 'text-fg' : 'text-fg-tertiary', selected && 'font-medium')}
-		>{name}</span
+	<button
+		type="button"
+		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', visible ? 'text-fg' : 'text-fg-tertiary', selected && 'font-medium')}
+		aria-current={selected ? 'true' : undefined}>{name}</button
 	>
 	<!--
 		Right slot: status/trailing at rest, swapped for actions on hover or focus (same cell, so the

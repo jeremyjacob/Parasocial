@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import { tv } from 'tailwind-variants';
+	import { tv } from '$lib/tv';
 	export const badgeVariants = tv({
 		base: 'inline-flex h-5 shrink-0 items-center gap-1 rounded-sm px-1.5 text-label font-medium whitespace-nowrap tabular [&_svg]:size-3',
 		variants: {

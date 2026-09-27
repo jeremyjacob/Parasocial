@@ -541,7 +541,7 @@
 
 	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
-	<div class="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 [&>*]:pointer-events-auto">
+	<div class="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 *:pointer-events-auto">
 		{#if ws.dirty.length}
 			<div data-testid="unsaved-preview" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
 				<StatusPill tone="preview" title="Unsaved preview" detail="⌘S to save" />
@@ -602,7 +602,7 @@
 		</div>
 	{:else if neverGenerated && !Object.values(ws.regen).some((s) => s === 'running')}
 		<div class="pointer-events-none absolute inset-0 z-0 grid place-items-center text-fg-tertiary">
-			<div class="flex flex-col items-center gap-2 text-ui"><Box size={28} strokeWidth={1.25} /> Generating…</div>
+			<div class="flex flex-col items-center gap-2 text-ui"><Box size={28} strokeWidth={1.25} /> Loading…</div>
 		</div>
 	{/if}
 

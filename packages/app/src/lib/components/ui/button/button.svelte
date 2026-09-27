@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import { tv, type VariantProps } from 'tailwind-variants';
+	import { tv, type VariantProps } from '$lib/tv';
 
 	export const buttonVariants = tv({
 		base: [
