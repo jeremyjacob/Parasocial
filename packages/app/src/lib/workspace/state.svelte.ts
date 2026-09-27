@@ -250,6 +250,8 @@ export class WorkspaceState {
 		if (this.viewer) {
 			const dark = document.documentElement.dataset.theme === 'dark';
 			if (mesh) {
+				// discrete changes (someone else's write, a restore) cross-fade; our own scrubbing/typing swaps instantly
+				const crossfade = !fromCache && !!prev && !this.scrubbing && !this.typing && prev.key !== meta.key && r.quality === 'fine' && prev.quality === 'fine';
 				this.viewer.setPart({
 					id: r.part,
 					mesh,
@@ -257,7 +259,7 @@ export class WorkspaceState {
 					hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))),
 					color: this.partColor(r.part, dark),
 					dim: !r.ok
-				});
+				}, { crossfade });
 				this.viewer.setVisible(r.part, !this.hidden.includes(r.part));
 			} else this.viewer.removePart(r.part);
 			this.highlightErrors(r);

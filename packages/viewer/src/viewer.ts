@@ -172,13 +172,26 @@ export class Viewer {
   }
 
   // ---------- parts ----------
-  setPart(d: PartData) {
+  private fading: { group: THREE.Group; t0: number; obj: PartObject }[] = [];
+  private shimmer = new Set<string>();
+
+  /**
+   * Set a part's geometry. `crossfade` fades the old mesh out over the new one (discrete changes:
+   * agent writes, restores). Scrubbing/typing swaps instantly (§8 Motion).
+   */
+  setPart(d: PartData, opts: { crossfade?: boolean } = {}) {
     const prev = this.parts.get(d.id);
+    if (prev && opts.crossfade && !this.controls.reducedMotion) {
+      this.parts.delete(d.id);
+      prev.setFaceStyle({ visible: true, opacity: 1 });
+      this.fading.push({ group: prev.group, t0: performance.now(), obj: prev });
+      this.slots[prev.slot] = null;
+    }
     let slot = prev ? prev.slot : this.slots.indexOf(null);
     if (slot < 0) slot = this.slots.length;
     if (slot > 63) throw new Error("viewer supports up to 64 parts");
     this.slots[slot] = d.id;
-    if (prev) {
+    if (prev && this.parts.get(d.id) === prev) {
       this.scene.remove(prev.group);
       prev.dispose();
     }
@@ -905,7 +918,8 @@ export class Viewer {
   private loop = () => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.loop);
-    const animating = this.controls.tick(performance.now());
+    const now = performance.now();
+    const animating = this.controls.tick(now) || this.tickFades(now) || this.tickShimmer(now);
     if (animating) this.syncCameras();
     if (this.needsRender || animating) this.renderNow();
   };
@@ -916,7 +930,8 @@ export class Viewer {
       h = this.container.clientHeight;
     const c = new EffectComposer(this.renderer);
     this.renderPass = new RenderPass(this.scene, this.camera);
-    this.aoPass = new GTAOPass(this.scene, this.camera, w, h, undefined, { radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
+    this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
+    this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
     this.aoPass.blendIntensity = 0.45;
     c.addPass(this.renderPass);
     c.addPass(this.aoPass);
@@ -925,6 +940,38 @@ export class Viewer {
     c.setSize(w, h);
     this.composer = c;
     return c;
+  }
+
+  private tickFades(now: number): boolean {
+    if (!this.fading.length) return false;
+    const DUR = 220;
+    this.fading = this.fading.filter((f) => {
+      const t = Math.min(1, (now - f.t0) / DUR);
+      f.obj.setFaceStyle({ visible: true, opacity: 1 - t });
+      f.obj.edgeLines.visible = t < 0.5;
+      f.obj.silhouette.visible = false;
+      if (t >= 1) {
+        this.scene.remove(f.group);
+        f.obj.dispose();
+        return false;
+      }
+      return true;
+    });
+    return true;
+  }
+
+  /** Parts an agent is working on shimmer subtly (§8 Agent presence). */
+  setShimmer(ids: string[]) {
+    this.shimmer = new Set(ids);
+    for (const [id, p] of this.parts) if (!this.shimmer.has(id)) p.setEmissive(0);
+    this.requestRender();
+  }
+
+  private tickShimmer(now: number): boolean {
+    if (!this.shimmer.size || this.controls.reducedMotion) return false;
+    const k = 0.5 + 0.5 * Math.sin(now / 420);
+    for (const id of this.shimmer) this.parts.get(id)?.setEmissive(0.06 + 0.08 * k);
+    return true;
   }
 
   renderNow() {

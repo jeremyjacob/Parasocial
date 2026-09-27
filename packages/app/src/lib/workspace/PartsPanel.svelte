@@ -22,7 +22,7 @@
 					name: r?.name ?? id,
 					status: (ws.regen[id] === 'running' && !r ? 'pending' : err ? 'error' : warn ? 'warning' : 'ok') as 'ok' | 'warning' | 'error' | 'pending',
 					label: err ? 'Error' : warn ? 'Warning' : 'OK',
-					busy: ws.regen[id] === 'running'
+					busy: ws.regen[id] === 'running' || ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ((a.detail as any)?.path === `parts/${id}.ts` || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.part === id)))
 				};
 			})
 			.filter((r) => !filter || r.name.toLowerCase().includes(filter.toLowerCase()) || r.id.includes(filter.toLowerCase()))

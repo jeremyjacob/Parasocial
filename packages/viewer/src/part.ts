@@ -293,6 +293,10 @@ export class PartObject {
     this.overlay.visible = true;
   }
 
+  setEmissive(amount: number) {
+    this.faceMaterial.emissive.setRGB(amount * 0.35, amount * 0.55, amount);
+  }
+
   setSilhouette(visible: boolean, color: THREE.Color) {
     this.silhouette.visible = visible;
     this.silMaterial.uniforms.color.value.copy(color);

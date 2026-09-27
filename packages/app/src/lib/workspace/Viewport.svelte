@@ -92,6 +92,18 @@
 		viewer?.setTheme(viewerTheme(d));
 		ws.untracked(() => ws.retheme(d));
 	});
+	// parts an agent is working on shimmer (from its claimed notes' targets or the file it's writing)
+	$effect(() => {
+		const working = new Set<string>();
+		for (const a of ws.agents) {
+			if (a.status !== 'working' && a.status !== 'writing') continue;
+			const d = (a.detail ?? {}) as any;
+			if (typeof d.path === 'string' && d.path.startsWith('parts/')) working.add(d.path.slice(6, -3));
+			if (d.noteID) for (const t of ws.notes.find((n) => n.id === d.noteID)?.anchor.targets ?? []) if (t.part) working.add(t.part);
+		}
+		viewer?.setShimmer([...working]);
+	});
+
 	// display state -> viewer
 	$effect(() => {
 		const m = ws.display;
