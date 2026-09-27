@@ -13,3 +13,4 @@ playwright-report/
 .claude/worktrees/
 .data/
 .data-dev.log
+.data-pool.log
