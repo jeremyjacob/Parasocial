@@ -63,6 +63,17 @@ export class WorkspaceState {
 	// ---- live param scrubbing (not committed yet) ----
 	live = $state.raw<Record<string, Record<string, string | number>>>({});
 	scrubbing = $state(false);
+	typing = $state(false);
+
+	// ---- Code mode buffers (unsaved edits preview live, §8 Code mode) ----
+	buffers = $state.raw<Record<string, { content: string; base: number; baseContent: string }>>({});
+	/** Remote changes that arrived while a buffer was dirty: path -> who changed it. */
+	conflicts = $state.raw<Record<string, string>>({});
+	get dirty(): string[] {
+		return Object.entries(this.buffers)
+			.filter(([, b]) => b.content !== b.baseContent)
+			.map(([p]) => p);
+	}
 
 	// ---- undo ----
 	undoStack = $state.raw<Undo[]>([]);
@@ -149,8 +160,10 @@ export class WorkspaceState {
 		const engine = this.engine;
 		if (!engine || !this.synced) return;
 		const scripts = Object.fromEntries(this.scripts.map((s) => [s.path, s.content]));
+		// unsaved buffers preview live (typing regenerates coarse, then refines)
+		for (const [p, b] of Object.entries(this.buffers)) if (b.content !== b.baseContent) scripts[p] = b.content;
 		const parts = this.parts;
-		const quality = this.scrubbing ? 'coarse' : 'fine';
+		const quality = this.scrubbing || this.typing ? 'coarse' : 'fine';
 		if (!this.cacheFirstDone) {
 			this.cacheFirstDone = true;
 			this.cacheFirst(scripts, parts);
@@ -193,7 +206,7 @@ export class WorkspaceState {
 			for (const p of Object.keys(this.results)) if (!parts.includes(p)) this.dropPart(p);
 		}
 		// progressive meshing: a settled fine pass after scrubbing ends
-		if (!this.scrubbing) for (const p of parts) if (this.results[p]?.quality === 'coarse') toRegen.add(p);
+		if (!this.scrubbing && !this.typing) for (const p of parts) if (this.results[p]?.quality === 'coarse') toRegen.add(p);
 		for (const p of toRegen) this.regenerate(p, quality);
 	}
 
@@ -229,6 +242,8 @@ export class WorkspaceState {
 	private applyResult(r: CachedPart, fromCache: boolean) {
 		const { mesh, ...meta } = r;
 		const prev = this.results[r.part];
+		// a script that doesn't load has no name: keep the last known one
+		if (!r.ok && prev && meta.name === r.part) meta.name = prev.name;
 		this.results = { ...this.results, [r.part]: { ...meta, names: r.names ?? (prev?.key === meta.key ? prev?.names : undefined), fromCache } };
 		if (this.viewer) {
 			const dark = document.documentElement.dataset.theme === 'dark';
@@ -374,6 +389,68 @@ export class WorkspaceState {
 
 	endScrub() {
 		this.scrubbing = false;
+	}
+
+	// ---------- Code mode ----------
+	openBuffer(path: string) {
+		if (this.buffers[path]) return this.buffers[path];
+		const sc = this.scripts.find((x) => x.path === path);
+		if (!sc) return null;
+		this.buffers = { ...this.buffers, [path]: { content: sc.content, base: sc.version, baseContent: sc.content } };
+		return this.buffers[path];
+	}
+
+	editBuffer(path: string, content: string) {
+		const b = this.buffers[path];
+		if (!b) return;
+		this.buffers = { ...this.buffers, [path]: { ...b, content } };
+	}
+
+	/** ⌘S: save creates a version; that's when other clients and agents see the change. */
+	async saveBuffer(path: string) {
+		const b = this.buffers[path];
+		if (!b || b.content === b.baseContent) return null;
+		const content = b.content;
+		const res = this.zero.mutate(mutators.script.write({ documentID: this.documentID, path, content, baseVersion: b.base, message: `Edit ${path.split('/').pop()}` } as any));
+		const server = await res.server;
+		if ((server as any)?.type === 'error' || (server as any)?.error) return (server as any).error?.message ?? 'Save failed';
+		const sc = this.scripts.find((x) => x.path === path);
+		this.buffers = { ...this.buffers, [path]: { content, base: sc?.content === content ? sc.version : b.base + 1, baseContent: content } };
+		const { [path]: _, ...rest } = this.conflicts;
+		this.conflicts = rest;
+		return null;
+	}
+
+	/** A synced script changed: reload clean buffers silently, flag dirty ones. */
+	reconcileBuffers() {
+		let changed = false;
+		const next = { ...this.buffers };
+		const conflicts = { ...this.conflicts };
+		for (const [path, b] of Object.entries(this.buffers)) {
+			const sc = this.scripts.find((x) => x.path === path);
+			if (!sc) continue;
+			if (sc.version === b.base || sc.content === b.baseContent) {
+				if (sc.version !== b.base) (next[path] = { ...b, base: sc.version }), (changed = true);
+				continue;
+			}
+			if (b.content === b.baseContent) next[path] = { content: sc.content, base: sc.version, baseContent: sc.content };
+			else if (!conflicts[path]) {
+				const agent = sc.updatedByAgent ? this.agents.find((a) => a.id === sc.updatedByAgent) : null;
+				conflicts[path] = agent ? agent.clientName : sc.updatedByUser === this.userID ? 'you (another tab)' : 'someone else';
+			}
+			changed = true;
+		}
+		if (changed) (this.buffers = next), (this.conflicts = conflicts);
+	}
+
+	/** Reload (discard my edits) or keep mine (my next save overwrites theirs). */
+	resolveConflict(path: string, keep: boolean) {
+		const sc = this.scripts.find((x) => x.path === path);
+		const b = this.buffers[path];
+		if (!sc || !b) return;
+		this.buffers = { ...this.buffers, [path]: keep ? { content: b.content, base: sc.version, baseContent: sc.content } : { content: sc.content, base: sc.version, baseContent: sc.content } };
+		const { [path]: _, ...rest } = this.conflicts;
+		this.conflicts = rest;
 	}
 
 	// ---------- selection ----------

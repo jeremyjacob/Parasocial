@@ -29,6 +29,8 @@
 	import ParamsPanel from './ParamsPanel.svelte';
 	import NotesPanel from './NotesPanel.svelte';
 	import CodeView from './CodeView.svelte';
+	import CodeEditor from './CodeEditor.svelte';
+	import { prefetchMonaco } from './monaco';
 	import ConnectAgentDialog from './ConnectAgentDialog.svelte';
 	import { NotesController } from './notes.svelte';
 	import { CompareController } from './compare.svelte';
@@ -72,6 +74,7 @@
 
 	onMount(() => {
 		ws.attachEngine(getEngine());
+		prefetchMonaco();
 	});
 
 	// anything the engine consumes -> sync (latest-wins inside)
@@ -81,6 +84,8 @@
 		ws.activeConfigID;
 		ws.live;
 		ws.scrubbing;
+		ws.buffers;
+		ws.typing;
 		ws.synced;
 		ws.untracked(() => ws.sync());
 	});
@@ -104,6 +109,7 @@
 
 	/** C with a selection: note the selection directly (Figma convention). */
 	function noteTool() {
+		if (ws.dirty.length) return toast('Save to add notes');
 		if (ws.selection.length && ws.viewer) {
 			const v = ws.viewer;
 			const targets = ws.selection.map((ref) => {
@@ -159,7 +165,7 @@
 	const commands: Command[] = [
 		{ id: 'tool.select', label: 'Select', group: 'Tools', keys: ['V'], icon: MousePointer2, run: () => (ws.tool = 'select') },
 		{ id: 'tool.note', label: 'Note', group: 'Tools', keys: ['C'], icon: MessageCircle, run: noteTool },
-		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.tool = 'pencil') },
+		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.dirty.length ? toast('Save to add notes') : (ws.tool = 'pencil')) },
 		{ id: 'tool.measure', label: 'Measure', group: 'Tools', keys: ['M'], icon: Ruler, run: () => (ws.tool = 'measure') },
 		{ id: 'view.fit', label: 'Zoom to fit', group: 'View', keys: ['F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection() : ws.viewer?.fit()) },
 		{ id: 'view.iso', label: 'Isometric view', group: 'View', keys: ['0'], run: () => ws.viewer?.setView('iso') },
@@ -182,6 +188,7 @@
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
 		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', keys: ['mod', '\\'], icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
+		{ id: 'doc.save', label: 'Save script', group: 'Document', keys: ['mod', 'S'], run: async () => { for (const p of ws.dirty) { const err = await ws.saveBuffer(p); if (err) toast.error(err); } } },
 		{ id: 'doc.export', label: 'Export document (zip)', group: 'Document', keys: ['mod', 'shift', 'E'], icon: Download, run: exportZip },
 		{ id: 'doc.addPart', label: 'Add a part', group: 'Document', icon: Plus, run: addPart },
 		{ id: 'agent.connect', label: 'Connect an agent', group: 'Document', icon: Bot, run: () => (connectOpen = true) },
@@ -351,7 +358,7 @@
 
 			<main class="flex min-h-0 min-w-0">
 				{#if ws.mode === 'code'}
-					<CodeView {ws} viewScripts={cmp.viewScripts} />
+					{#if cmp.viewScripts}<CodeView {ws} viewScripts={cmp.viewScripts} />{:else}<CodeEditor {ws} />{/if}
 				{/if}
 				<div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
 					{#if cmp.viewing}

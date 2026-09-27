@@ -120,6 +120,9 @@ export class EngineClient {
   regenerateSnapshot(key: string, doc: DocumentState, part: string) {
     return this.call<PartResult>({ op: "regenerateSnapshot", key, doc, part });
   }
+  opsAtLine(part: string, file: string, line: number) {
+    return this.call<string[]>({ op: "opsAtLine", part, file, line });
+  }
   closestPoint(part: string, kind: EntityKind, index: number, point: Vec3) {
     return this.call<Vec3>({ op: "closestPoint", part, kind, index, point });
   }

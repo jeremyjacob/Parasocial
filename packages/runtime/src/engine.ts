@@ -255,6 +255,13 @@ export class Engine {
     return d;
   }
 
+  /** Ops whose call site is on `line` of `file` (Code mode: cursor → geometry). */
+  opsAtLine(part: string, file: string, line: number): string[] {
+    const run = this.runs.get(part);
+    if (!run) return [];
+    return [...new Set(run.ops.filter((o) => o.callSite?.file === file && o.callSite?.line === line && o.type !== "sketch" && o.type !== "path").map((o) => o.id))];
+  }
+
   /** Entities created by an op ("select all from this operation"). */
   fromOperation(part: string, opId: string): { kind: EntityKind; indices: number[] }[] {
     const rec = this.need(part);

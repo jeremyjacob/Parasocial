@@ -23,8 +23,8 @@ if (import.meta.main) {
   await $`docker compose ${compose} up -d zero-cache`.quiet();
   const env = { ...process.env, ...DEV_ENV };
   // the engine origin rebuilds its bundle on start; `--watch` restarts it when runtime sources change
-  const engine = Bun.spawn(["bun", "--watch", join(root, "packages/runtime/src/server/serve.ts")], { env: { ...env, ENGINE_PORT: "5174", APP_ORIGINS: DEV_ENV.APP_ORIGIN }, stdout: "inherit", stderr: "inherit" });
-  const pool = Bun.spawn(["bun", "--watch", join(root, "packages/engine-pool/src/server.ts")], { env: { ...env, POOL_PORT: "5190" }, stdout: "inherit", stderr: "inherit" });
+  const engine = Bun.spawn(["bun", join(root, "packages/runtime/src/server/serve.ts")], { env: { ...env, ENGINE_PORT: "5174", APP_ORIGINS: DEV_ENV.APP_ORIGIN, ENGINE_WATCH: "1" }, stdout: "inherit", stderr: "inherit" });
+  const pool = Bun.spawn(["bun", join(root, "packages/engine-pool/src/server.ts")], { env: { ...env, POOL_PORT: "5190", POOL_WATCH: "1" }, stdout: "inherit", stderr: "inherit" });
   const app = Bun.spawn(["bun", "--bun", "vite", "dev", "--port", "5173", "--strictPort"], { cwd: join(root, "packages/app"), env, stdout: "inherit", stderr: "inherit" });
   const stop = () => (engine.kill(), pool.kill(), app.kill(), process.exit(0));
   process.on("SIGINT", stop);

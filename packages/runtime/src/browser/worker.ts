@@ -71,6 +71,8 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       return { value: engine.measure(req.a, req.b) };
     case "check":
       return { value: engine.check(req.part) };
+    case "opsAtLine":
+      return { value: engine.opsAtLine(req.part, req.file, req.line) };
     case "describeAll":
       return { value: engine.describeAll(req.part) };
     case "interference":
@@ -84,6 +86,8 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
     }
     case "closestPoint":
       return { value: engine.closestPoint(req.part, req.kind, req.index, req.point) };
+    default:
+      throw new Error(`unknown engine op "${(req as any).op}"`);
     case "regenerateSnapshot": {
       if (snapshot.key !== req.key) {
         snapshot.engine.setDocument(req.doc);

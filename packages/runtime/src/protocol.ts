@@ -20,6 +20,7 @@ export type EngineRequest =
   | { op: "measure"; a: MeasureRef; b: MeasureRef }
   | { op: "check"; part: string }
   | { op: "describeAll"; part: string }
+  | { op: "opsAtLine"; part: string; file: string; line: number }
   | { op: "interference"; a: string; b: string }
   | { op: "export"; part: string; format: "step" | "stl" | "3mf" }
   | { op: "closestPoint"; part: string; kind: EntityKind; index: number; point: Vec3 }

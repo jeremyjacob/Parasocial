@@ -14,7 +14,8 @@ let docState: any[] = [];
 const pending = new Map<number, { timer: any; req: any }>();
 
 function spawn(): Slot {
-  const worker = new Worker(new URL("./worker.js", location.href), { type: "module", name: "parasocial-engine" });
+  // content-versioned so a cached worker never outlives its build
+  const worker = new Worker(new URL(`./worker.js?v=${cfg.assets.build}`, location.href), { type: "module", name: "parasocial-engine" });
   const ready = new Promise((resolve, reject) => {
     const onMsg = (ev: MessageEvent) => {
       if (ev.data?.type === "ready") {

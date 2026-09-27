@@ -42,7 +42,7 @@ export function engineHeaders(allowedParents: string[], ext: string, immutable: 
  * WASM so a repeat visit never downloads them again; cache-first for /occt/*.
  */
 export function serviceWorker(a: EngineAssets): string {
-  const files = [a.glueSingle, a.wasmSingle, "/worker.js", "/page.js"];
+  const files = [a.glueSingle, a.wasmSingle, `/worker.js?v=${a.build}`, `/page.js?v=${a.build}`];
   return `const CACHE = "ps-engine-${a.build}";
 const PRECACHE = ${JSON.stringify(files)};
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting())); });
@@ -54,9 +54,31 @@ self.addEventListener("fetch", (e) => {
 });`;
 }
 
-export async function serveEngine(o: EngineServerOptions) {
-  const assets = o.assets ?? (await buildEngine());
-  const config = `window.ENGINE_CONFIG=${JSON.stringify({ allowedParents: o.allowedParents, timeoutMs: o.timeoutMs ?? 10000, assets: { glueSingle: assets.glueSingle, glueMulti: assets.glueMulti, wasmSingle: assets.wasmSingle, wasmMulti: assets.wasmMulti, build: assets.build } })};`;
+export async function serveEngine(o: EngineServerOptions & { watch?: boolean }) {
+  let assets = o.assets ?? (await buildEngine());
+  const configFor = (assets: EngineAssets) => `window.ENGINE_CONFIG=${JSON.stringify({ allowedParents: o.allowedParents, timeoutMs: o.timeoutMs ?? 10000, assets: { glueSingle: assets.glueSingle, glueMulti: assets.glueMulti, wasmSingle: assets.wasmSingle, wasmMulti: assets.wasmMulti, build: assets.build } })};`;
+  let config = configFor(assets);
+  if (o.watch) {
+    // dev: the worker is bundled at runtime, so watch the engine's sources and rebuild
+    const { watch } = await import("node:fs");
+    const { join: j, dirname: d } = await import("node:path");
+    const { fileURLToPath: f } = await import("node:url");
+    const pkgs = j(d(f(import.meta.url)), "../../..");
+    let timer: any;
+    for (const pkg of ["runtime/src", "kernel/src", "naming/src", "api/src", "viewer/src"])
+      watch(j(pkgs, pkg), { recursive: true }, () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try {
+            assets = await buildEngine();
+            config = configFor(assets);
+            console.log(`engine rebuilt (${assets.build})`);
+          } catch (e) {
+            console.error("engine rebuild failed", e);
+          }
+        }, 150);
+      });
+  }
   return Bun.serve({
     port: o.port ?? 5181,
     hostname: o.hostname ?? "localhost",
@@ -81,6 +103,6 @@ export async function serveEngine(o: EngineServerOptions) {
 if (import.meta.main) {
   const port = Number(process.env.ENGINE_PORT ?? 5181);
   const parents = (process.env.APP_ORIGINS ?? "http://localhost:5173").split(",");
-  const s = await serveEngine({ port, allowedParents: parents });
+  const s = await serveEngine({ port, allowedParents: parents, watch: process.env.ENGINE_WATCH === "1" });
   console.log(`engine origin on http://localhost:${s.port} (parents: ${parents.join(", ")})`);
 }

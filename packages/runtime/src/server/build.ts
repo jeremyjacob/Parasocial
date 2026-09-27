@@ -51,10 +51,10 @@ export async function buildEngine(outDir = join(here, "../../dist/engine"), opts
     assets[v + "Wasm"] = wasmName;
     if (v === "single") wasmBytes = wasm.byteLength;
   }
-  const build = short(readFileSync(join(outDir, "worker.js")));
+  const build = short(new Uint8Array([...readFileSync(join(outDir, "worker.js")), ...readFileSync(join(outDir, "page.js"))]));
   writeFileSync(
     join(outDir, "index.html"),
-    `<!doctype html><html><head><meta charset="utf-8"><title>Parasocial engine</title><script src="/config.js"></script><script type="module" src="/page.js"></script></head><body></body></html>`,
+    `<!doctype html><html><head><meta charset="utf-8"><title>Parasocial engine</title><script src="/config.js"></script><script type="module" src="/page.js?v=${build}"></script></head><body></body></html>`,
   );
   return { dir: outDir, build, glueSingle: "/" + assets.single, glueMulti: "/" + assets.multi, wasmSingle: "/" + assets.singleWasm, wasmMulti: "/" + assets.multiWasm, wasmBytes };
 }

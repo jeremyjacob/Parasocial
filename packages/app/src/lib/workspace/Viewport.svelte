@@ -395,11 +395,18 @@
 
 	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading kernel' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
-	{#if pill}
-		<div class="absolute top-3 left-3 z-10 max-w-[min(520px,60%)]" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
-			<StatusPill tone={pill.tone} title={pill.title} detail={pill.detail} message={pill.message} source={pill.source} bind:expanded={pillOpen} onSourceClick={() => revealSource(pill!.file, pill!.line)} />
-		</div>
-	{/if}
+	<div class="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 [&>*]:pointer-events-auto">
+		{#if ws.dirty.length}
+			<div data-testid="unsaved-preview" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
+				<StatusPill tone="preview" title="Unsaved preview" detail="⌘S to save" />
+			</div>
+		{/if}
+		{#if pill}
+			<div class="max-w-[520px]" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
+				<StatusPill tone={pill.tone} title={pill.title} detail={pill.detail} message={pill.message} source={pill.source} bind:expanded={pillOpen} onSourceClick={() => revealSource(pill!.file, pill!.line)} />
+			</div>
+		{/if}
+	</div>
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[108px] right-[22px] z-10">
@@ -450,6 +457,6 @@
 				<button class="focus-ring h-8 rounded-[var(--toolbar-item-radius)] px-2.5 text-ui font-medium transition-colors-fast {nc.eraser ? 'bg-active text-fg' : 'text-fg-secondary hover:bg-hover hover:text-fg'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
 			</div>
 		{/if}
-		<FloatingToolbar bind:tool={ws.tool} disabled={ws.mode === 'code' ? { note: 'Save to add notes', pencil: 'Save to add notes' } : {}} />
+		<FloatingToolbar bind:tool={ws.tool} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to add notes' } : {}} />
 	</div>
 </ContextMenu>

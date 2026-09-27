@@ -109,6 +109,24 @@ async function runJob(job: JobRequest) {
 
 if (import.meta.main) {
   await build();
+  if (process.env.POOL_WATCH === "1") {
+    // dev: rebuild the engine + page when their sources change, and drop stale browsers
+    const { watch } = await import("node:fs");
+    let timer: any;
+    for (const pkg of ["runtime/src", "kernel/src", "naming/src", "api/src", "viewer/src", "engine-pool/src"])
+      watch(join(here, "../..", pkg), { recursive: true }, () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try {
+            await build();
+            for (const id of [...slots.keys()]) await close(id);
+            console.log(`pool rebuilt (${assets.build})`);
+          } catch (e) {
+            console.error("pool rebuild failed", e);
+          }
+        }, 200);
+      });
+  }
   const server = Bun.serve({
     port: PORT,
     hostname: process.env.POOL_HOST ?? "127.0.0.1",
