@@ -11,7 +11,8 @@
  * rest of the app and apply the same engine-origin rejection.
  */
 import { handleMutateRequest, handleQueryRequest, isApplicationError } from "@rocicorp/zero/server";
-import { mustGetMutator, mustGetQuery, type MutateRequest, type ReadonlyJSONValue } from "@rocicorp/zero";
+import { mustGetMutator, mustGetQuery, type ReadonlyJSONValue } from "@rocicorp/zero";
+import type { AnyMR } from "../undo.ts";
 import { mutators } from "../mutators.ts";
 import { queries } from "../queries.ts";
 import { schema } from "../schema.ts";
@@ -49,7 +50,7 @@ export function createMutateHandler({ db, config, resolveUser }: Deps) {
       dbProvider: db.zql,
       request: req,
       userID: user.userID,
-      logLevel: "warn",
+      logLevel: "error", // app errors (stale writes, claims) are expected; they go back to the client
       handler: (transact) =>
         transact((tx, name, args) => mustGetMutator(mutators, name).fn({ tx, ctx, args: args as never })),
     });
@@ -69,7 +70,7 @@ export function createQueryHandler({ config, resolveUser }: Omit<Deps, "db">) {
       schema,
       request: req,
       userID: user?.userID ?? null,
-      logLevel: "warn",
+      logLevel: "error", // app errors (stale writes, claims) are expected; they go back to the client
       handler: (name, args) => mustGetQuery(queries, name).fn({ args: args as never, ctx }),
     });
     return json(result);
@@ -86,7 +87,7 @@ export type RunResult =
  */
 export async function runMutator(
   db: Db,
-  request: MutateRequest<any, any, any, any> | { name: string; args: ReadonlyJSONValue | undefined },
+  request: AnyMR | { name: string; args: ReadonlyJSONValue | undefined },
   ctx: MutatorContext,
 ): Promise<RunResult> {
   const name = "mutator" in request ? request.mutator.mutatorName : request.name;

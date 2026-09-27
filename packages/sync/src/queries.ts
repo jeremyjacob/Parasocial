@@ -11,7 +11,8 @@ import { zql } from "./schema.ts";
 import type { MutatorContext } from "./types.ts";
 
 type Ctx = MutatorContext | undefined;
-const NOBODY = "\u0000nobody";
+// User ids are UUIDs, never empty, so "" matches nobody. (No NUL bytes: Postgres rejects them in text.)
+const NOBODY = "";
 const uid = (ctx: Ctx) => ctx?.userID ?? NOBODY;
 
 const docArgs = z.object({ documentID: z.string() });

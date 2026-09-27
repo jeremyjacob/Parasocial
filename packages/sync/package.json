@@ -6,7 +6,15 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./svelte": "./src/svelte/index.ts",
+    "./migrations/*": "./migrations/*",
     "./*": "./src/*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "migrate": "bun src/server/migrate.ts",
+    "typecheck": "bun ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
     "@rocicorp/zero": "1.9.0",
@@ -14,6 +22,9 @@
     "fflate": "0.8.3",
     "postgres": "3.4.7",
     "zod": "4.6.5"
+  },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
   },
   "devDependencies": {
     "svelte": "5.57.1"

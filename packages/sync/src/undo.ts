@@ -20,16 +20,24 @@
  * (script writes, which go through Restore; presence; agent-only actions)
  * return null.
  */
-import type { MutateRequest, Query } from "@rocicorp/zero";
-import { mutators } from "./mutators.ts";
+import type { Query } from "@rocicorp/zero";
+import { mutators, type Mutators } from "./mutators.ts";
 import { zql, type Schema } from "./schema.ts";
 import type { ParamValue } from "./types.ts";
 
-type AnyMR = MutateRequest<any, any, any, any>;
+/** A mutate request as accepted by `zero.mutate(...)` / `runMutator(...)`. */
+export type AnyMR = MutateRequestOf<Mutators>;
+type MutateRequestOf<T> = T extends (...a: any[]) => infer R
+  ? R
+  : T extends object
+    ? { [K in Exclude<keyof T, "~">]: MutateRequestOf<T[K]> }[Exclude<keyof T, "~">]
+    : never;
 /** Runs a query against local state. On the client: `(q) => zero.run(q)`; on the server: `(q) => db.zql.run(q)`. */
 export type Reader = <TTable extends keyof Schema["tables"] & string, TReturn>(q: Query<TTable, Schema, TReturn>) => Promise<any>;
 
-type Inverter = (read: Reader, args: any) => Promise<AnyMR[] | null>;
+// Zero's Mutator<any, …> callable type doesn't accept concrete mutators, so inverters are typed
+// loosely inside this module and cast once in captureInverse.
+type Inverter = (read: Reader, args: any) => Promise<unknown[] | null>;
 
 const overrideKey = (o: { part: string; name: string }) => `${o.part}\u0000${o.name}`;
 
@@ -39,7 +47,7 @@ async function invertParams(
   documentID: string,
   configurationID: string,
   keys: { part: string; name: string }[],
-): Promise<AnyMR[]> {
+): Promise<unknown[]> {
   const before: { part: string; name: string; expression: string; value: ParamValue }[] = await read(
     zql.paramOverrides.where("configurationID", configurationID),
   );
@@ -98,7 +106,7 @@ const inverters: Record<string, Inverter> = {
   },
   "note.reply": async (read, a) => {
     const n = await read(zql.notes.where("id", a.noteID).one());
-    const out: AnyMR[] = [mutators.note.deleteMessage({ id: a.id })];
+    const out: unknown[] = [mutators.note.deleteMessage({ id: a.id })];
     // A human reply may have reopened the note; put the status back.
     if (n && n.status !== "Open" && n.status !== "AgentWorking" && (a.kind ?? "message") === "message")
       out.push(mutators.note.setStatus({ noteID: a.noteID, status: n.status }));
@@ -127,7 +135,7 @@ const inverters: Record<string, Inverter> = {
   "note.reanchor": async (read, a) => {
     const n = await read(zql.notes.where("id", a.noteID).one());
     if (!n) return null;
-    const out: AnyMR[] = [mutators.note.reanchor({ noteID: a.noteID, anchor: n.anchor })];
+    const out: unknown[] = [mutators.note.reanchor({ noteID: a.noteID, anchor: n.anchor })];
     if (n.orphaned) out.push(mutators.note.setOrphaned({ noteID: a.noteID, orphaned: true }));
     return out;
   },
@@ -165,7 +173,7 @@ export function isUndoable(mr: AnyMR): boolean {
 export async function captureInverse(read: Reader, mr: AnyMR): Promise<AnyMR[] | null> {
   const inv = inverters[mr.mutator.mutatorName];
   if (!inv) return null;
-  return inv(read, mr.args);
+  return (await inv(read, mr.args)) as AnyMR[] | null;
 }
 
 /** Inverse of a sequence (e.g. an undo entry), in reverse order. Null if any step isn't invertible. */

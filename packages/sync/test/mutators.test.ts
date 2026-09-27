@@ -288,9 +288,9 @@ describe("notes", () => {
 
     // a human reply moves it back to Open
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "Still thin on the left" }), { userID: ada });
-    note = await db.zql.run(zql.notes.where("id", noteID).related("messages", (m) => m.orderBy("createdAt", "asc")).one());
-    expect(note?.status).toBe("Open");
-    expect(note!.messages.map((m) => [m.kind, m.versionID ?? null])).toEqual([
+    const thread = await db.zql.run(zql.notes.where("id", noteID).related("messages", (m) => m.orderBy("createdAt", "asc")).one());
+    expect(thread?.status).toBe("Open");
+    expect(thread!.messages.map((m) => [m.kind, m.versionID ?? null])).toEqual([
       ["message", null],
       ["activity", null],
       ["message", versionID],

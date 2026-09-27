@@ -705,7 +705,7 @@ export const mutators = defineMutators({
               authorUserID: c.userID,
               authorAgentID: null,
               kind: msg.kind ?? "message",
-              text: msg.author ? `${msg.author}: ${msg.text}` : msg.text,
+              text: msg.text,
               data: msg.author ? { importedAuthor: msg.author } : null,
               versionID: null,
               createdAt: now + m,

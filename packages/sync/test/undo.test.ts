@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mutators } from "../src/mutators.ts";
 import { zql } from "../src/schema.ts";
-import { captureInverse, captureInverseAll, isUndoable, type Reader } from "../src/undo.ts";
+import { captureInverse, captureInverseAll, isUndoable, type AnyMR, type Reader } from "../src/undo.ts";
 import { sha256Hex } from "../src/util.ts";
 import { createTestDb, createUser, newDoc, run, type TestDb } from "./helpers.ts";
 
@@ -16,7 +16,7 @@ beforeAll(async () => {
 afterAll(() => db.drop());
 
 /** do → undo → redo, checking state after each step. */
-async function roundTrip(mr: Parameters<typeof captureInverse>[1], snapshot: () => Promise<unknown>) {
+async function roundTrip(mr: AnyMR, snapshot: () => Promise<unknown>) {
   const before = await snapshot();
   const undo = await captureInverse(read, mr);
   expect(undo).not.toBeNull();

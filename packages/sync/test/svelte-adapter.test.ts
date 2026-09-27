@@ -5,6 +5,7 @@ import type { TypedView } from "@rocicorp/zero";
 const { useQuery } = await import("../src/svelte/query.svelte.ts");
 // $effect.root / $state are compiler syntax; the test drives the same client runtime directly.
 // (Bare `svelte` resolves to the server entry under Bun, so flush comes from the internal client.)
+// @ts-expect-error internal runtime module has no type declarations
 const $ = await import("svelte/internal/client");
 const flushSync = () => $.flush();
 
@@ -107,12 +108,10 @@ test("a falsy query subscribes to nothing", () => {
 });
 
 test("works against a real (offline, in-memory) Zero client with optimistic mutators", async () => {
-  const { Zero } = await import("@rocicorp/zero");
-  const { schema } = await import("../src/schema.ts");
+  const { createZero } = await import("../src/client.ts");
   const { mutators } = await import("../src/mutators.ts");
   const { queries } = await import("../src/queries.ts");
-  const userID = "u1";
-  const zero = new Zero({ schema, userID, cacheURL: null, kvStore: "mem", mutators, context: { userID }, logLevel: "error" });
+  const zero = createZero({ userID: "u1", cacheURL: null, kvStore: "mem", logLevel: "error" });
   let docs!: ReturnType<typeof useQuery>;
   const dispose = $.effect_root(() => {
     docs = useQuery(() => queries.documents.mine(), { zero });
