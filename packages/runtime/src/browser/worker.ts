@@ -71,6 +71,10 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       return { value: engine.measure(req.a, req.b) };
     case "check":
       return { value: engine.check(req.part) };
+    case "tangentChain":
+      return { value: engine.tangentChain(req.part, req.edge) };
+    case "loopOf":
+      return { value: engine.loopOf(req.part, req.edge, req.face) };
     case "opsAtLine":
       return { value: engine.opsAtLine(req.part, req.file, req.line) };
     case "describeAll":

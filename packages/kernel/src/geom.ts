@@ -208,3 +208,20 @@ export function pointDistance(shape: Shape, p: Vec3): Distance {
     return distance(v, shape);
   });
 }
+
+/** Unit tangent of an edge at its start or end (in the edge's orientation). */
+export function edgeTangent(edge: Shape, atEnd: boolean): Vec3 {
+  const O = oc();
+  return scoped(() => {
+    const ad = tmp(new O.BRepAdaptor_Curve(edge));
+    const reversed = edge.Orientation() === O.TopAbs_Orientation.TopAbs_REVERSED;
+    const u = atEnd !== reversed ? ad.LastParameter() : ad.FirstParameter();
+    const p = tmp(new O.gp_Pnt(0, 0, 0));
+    const v = tmp(new O.gp_Vec(0, 0, 0));
+    ad.D1(u, p, v);
+    let t: Vec3 = [v.X(), v.Y(), v.Z()];
+    if (reversed) t = [-t[0], -t[1], -t[2]];
+    const l = Math.hypot(...t) || 1;
+    return [t[0] / l, t[1] / l, t[2] / l];
+  });
+}

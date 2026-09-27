@@ -1,7 +1,7 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, edgeTangent, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Material, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
@@ -253,6 +253,49 @@ export class Engine {
       d.type = "vertex";
     }
     return d;
+  }
+
+  /** Edges tangent-continuous with `edge` (through shared vertices). */
+  tangentChain(part: string, edge: number): number[] {
+    const rec = this.need(part);
+    const t = rec.topo;
+    const tangentAt = (e: number, v: number): Vec3 => {
+      // which end of the edge touches v: compare positions (explorer order isn't start/end)
+      const info = edgeOf(rec, e),
+        p = vertexOf(rec, v);
+      const d = (a: Vec3) => Math.hypot(a[0] - p[0], a[1] - p[1], a[2] - p[2]);
+      return edgeTangent(entityShape(rec, "edge", e), d(info.end) < d(info.start));
+    };
+    const seen = new Set([edge]);
+    const queue = [edge];
+    while (queue.length) {
+      const e = queue.shift()!;
+      for (const v of new Set(t.edgeVertices[e])) {
+        const te = tangentAt(e, v);
+        for (const n of t.vertexEdges[v] ?? []) {
+          if (seen.has(n) || isSeamEdge(rec, n)) continue;
+          const tn = tangentAt(n, v);
+          const dot = Math.abs(te[0] * tn[0] + te[1] * tn[1] + te[2] * tn[2]);
+          if (dot > Math.cos((2 * Math.PI) / 180)) (seen.add(n), queue.push(n));
+        }
+      }
+    }
+    return [...seen];
+  }
+
+  /** The boundary loop through `edge` on `face` (or, without a face, the adjacent face's larger loop). */
+  loopOf(part: string, edge: number, face?: number): number[] {
+    const rec = this.need(part);
+    let best: number[] | null = null;
+    const faces = face !== undefined ? [face] : (rec.topo.edgeFaces[edge] ?? []);
+    for (const f of faces) {
+      const wires = explore(entityShape(rec, "face", f), "wire").items;
+      for (const w of wires) {
+        const edges = explore(w, "edge").items.map((e) => rec.topo.edges.indexOf(e)).filter((i) => i >= 0 && !isSeamEdge(rec, i));
+        if (edges.includes(edge) && (!best || edges.length > best.length)) best = edges;
+      }
+    }
+    return best ?? [edge];
   }
 
   /** Ops whose call site is on `line` of `file` (Code mode: cursor → geometry). */

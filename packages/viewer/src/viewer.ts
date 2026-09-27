@@ -637,6 +637,123 @@ export class Viewer {
     return { part, kind: best.id.kind, index: best.id.index };
   }
 
+  /**
+   * Box select (§8 Selection): `window` selects entities fully inside the rectangle (projected
+   * geometry); `crossing` selects anything visible that touches it (ID buffer over the rect).
+   */
+  pickRect(x0: number, y0: number, x1: number, y1: number, mode: "window" | "crossing"): EntityRef[] {
+    const [ax, bx] = [Math.min(x0, x1), Math.max(x0, x1)];
+    const [ay, by] = [Math.min(y0, y1), Math.max(y0, y1)];
+    const out: EntityRef[] = [];
+    const wantFace = this.filter.face,
+      wantEdge = this.filter.edge && this.mode !== "shaded";
+    if (mode === "window") {
+      const v = new THREE.Vector3();
+      const inside = (arr: Float32Array, i: number) => {
+        v.fromArray(arr, i * 3).project(this.camera);
+        const sx = ((v.x + 1) / 2) * this.container.clientWidth,
+          sy = ((1 - v.y) / 2) * this.container.clientHeight;
+        return sx >= ax && sx <= bx && sy >= ay && sy <= by && v.z <= 1;
+      };
+      for (const [id, p] of this.parts) {
+        if (!p.group.visible) continue;
+        const m = p.data.mesh;
+        if (this.filter.part && !wantFace && !wantEdge) {
+          let all = true;
+          for (let i = 0; i < m.positions.length / 3 && all; i += 7) all = inside(m.positions, i);
+          if (all) out.push({ part: id, kind: "part" as any, index: 0 });
+          continue;
+        }
+        if (wantFace)
+          for (let f = 0; f < m.faceRanges.length / 2; f++) {
+            const lo = p.faceVerts[f * 2],
+              cnt = p.faceVerts[f * 2 + 1];
+            if (!cnt) continue;
+            let all = true;
+            for (let i = lo; i < lo + cnt && all; i++) all = inside(m.positions, i);
+            if (all) out.push({ part: id, kind: "face", index: f });
+          }
+        if (wantEdge)
+          for (let e = 0; e < m.edgeRanges.length / 2; e++) {
+            if (p.data.hiddenEdges?.has(e)) continue;
+            const s0 = m.edgeRanges[e * 2],
+              c = m.edgeRanges[e * 2 + 1];
+            if (!c) continue;
+            let all = true;
+            for (let i = s0; i < s0 + c && all; i++) all = inside(m.edgePositions, i);
+            if (all) out.push({ part: id, kind: "edge", index: e });
+          }
+      }
+      return out;
+    }
+    // crossing: render the ID pass over the rectangle
+    const dpr = this.renderer.getPixelRatio();
+    const w = Math.max(1, Math.round((bx - ax) * dpr)),
+      h = Math.max(1, Math.round((by - ay) * dpr));
+    const scale = Math.min(1, 512 / Math.max(w, h)); // cap the readback
+    const rw = Math.max(1, Math.round(w * scale)),
+      rh = Math.max(1, Math.round(h * scale));
+    const rt = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.UnsignedByteType });
+    const cam = this.camera;
+    cam.setViewOffset(this.canvas.width, this.canvas.height, Math.round(ax * dpr), Math.round(ay * dpr), w, h);
+    for (const p of this.parts.values()) p.pickMode(true, wantEdge, wantFace || this.filter.part);
+    const bg = this.scene.background,
+      env = this.scene.environment;
+    this.scene.background = null;
+    this.scene.environment = null;
+    this.grid.visible = this.triad.visible = this.markup.visible = false;
+    const tm = this.renderer.toneMapping;
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.setRenderTarget(rt);
+    this.renderer.setClearColor(0, 0);
+    this.renderer.clear();
+    this.renderer.render(this.scene, cam);
+    this.renderer.setRenderTarget(null);
+    this.renderer.toneMapping = tm;
+    this.scene.background = bg;
+    this.scene.environment = env;
+    this.grid.visible = this.triad.visible = this.markup.visible = true;
+    for (const p of this.parts.values()) p.pickMode(false, false, false);
+    cam.clearViewOffset();
+    const buf = new Uint8Array(rw * rh * 4);
+    this.renderer.readRenderTargetPixels(rt, 0, 0, rw, rh, buf);
+    rt.dispose();
+    const seen = new Set<string>();
+    for (let i = 0; i < buf.length; i += 4) {
+      const id = decodeId(buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
+      if (!id) continue;
+      const part = this.slots[id.slot];
+      if (!part) continue;
+      const k = this.filter.part && !wantFace && !wantEdge ? `${part}:part:0` : `${part}:${id.kind}:${id.index}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const [pp, kind, idx] = k.split(":");
+      out.push({ part: pp, kind: kind as any, index: +idx });
+    }
+    this.requestRender();
+    return out;
+  }
+
+  /** Every face along the ray under (x, y), nearest first (Tab cycles through them). */
+  facesUnder(x: number, y: number): EntityRef[] {
+    const rc = new THREE.Raycaster();
+    const w = this.container.clientWidth,
+      h = this.container.clientHeight;
+    rc.setFromCamera(new THREE.Vector2((x / w) * 2 - 1, -(y / h) * 2 + 1), this.camera);
+    const out: EntityRef[] = [];
+    const seen = new Set<string>();
+    const meshes = [...this.parts.values()].filter((p) => p.group.visible).map((p) => p.faceMesh);
+    for (const hit of rc.intersectObjects(meshes, false)) {
+      const p = [...this.parts.values()].find((q) => q.faceMesh === hit.object)!;
+      const f = (hit.object as THREE.Mesh).geometry.getAttribute("faceId").getX(hit.face!.a);
+      const k = `${p.id}:${f}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ part: p.id, kind: "face", index: f });
+    }
+    return out;
+  }
+
   /** Pick plus the exact surface point and normal (ray vs. the picked face's triangles). */
   pickPoint(x: number, y: number): (EntityRef & { point: THREE.Vector3; normal?: THREE.Vector3 }) | null {
     const saved = this.filter;

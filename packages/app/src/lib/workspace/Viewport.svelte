@@ -30,6 +30,11 @@
 	let pillOpen = $state(false);
 	let ctxTarget = $state.raw<EntityRef | null>(null);
 	let down: { x: number; y: number; button: number } | null = null;
+	/** Box select: left-drag in the select tool. Left→right = window, right→left = crossing. */
+	let box = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+	/** Tab cycles through the faces stacked under the cursor (§8 Selection). */
+	let stack: { x: number; y: number; refs: EntityRef[]; i: number } | null = null;
+	let pointer: { x: number; y: number } | null = null;
 	const dark = $derived(theme.resolved === 'dark');
 
 	// macOS fires contextmenu on right mouse-down, which would open the menu at the start of a
@@ -49,7 +54,22 @@
 		synthetic = false;
 	}
 
+	function onTab(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !pointer || !viewer || e.metaKey || e.ctrlKey || e.altKey) return;
+		const t = e.target as HTMLElement | null;
+		if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+		// only while the pointer is over the viewport; otherwise Tab moves focus as usual
+		if (!host.matches(':hover')) return;
+		e.preventDefault();
+		if (!stack || stack.x !== pointer.x || stack.y !== pointer.y) stack = { x: pointer.x, y: pointer.y, refs: viewer.facesUnder(pointer.x, pointer.y), i: -1 };
+		if (!stack.refs.length) return;
+		stack.i = (stack.i + (e.shiftKey ? -1 : 1) + stack.refs.length) % stack.refs.length;
+		ws.hover = stack.refs[stack.i];
+		viewer.setPreselect(ws.hover);
+	}
+
 	onMount(() => {
+		window.addEventListener('keydown', onTab);
 		host.addEventListener('contextmenu', onContextCapture, { capture: true });
 		host.addEventListener('pointerup', onRightUp);
 		viewer = new Viewer(host, { theme: viewerTheme(dark) });
@@ -61,6 +81,7 @@
 		ws.sync();
 	});
 	onDestroy(() => {
+		window.removeEventListener('keydown', onTab);
 		viewer?.dispose();
 		ws.viewer = null;
 	});
@@ -158,7 +179,17 @@
 			}
 			return;
 		}
+		const rr = host.getBoundingClientRect();
+		pointer = { x: e.clientX - rr.left, y: e.clientY - rr.top };
+		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !e.altKey && !viewer?.controls.spaceHeld && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
+			box = { x0: down.x - rr.left, y0: down.y - rr.top, x1: pointer.x, y1: pointer.y };
+		}
+		if (box) {
+			box = { ...box, x1: pointer.x, y1: pointer.y };
+			return;
+		}
 		if (!viewer || e.buttons) return;
+		stack = null;
 		if (ws.tool === 'pencil') return viewer.setPreselect(null);
 		const ref = pickAt(e);
 		ws.hover = ref;
@@ -198,6 +229,14 @@
 			nc.addStrokeToDraft(id, s.crossed, { x: e.clientX - r.left, y: e.clientY - r.top });
 			return;
 		}
+		if (box && viewer) {
+			const b = box;
+			box = null;
+			down = null;
+			const refs = viewer.pickRect(b.x0, b.y0, b.x1, b.y1, b.x1 >= b.x0 ? 'window' : 'crossing');
+			ws.select(refs, e.shiftKey || e.metaKey || e.ctrlKey ? 'add' : 'replace');
+			return;
+		}
 		if (!down || e.button !== 0 || down.button !== 0) return;
 		const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4;
 		down = null;
@@ -218,7 +257,8 @@
 			else nc.startFromTargets(targets, { x, y });
 			return;
 		}
-		const ref = pickAt(e);
+		// a Tab-cycled preselection is what a click selects
+		const ref = stack && ws.hover ? ws.hover : pickAt(e);
 		if (ws.tool === 'select' || ws.tool === 'measure') {
 			if (!ref) return !(e.shiftKey || e.metaKey || e.ctrlKey) && ws.clearSelection();
 			ws.select([ref], e.shiftKey || e.metaKey || e.ctrlKey || ws.tool === 'measure' ? 'toggle' : 'replace');
@@ -399,6 +439,28 @@
 				}
 			});
 		}
+		if (target?.kind === 'edge') {
+			items.push({
+				label: 'Select tangent chain',
+				disabled: !ws.kernelReady,
+				onSelect: async () => ws.select((await ws.engine!.tangentChain(target.part, target.index)).map((index) => ({ part: target.part, kind: 'edge' as const, index })))
+			});
+			items.push({
+				label: 'Select loop',
+				disabled: !ws.kernelReady,
+				onSelect: async () => ws.select((await ws.engine!.loopOf(target.part, target.index)).map((index) => ({ part: target.part, kind: 'edge' as const, index })))
+			});
+		} else if (target?.kind === 'face') {
+			items.push({
+				label: 'Select boundary loop',
+				disabled: !ws.kernelReady,
+				onSelect: async () => {
+					const edges = ws.results[target.part]?.faceEdges[target.index] ?? [];
+					if (!edges.length) return;
+					ws.select((await ws.engine!.loopOf(target.part, edges[0], target.index)).map((index) => ({ part: target.part, kind: 'edge' as const, index })));
+				}
+			});
+		}
 		items.push({ type: 'separator' });
 		if (target) {
 			items.push({ label: 'Isolate', icon: Focus, onSelect: () => ws.isolate(target.part) });
@@ -467,6 +529,13 @@
 		</div>
 	{/if}
 
+	{#if box}
+		<div
+			class="pointer-events-none absolute z-20 border {box.x1 >= box.x0 ? 'border-accent bg-accent/8' : 'border-dashed border-accent bg-accent/5'}"
+			style="left:{Math.min(box.x0, box.x1)}px;top:{Math.min(box.y0, box.y1)}px;width:{Math.abs(box.x1 - box.x0)}px;height:{Math.abs(box.y1 - box.y0)}px"
+			data-testid="box-select"
+		></div>
+	{/if}
 	{#if dim && dimPos}
 		<div class="absolute z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-2.5 shadow-popover" style="left:{dimPos.x}px;top:{dimPos.y}px" data-testid="measure-card">
 			<span class="text-ui font-medium tabular-nums">{num(dim.distance, 2)} mm</span>

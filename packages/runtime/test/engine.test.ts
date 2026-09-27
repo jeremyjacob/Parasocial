@@ -147,3 +147,16 @@ test("describeAll, interference, exports", () => {
   expect(e.interference("body", "lid")).toBeGreaterThanOrEqual(0);
   for (const f of ["step", "stl", "3mf"] as const) expect(e.exportPart("body", f).byteLength).toBeGreaterThan(100);
 });
+
+test("tangent chain and loop", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: docFrom("bracket") });
+  e.regenerate("bracket");
+  const names = e.names("bracket").edge;
+  // an edge on the top face boundary: straight edge tangent to the fillet arcs -> the whole outline
+  const i = names.findIndex((n) => n.includes("cap.end") && n.includes("outline/right") && !n.includes("fillet"));
+  const chain = e.tangentChain("bracket", i);
+  expect(chain.length).toBe(8);
+  const loop = e.loopOf("bracket", i);
+  expect(loop.length).toBe(8);
+});

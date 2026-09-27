@@ -20,6 +20,8 @@ export type EngineRequest =
   | { op: "measure"; a: MeasureRef; b: MeasureRef }
   | { op: "check"; part: string }
   | { op: "describeAll"; part: string }
+  | { op: "tangentChain"; part: string; edge: number }
+  | { op: "loopOf"; part: string; edge: number; face?: number }
   | { op: "opsAtLine"; part: string; file: string; line: number }
   | { op: "interference"; a: string; b: string }
   | { op: "export"; part: string; format: "step" | "stl" | "3mf" }

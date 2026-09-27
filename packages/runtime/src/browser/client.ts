@@ -128,6 +128,12 @@ export class EngineClient {
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
   }
+  tangentChain(part: string, edge: number) {
+    return this.call<number[]>({ op: "tangentChain", part, edge });
+  }
+  loopOf(part: string, edge: number, face?: number) {
+    return this.call<number[]>({ op: "loopOf", part, edge, face });
+  }
   opsAtLine(part: string, file: string, line: number) {
     return this.call<string[]>({ op: "opsAtLine", part, file, line });
   }
