@@ -41,6 +41,9 @@ type Highlight = { refs: EntityRef[] };
 const SELECTED_TINT = 0.75;
 /** Origin axis lines, shared with the view cube's triad so the two match. */
 const AXIS_OPACITY = 0.375;
+/** Render layers for the post-AO helper pass: faces for depth, then grid + axes. */
+const FACE_LAYER = 2;
+const HELPER_LAYER = 1;
 
 export class Viewer {
   readonly renderer: THREE.WebGLRenderer;
@@ -141,6 +144,7 @@ export class Viewer {
 
     this.grid = new THREE.Group();
     this.grid.add(this.groundGrid.mesh);
+    this.groundGrid.mesh.layers.enable(HELPER_LAYER);
     this.triad = new THREE.Group();
     this.scene.add(this.grid, this.triad, this.markup);
     this.markup.renderOrder = 4;
@@ -982,7 +986,11 @@ export class Viewer {
       h = this.container.clientHeight;
     // stencil in the composer targets too: the selected-part outline masks with it
     const dpr = this.renderer.getPixelRatio();
-    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true, samples: 4 }));
+    // 32-bit float depth like the canvas: three's default for render targets is 24-bit fixed, which
+    // with reversed-Z loses the precision the depth-biased lines rely on (they then win over faces)
+    const depthTexture = new THREE.DepthTexture(w * dpr, h * dpr, THREE.FloatType);
+    depthTexture.format = THREE.DepthStencilFormat;
+    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true, samples: 4, depthTexture }));
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
     this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
@@ -1002,6 +1010,30 @@ export class Viewer {
     c.setSize(w, h);
     this.composer = c;
     return c;
+  }
+
+  private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide });
+
+  /** Draw the grid and axes over the composited frame, depth-tested against the parts' faces. */
+  private renderHelpersOver() {
+    const r = this.renderer,
+      cam = this.camera;
+    const autoClear = r.autoClear,
+      bg = this.scene.background,
+      layers = cam.layers.mask;
+    r.autoClear = false;
+    this.scene.background = null;
+    r.clearDepth();
+    // depth-only prepass of the faces (layer FACE_LAYER), then the helpers (HELPER_LAYER)
+    cam.layers.set(FACE_LAYER);
+    this.scene.overrideMaterial = this.depthOnly;
+    r.render(this.scene, cam);
+    this.scene.overrideMaterial = null;
+    cam.layers.set(HELPER_LAYER);
+    r.render(this.scene, cam);
+    cam.layers.mask = layers;
+    this.scene.background = bg;
+    r.autoClear = autoClear;
   }
 
   private tickFades(now: number): boolean {
@@ -1049,7 +1081,16 @@ export class Viewer {
       // scale the AO radius with the model
       const r = this.bounds().getBoundingSphere(new THREE.Sphere()).radius || 10;
       this.aoPass!.updateGtaoMaterial({ radius: r * 0.08 });
+      // helpers (ground grid, origin axes) go straight onto the canvas after the AO composite, so
+      // they blend in the same space as the direct path (the composer blends in linear, which made
+      // translucent lines brighter and more opaque at rest than while orbiting)
+      const gv = this.grid.visible,
+        tv = this.triad.visible;
+      this.grid.visible = this.triad.visible = false;
       c.render();
+      this.grid.visible = gv;
+      this.triad.visible = tv;
+      if (gv || tv) this.renderHelpersOver();
     } else this.renderer.render(this.scene, this.camera);
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
@@ -1093,6 +1134,7 @@ export class Viewer {
       const m = withDepthBias(new LineMaterial({ color: new THREE.Color(c), linewidth: 2, resolution: this.resolution, worldUnits: false, transparent: true, opacity: AXIS_OPACITY, depthWrite: false }), 0.0004) as LineMaterial;
       const l = new Line2(g, m);
       l.frustumCulled = false;
+      l.layers.enable(HELPER_LAYER);
       return l;
     };
     for (const [d, c] of [[[1, 0, 0], t.axisX], [[0, 1, 0], t.axisY], [[0, 0, 1], t.axisZ]] as [number[], string][])

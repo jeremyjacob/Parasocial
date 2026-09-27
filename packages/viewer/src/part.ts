@@ -187,6 +187,7 @@ export class PartObject {
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
     this.faceMesh = new THREE.Mesh(geo, this.faceMaterial);
+    this.faceMesh.layers.enable(2); // viewer FACE_LAYER: depth prepass for helpers drawn after AO
     this.faceMesh.name = "faces";
     this.silMaterial = new THREE.ShaderMaterial({
       vertexShader: SIL_VERT,
