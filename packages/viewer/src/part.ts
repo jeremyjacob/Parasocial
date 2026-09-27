@@ -74,6 +74,28 @@ void main() {
   gl_FragColor = vec4(r / 255.0, g / 255.0, b / 255.0, slotKind / 255.0);
 }`;
 
+/** Silhouette: back faces pushed out a fixed number of pixels along their screen-space normal. */
+const SIL_VERT = /* glsl */ `
+uniform vec2 resolution;
+uniform float width;
+#include <common>
+#include <clipping_planes_pars_vertex>
+void main() {
+  #include <begin_vertex>
+  #include <project_vertex>
+  vec4 clipN = projectionMatrix * modelViewMatrix * vec4(position + normal, 1.0);
+  vec2 dir = normalize(clipN.xy / clipN.w - gl_Position.xy / gl_Position.w);
+  gl_Position.xy += dir * width * 2.0 / resolution * gl_Position.w;
+  #include <clipping_planes_vertex>
+}`;
+const SIL_FRAG = /* glsl */ `
+uniform vec3 color;
+#include <clipping_planes_pars_fragment>
+void main() {
+  #include <clipping_planes_fragment>
+  gl_FragColor = vec4(color, 1.0);
+}`;
+
 export class PartObject {
   readonly group = new THREE.Group();
   readonly id: string;
@@ -84,6 +106,8 @@ export class PartObject {
   pickFaces!: THREE.Mesh;
   pickEdges!: LineSegments2;
   overlay!: LineSegments2;
+  silhouette!: THREE.Mesh;
+  private silMaterial!: THREE.ShaderMaterial;
   /** per face: first vertex, vertex count (faces own contiguous vertex runs) */
   faceVerts!: Uint32Array;
   private baseColor = new THREE.Color();
@@ -158,6 +182,15 @@ export class PartObject {
     geo.computeBoundingBox();
     this.faceMesh = new THREE.Mesh(geo, this.faceMaterial);
     this.faceMesh.name = "faces";
+    this.silMaterial = new THREE.ShaderMaterial({
+      vertexShader: SIL_VERT,
+      fragmentShader: SIL_FRAG,
+      uniforms: { resolution: { value: this.resolution }, width: { value: 1.2 }, color: { value: new THREE.Color(0x1f2023) } },
+      side: THREE.BackSide,
+      toneMapped: false,
+    });
+    this.silhouette = new THREE.Mesh(geo, this.silMaterial);
+    this.silhouette.renderOrder = -1;
     this.pickFaces = new THREE.Mesh(geo, this.pickFaceMaterial);
     this.pickFaces.visible = false;
 
@@ -192,7 +225,7 @@ export class PartObject {
     this.overlay.renderOrder = 2;
     this.overlay.visible = false;
 
-    this.group.add(this.faceMesh, this.edgeLines, this.overlay, this.pickFaces, this.pickEdges);
+    this.group.add(this.faceMesh, this.silhouette, this.edgeLines, this.overlay, this.pickFaces, this.pickEdges);
   }
 
   /** Line segment positions for the given edges, plus which edge each segment belongs to. */
@@ -260,6 +293,11 @@ export class PartObject {
     this.overlay.visible = true;
   }
 
+  setSilhouette(visible: boolean, color: THREE.Color) {
+    this.silhouette.visible = visible;
+    this.silMaterial.uniforms.color.value.copy(color);
+  }
+
   setEdgeStyle(color: THREE.Color, width: number, opacity = 1) {
     this.edgeMaterial.color.copy(color);
     this.edgeMaterial.linewidth = width;
@@ -290,6 +328,7 @@ export class PartObject {
   pickMode(on: boolean, edgesPickable: boolean, facesPickable: boolean) {
     if (this.cap) this.cap.visible = !on && !!this.faceMaterial.clippingPlanes;
     this.faceMesh.visible = !on && this.faceMesh.userData.shown !== false;
+    this.silhouette.visible = !on && this.silhouette.userData.shown === true;
     this.edgeLines.visible = !on;
     this.overlay.visible = !on && this.overlay.geometry.attributes.instanceStart !== undefined && this.overlay.userData.active === true;
     this.pickFaces.visible = on && facesPickable;
@@ -309,7 +348,7 @@ export class PartObject {
 
   /** Section view: clip everything of this part; inside surfaces render flat in `capColor`, reading as a cut. */
   setClip(planes: THREE.Plane[], capColor: THREE.Color) {
-    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial] as THREE.Material[];
+    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial] as THREE.Material[];
     for (const m of mats) {
       m.clippingPlanes = planes.length ? planes : null;
       (m as any).clipping = planes.length > 0;
@@ -336,6 +375,7 @@ export class PartObject {
     this.pickEdges.geometry.dispose();
     this.overlay.geometry.dispose();
     this.faceMaterial.dispose();
+    this.silMaterial.dispose();
     this.edgeMaterial.dispose();
     this.overlayMaterial.dispose();
     this.pickFaceMaterial.dispose();

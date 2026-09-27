@@ -10,6 +10,10 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean };
 
@@ -65,6 +69,13 @@ export class Viewer {
   private ro: ResizeObserver;
   private disposed = false;
   stats = { frames: 0, lastFrameMs: 0, lastPickMs: 0 };
+  /** Subtle ambient occlusion, dropped while the camera moves (§9). */
+  ao = true;
+  private composer: EffectComposer | null = null;
+  private renderPass: RenderPass | null = null;
+  private aoPass: GTAOPass | null = null;
+  private moving = false;
+  private aoEnabledByDepth = true;
 
   constructor(container: HTMLElement, o: ViewerOptions = {}) {
     this.container = container;
@@ -82,9 +93,13 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
     (this.renderer as any).__psReversed = reversed;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, o.maxDpr ?? 2));
+    // GTAO handles reversed-Z but not the logarithmic-depth fallback
+    this.aoEnabledByDepth = reversed;
+    this.ao = (o as any).ao ?? true;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.NeutralToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // no tone mapping: the canvas color must match the design token exactly (the composer path
+    // would otherwise tone-map the background too), and CAD shading wants linear, honest color
+    this.renderer.toneMapping = THREE.NoToneMapping;
 
     for (const cam of [this.persp, this.ortho]) cam.up.set(0, 0, 1);
     this.persp.position.set(120, -160, 110);
@@ -113,7 +128,11 @@ export class Viewer {
       camera: () => this.camera,
       pickPoint: (x, y) => this.pickPoint(x, y)?.point ?? null,
       changed: () => this.syncCameras(),
-      moving: (on) => this.emit("moving", on),
+      moving: (on) => {
+        this.moving = on;
+        if (!on) this.requestRender(); // restore AO once the camera stops
+        this.emit("moving", on);
+      },
     });
     this.controls.preset = o.nav ?? "onshape";
     this.controls.reducedMotion = o.reducedMotion ?? matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -336,6 +355,9 @@ export class Viewer {
         break;
     }
     p.faceMesh.userData.shown = p.faceMesh.visible;
+    const sil = this.mode !== "wireframe" && !this.dimmed.has(p.id);
+    p.setSilhouette(sil, new THREE.Color(t.silhouette));
+    p.silhouette.userData.shown = sil;
   }
 
   setTheme(t: ViewerTheme) {
@@ -348,7 +370,7 @@ export class Viewer {
   private applyTheme() {
     const t = this.theme;
     this.scene.background = new THREE.Color(t.background);
-    this.scene.environmentIntensity = t.dark ? 0.7 : 0.85;
+    this.scene.environmentIntensity = t.dark ? 0.6 : 0.72;
     this.container.style.setProperty("--vc-face", t.dark ? "rgba(39,39,42,.92)" : "rgba(255,255,255,.94)");
     this.container.style.setProperty("--vc-face-hover", t.dark ? "#3f3f46" : "#ffffff");
     this.container.style.setProperty("--vc-border", t.dark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.12)");
@@ -875,6 +897,7 @@ export class Viewer {
       h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
     this.renderer.getDrawingBufferSize(this.resolution);
+    this.composer?.setSize(w, h);
     this.syncCameras();
     this.renderNow();
   }
@@ -887,11 +910,37 @@ export class Viewer {
     if (this.needsRender || animating) this.renderNow();
   };
 
+  private ensureComposer() {
+    if (this.composer) return this.composer;
+    const w = this.container.clientWidth,
+      h = this.container.clientHeight;
+    const c = new EffectComposer(this.renderer);
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.aoPass = new GTAOPass(this.scene, this.camera, w, h, undefined, { radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
+    this.aoPass.blendIntensity = 0.45;
+    c.addPass(this.renderPass);
+    c.addPass(this.aoPass);
+    c.addPass(new OutputPass());
+    c.setPixelRatio(this.renderer.getPixelRatio());
+    c.setSize(w, h);
+    this.composer = c;
+    return c;
+  }
+
   renderNow() {
     const t0 = performance.now();
     this.needsRender = false;
     this.viewCube?.update(this.camera);
-    this.renderer.render(this.scene, this.camera);
+    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.useOrtho;
+    if (useAO) {
+      const c = this.ensureComposer();
+      this.renderPass!.camera = this.camera;
+      (this.aoPass as any).camera = this.camera;
+      // scale the AO radius with the model
+      const r = this.bounds().getBoundingSphere(new THREE.Sphere()).radius || 10;
+      this.aoPass!.updateGtaoMaterial({ radius: r * 0.08 });
+      c.render();
+    } else this.renderer.render(this.scene, this.camera);
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
     this.emit("rendered", null);

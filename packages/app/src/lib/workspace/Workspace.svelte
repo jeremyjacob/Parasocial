@@ -33,6 +33,7 @@
 	import { prefetchMonaco } from './monaco';
 	import ConnectAgentDialog from './ConnectAgentDialog.svelte';
 	import ExportDialog from './ExportDialog.svelte';
+	import PreferencesDialog from './PreferencesDialog.svelte';
 	import { NotesController } from './notes.svelte';
 	import { CompareController } from './compare.svelte';
 	import CompareBar from './CompareBar.svelte';
@@ -127,6 +128,15 @@
 	let cheatsOpen = $state(false);
 	let connectOpen = $state(false);
 	let exportOpen = $state(false);
+	let prefsOpen = $state(false);
+	let navPreset = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('parasocial:nav') ?? 'onshape') : 'onshape');
+	$effect(() => {
+		const n = navPreset;
+		try {
+			localStorage.setItem('parasocial:nav', n);
+		} catch {}
+		ws.viewer?.setNavPreset(n as any);
+	});
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
 	// ---- actions ----
@@ -202,12 +212,13 @@
 		{ id: 'agent.connect', label: 'Connect an agent', group: 'Document', icon: Bot, run: () => (connectOpen = true) },
 		{ id: 'app.palette', label: 'Command palette', group: 'Help', keys: ['mod', 'K'], run: () => (paletteOpen = true) },
 		{ id: 'app.cheatsheet', label: 'Keyboard shortcuts', group: 'Help', keys: ['?'], icon: Keyboard, run: () => (cheatsOpen = true) },
+		{ id: 'app.prefs', label: 'Preferences', group: 'Help', keys: ['mod', ','], run: () => (prefsOpen = true) },
 		{ id: 'app.theme', label: 'Toggle theme', group: 'Help', icon: theme.resolved === 'dark' ? Sun : Moon, run: () => theme.set(theme.resolved === 'dark' ? 'light' : 'dark') },
 		{ id: 'app.documents', label: 'All documents', group: 'Help', icon: ArrowLeft, run: () => (location.href = '/') }
 	];
-	const custom = loadCustomKeys();
+	let custom = $state(loadCustomKeys());
 	const keyOf = (c: Command) => custom[c.id] ?? c.keys;
-	const byCombo = new Map(commands.filter((c) => keyOf(c)).map((c) => [comboOfKeys(keyOf(c)!), c]));
+	const byCombo = $derived(new Map(commands.filter((c) => keyOf(c)).map((c) => [comboOfKeys(keyOf(c)!), c])));
 
 	function onKeyUp(e: KeyboardEvent) {
 		if (e.key.toLowerCase() === 'b') cmp.flash(false);
@@ -231,7 +242,7 @@
 		const numeric = (e.target as HTMLElement | null)?.getAttribute?.('role') === 'spinbutton';
 		if (isTyping(e) && combo.includes('+z') && !numeric) return;
 		if (numeric && combo.includes('+z')) (e.target as HTMLElement).blur();
-		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen)) return;
+		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || prefsOpen || exportOpen)) return;
 		e.preventDefault();
 		cmd.run();
 	}
@@ -300,6 +311,7 @@
 		}
 	]);
 	const accountMenu: MenuEntry[] = [
+		{ label: 'Preferences…', onSelect: () => (prefsOpen = true) },
 		{ label: 'Settings', onSelect: () => (location.href = '/settings') },
 		{ type: 'separator' },
 		{ label: 'Sign out', onSelect: async () => (await signOut(), (location.href = '/signin')) }
@@ -399,6 +411,7 @@
 
 <CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} />
+<PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} />
 <ExportDialog {ws} bind:open={exportOpen} onZip={async () => void (await exportZip())} />
 <Dialog bind:open={cheatsOpen} title="Keyboard shortcuts" class="max-w-[640px]">
 	<div class="grid grid-cols-2 gap-x-8 gap-y-1" data-testid="cheatsheet">
