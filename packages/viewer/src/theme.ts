@@ -13,6 +13,8 @@ export type ViewerTheme = {
   selectedStroke: string;
   error: string;
   ghost: string;
+  /** compare ghost edges, other non-selection emphasis (the one accent blue) */
+  accent: string;
   axisX: string;
   axisY: string;
   axisZ: string;
@@ -34,6 +36,7 @@ export const LIGHT: ViewerTheme = {
   selectedStroke: "#ea580c",
   error: "#e5484d",
   ghost: "#71717a",
+  accent: "#1273eb",
   axisX: "#e5484d",
   axisY: "#30a46c",
   axisZ: "#3e63dd",
@@ -54,6 +57,7 @@ export const DARK: ViewerTheme = {
   selectedStroke: "#fdba74",
   error: "#ff6369",
   ghost: "#a1a1aa",
+  accent: "#5a9dff",
   axisX: "#ff6369",
   axisY: "#3dd68c",
   axisZ: "#6e8cff",

@@ -208,6 +208,7 @@
 			if (!ref) return;
 			const point = hit?.point ?? viewer.entityCenter(ref)!;
 			const targets: DraftTarget[] = [{ ref: { part: ref.part, kind: ref.kind, index: ref.index }, point: [point.x, point.y, point.z], normal: hit?.normal ? [hit.normal.x, hit.normal.y, hit.normal.z] : undefined }];
+			if (nc.reanchoring) return void nc.reanchor(nc.reanchoring, targets[0]);
 			// shift adds to the draft's targets (a note can point at many entities)
 			if (e.shiftKey && nc.draft) nc.startFromTargets([...nc.draft.targets, ...targets], { x, y });
 			else nc.startFromTargets(targets, { x, y });

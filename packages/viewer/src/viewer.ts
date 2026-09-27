@@ -486,7 +486,9 @@ export class Viewer {
       const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(this.theme.ghost), roughness: 0.6, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
       const eg = new THREE.BufferGeometry();
       eg.setAttribute("position", new THREE.BufferAttribute(mesh.edgePositions, 3));
-      const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: new THREE.Color(this.theme.ghost), transparent: true, depthWrite: false }));
+      // ghost edges draw through the current geometry, so a change inside it still reads
+      const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: new THREE.Color(this.theme.accent), transparent: true, depthWrite: false, depthTest: false }));
+      edges.renderOrder = 6;
       const grp = new THREE.Group();
       grp.add(new THREE.Mesh(g, mat), edges);
       grp.renderOrder = 5;
@@ -515,10 +517,10 @@ export class Viewer {
     // ghost: opaque at 0, faint at 0.5, gone at 1
     const ghostOpacity = t <= 0.5 ? 1 - t * 1.3 : Math.max(0, 0.35 - (t - 0.5) * 0.7);
     for (const g of this.ghosts.values()) {
-      g.visible = ghostOpacity > 0.01;
+      g.visible = ghostOpacity > 0.01 || (t > 0 && t < 1);
       g.traverse((o: any) => {
         if (o.material) {
-          o.material.opacity = o.isLineSegments ? Math.min(1, ghostOpacity + 0.2) : ghostOpacity;
+          o.material.opacity = o.isLineSegments ? (t >= 1 ? 0 : t <= 0 ? 0 : Math.min(0.9, 0.35 + ghostOpacity)) : ghostOpacity;
           o.material.depthWrite = ghostOpacity > 0.95;
         }
       });

@@ -93,7 +93,7 @@
 	</header>
 	{#if note.orphaned}
 		<div class="flex items-center gap-2 border-b border-line-subtle bg-error-subtle px-3 py-2 text-label text-error">
-			<Unlink size={12} /> This note lost its geometry. <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id))}>Re-anchor</Button>
+			<Unlink size={12} /> This note lost its geometry. <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click new geometry…' : 'Re-anchor'}</Button>
 		</div>
 	{/if}
 	<div class="flex flex-col gap-4 px-3 py-3">

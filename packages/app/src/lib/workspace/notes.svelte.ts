@@ -24,6 +24,8 @@ export class NotesController {
 	penColor = $state<string>(STROKE_COLORS[0]);
 	eraser = $state(false);
 	posting = $state(false);
+	/** Note waiting to be re-anchored by the next pick. */
+	reanchoring = $state<string | null>(null);
 	private resolving = 0;
 
 	constructor(private ws: WorkspaceState) {}
@@ -97,6 +99,20 @@ export class NotesController {
 		} finally {
 			this.posting = false;
 		}
+	}
+
+	/** Re-anchor an orphaned note to a newly picked entity. */
+	async reanchor(noteID: string, t: DraftTarget) {
+		const ws = this.ws;
+		const n = ws.notes.find((x) => x.id === noteID);
+		if (!n || !ws.engine) return;
+		const r = t.ref;
+		const name = (r.kind as string) === 'part' ? r.part : (await ws.engine.describe(r.part, r.kind, r.index)).name;
+		const anchor = { ...n.anchor, targets: [{ kind: r.kind, part: r.part, name, point: t.point, normal: t.normal }] };
+		const { snapshot: _s, ...rest } = anchor as any;
+		await ws.mutate(mutators.note.reanchor({ noteID, anchor: rest } as any), 'Re-anchor note');
+		this.reanchoring = null;
+		ws.tool = 'select';
 	}
 
 	// ---------- thread actions ----------
