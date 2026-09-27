@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*",
+    "tests"
+  ],
   "scripts": {
-    "test": "bun test packages/kernel packages/naming packages/api packages/runtime packages/sync packages/mcp",
-    "corpus": "bun run packages/naming/corpus/run.ts",
+    "test": "bun test packages/kernel packages/naming packages/api packages/runtime tests/corpus",
+    "corpus": "bun test tests/corpus",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

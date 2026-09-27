@@ -1,5 +1,5 @@
 // Solids: finishing, booleans, transforms, patterns, inspection (PLAN §5 v1 surface).
-import { fillet as kFillet, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, distance as kDistance, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
+import { fillet as kFillet, booleanMany as kBooleanMany, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, distance as kDistance, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
 import { entityShape, entityName, faceOf, edgeOf, vertexOf, type OpRecord } from "@parasocial/naming";
 import { runOp, userError } from "./op";
 import { EntitySet } from "./selection";
@@ -187,21 +187,17 @@ function splitOpts(args: (Solid | OpOpts)[]): [Solid[], OpOpts] {
 }
 
 export function booleanOp(kind: "union" | "subtract" | "intersect", a: Solid, others: Solid[], opts: OpOpts): Solid {
-  let cur = a;
-  for (const b of others) {
-    if (!(b instanceof Solid)) userError(`${kind} expects solids`);
-    const A = cur.record,
-      B = b.record;
-    const rec = runOp({
-      type: kind,
-      tag: others.length === 1 ? opts.tag : undefined,
-      params: {},
-      inputs: [A, B],
-      build: () => ({ built: kBoolean(kind, A.shape, B.shape), historyOptions: { generatedFrom: ["edge"] } }),
-    });
-    cur = new Solid(rec, a.meta);
-  }
-  return cur;
+  for (const b of others) if (!(b instanceof Solid)) userError(`${kind} expects solids`);
+  const A = a.record;
+  const tools = others.map((o) => o.record);
+  const rec = runOp({
+    type: kind,
+    tag: opts.tag,
+    params: {},
+    inputs: [A, ...tools],
+    build: () => ({ built: kBooleanMany(kind, A.shape, tools.map((t) => t.shape)), historyOptions: { generatedFrom: ["edge"] } }),
+  });
+  return new Solid(rec, a.meta);
 }
 
 function transformOp(s: Solid, type: string, t: Parameters<typeof kTransform>[1], opts: OpOpts, role?: string): Solid {

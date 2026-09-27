@@ -199,6 +199,27 @@ export function boolean(kind: BooleanKind, a: Shape, b: Shape): Built {
   }));
 }
 
+/** Boolean of `a` with several tools at once (one history for all). */
+export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[]): Built {
+  if (tools.length === 1) return boolean(kind, a, tools[0]);
+  const O = oc();
+  return guard(kind, () => scoped(() => {
+    const mk = kind === "union" ? new O.BRepAlgoAPI_Fuse() : kind === "subtract" ? new O.BRepAlgoAPI_Cut() : new O.BRepAlgoAPI_Common();
+    const args = tmp(new O.NCollection_List_TopoDS_Shape());
+    args.Append(a);
+    const tl = tmp(new O.NCollection_List_TopoDS_Shape());
+    for (const t of tools) tl.Append(t);
+    mk.SetArguments(args);
+    mk.SetTools(tl);
+    mk.Build(progress());
+    if (!mk.IsDone() || mk.HasErrors()) {
+      mk.delete();
+      throw new KernelError(`${kind} failed`);
+    }
+    return { shape: downcast(mk.Shape()), maker: mk };
+  }));
+}
+
 export function simplify(shape: Shape): Built {
   const O = oc();
   return guard("simplify", () => {

@@ -83,32 +83,35 @@ export function faceInfo(face: Shape): FaceInfo {
     const len = Math.hypot(...normal) || 1;
     normal = normal.map((c) => c / len) as Vec3;
     const info: FaceInfo = { surface, area, center, normal };
-    if (surface === "plane") {
-      const pl = tmp(ad.Plane());
-      info.origin = p3(tmp(pl.Location()));
-    } else if (surface === "cylinder") {
-      const c = tmp(ad.Cylinder());
-      const ax = tmp(c.Axis());
-      info.origin = p3(tmp(ax.Location()));
-      info.axis = p3(tmp(ax.Direction()));
-      info.radius = c.Radius();
-    } else if (surface === "cone") {
-      const c = tmp(ad.Cone());
-      const ax = tmp(c.Axis());
-      info.origin = p3(tmp(ax.Location()));
-      info.axis = p3(tmp(ax.Direction()));
-      info.radius = c.RefRadius();
-    } else if (surface === "sphere") {
-      const s = tmp(ad.Sphere());
-      info.origin = p3(tmp(s.Location()));
-      info.radius = s.Radius();
-    } else if (surface === "torus") {
-      const t = tmp(ad.Torus());
-      const ax = tmp(t.Axis());
-      info.origin = p3(tmp(ax.Location()));
-      info.axis = p3(tmp(ax.Direction()));
-      info.radius = t.MajorRadius();
-    }
+    // some surface accessors (e.g. gp_Torus) aren't bound in every build: best effort
+    try {
+      if (surface === "plane") {
+        const pl = tmp(ad.Plane());
+        info.origin = p3(tmp(pl.Location()));
+      } else if (surface === "cylinder") {
+        const c = tmp(ad.Cylinder());
+        const ax = tmp(c.Axis());
+        info.origin = p3(tmp(ax.Location()));
+        info.axis = p3(tmp(ax.Direction()));
+        info.radius = c.Radius();
+      } else if (surface === "cone") {
+        const c = tmp(ad.Cone());
+        const ax = tmp(c.Axis());
+        info.origin = p3(tmp(ax.Location()));
+        info.axis = p3(tmp(ax.Direction()));
+        info.radius = c.RefRadius();
+      } else if (surface === "sphere") {
+        const s = tmp(ad.Sphere());
+        info.origin = p3(tmp(s.Location()));
+        info.radius = s.Radius();
+      } else if (surface === "torus") {
+        const t = tmp(ad.Torus());
+        const ax = tmp(t.Axis());
+        info.origin = p3(tmp(ax.Location()));
+        info.axis = p3(tmp(ax.Direction()));
+        info.radius = t.MajorRadius();
+      }
+    } catch {}
     return info;
   });
 }

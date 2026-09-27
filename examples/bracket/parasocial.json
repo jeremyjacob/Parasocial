@@ -1,0 +1,1 @@
+{ "name": "Bracket", "units": { "length": "mm", "angle": "deg" }, "configurations": [{ "name": "Default", "overrides": {} }, { "name": "Heavy", "overrides": { "bracket": { "thickness": "5", "width": "50" } } }] }

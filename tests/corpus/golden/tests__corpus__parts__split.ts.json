@@ -1,0 +1,20 @@
+{
+  "volume": 11400,
+  "area": 4140,
+  "faces": 10,
+  "edges": 24,
+  "vertices": 16,
+  "valid": true,
+  "faceNames": [
+    "split/block · cap.end",
+    "split/block · cap.end",
+    "split/block · cap.start",
+    "split/block · side · outline/bottom",
+    "split/block · side · outline/left",
+    "split/block · side · outline/right",
+    "split/block · side · outline/top",
+    "split/slotTool · xmax",
+    "split/slotTool · xmin",
+    "split/slotTool · zmin"
+  ]
+}

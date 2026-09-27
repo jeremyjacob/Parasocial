@@ -31,6 +31,24 @@
         "@parasocial/kernel": "workspace:*",
       },
     },
+    "packages/runtime": {
+      "name": "@parasocial/runtime",
+      "version": "0.0.0",
+      "dependencies": {
+        "@parasocial/api": "workspace:*",
+        "@parasocial/kernel": "workspace:*",
+        "@parasocial/naming": "workspace:*",
+      },
+    },
+    "tests": {
+      "name": "@parasocial/tests",
+      "dependencies": {
+        "@parasocial/api": "workspace:*",
+        "@parasocial/kernel": "workspace:*",
+        "@parasocial/naming": "workspace:*",
+        "@parasocial/runtime": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@parasocial/api": ["@parasocial/api@workspace:packages/api"],
@@ -38,6 +56,10 @@
     "@parasocial/kernel": ["@parasocial/kernel@workspace:packages/kernel"],
 
     "@parasocial/naming": ["@parasocial/naming@workspace:packages/naming"],
+
+    "@parasocial/runtime": ["@parasocial/runtime@workspace:packages/runtime"],
+
+    "@parasocial/tests": ["@parasocial/tests@workspace:tests"],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 

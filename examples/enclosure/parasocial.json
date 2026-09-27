@@ -1,0 +1,1 @@
+{ "name": "Enclosure", "units": { "length": "mm", "angle": "deg" }, "configurations": [{ "name": "Default", "overrides": {} }] }

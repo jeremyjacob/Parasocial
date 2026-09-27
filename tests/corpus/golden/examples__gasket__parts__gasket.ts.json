@@ -1,0 +1,28 @@
+{
+  "volume": 1651.3593,
+  "area": 2909.4407,
+  "faces": 18,
+  "edges": 48,
+  "vertices": 32,
+  "valid": true,
+  "faceNames": [
+    "gasket/sheet · cap.end",
+    "gasket/sheet · cap.start",
+    "gasket/sheet · side · edge/bottom",
+    "gasket/sheet · side · edge/left",
+    "gasket/sheet · side · edge/right",
+    "gasket/sheet · side · edge/top",
+    "gasket/sheet · side · keyway/end1",
+    "gasket/sheet · side · keyway/end2",
+    "gasket/sheet · side · keyway/side1",
+    "gasket/sheet · side · keyway/side2",
+    "gasket/sheet · side · outline/circle1",
+    "gasket/sheet · side · outline/circle2",
+    "gasket/sheet · side · outline/circle3",
+    "gasket/sheet · side · outline/circle4",
+    "gasket/sheet · side · window/bottom",
+    "gasket/sheet · side · window/left",
+    "gasket/sheet · side · window/right",
+    "gasket/sheet · side · window/top"
+  ]
+}

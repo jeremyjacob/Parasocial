@@ -1,0 +1,29 @@
+{
+  "volume": 17271.1764,
+  "area": 4976.8984,
+  "faces": 19,
+  "edges": 43,
+  "vertices": 26,
+  "valid": true,
+  "faceNames": [
+    "filletchain/slab · cap.end",
+    "filletchain/slab · cap.start",
+    "filletchain/slab · side · hole",
+    "filletchain/slab · side · plan/bottom",
+    "filletchain/slab · side · plan/left",
+    "filletchain/slab · side · plan/right",
+    "filletchain/slab · side · plan/top",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/slab · side · plan/bottom))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/slab · side · plan/left))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/slab · side · plan/right))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/slab · side · plan/top))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/verticals · fillet · ((filletchain/slab · side · plan/bottom) & (filletchain/slab · side · plan/left))))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/verticals · fillet · ((filletchain/slab · side · plan/bottom) & (filletchain/slab · side · plan/right))))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/verticals · fillet · ((filletchain/slab · side · plan/left) & (filletchain/slab · side · plan/top))))",
+    "filletchain/topEdge · fillet · ((filletchain/slab · cap.end) & (filletchain/verticals · fillet · ((filletchain/slab · side · plan/right) & (filletchain/slab · side · plan/top))))",
+    "filletchain/verticals · fillet · ((filletchain/slab · side · plan/bottom) & (filletchain/slab · side · plan/left))",
+    "filletchain/verticals · fillet · ((filletchain/slab · side · plan/bottom) & (filletchain/slab · side · plan/right))",
+    "filletchain/verticals · fillet · ((filletchain/slab · side · plan/left) & (filletchain/slab · side · plan/top))",
+    "filletchain/verticals · fillet · ((filletchain/slab · side · plan/right) & (filletchain/slab · side · plan/top))"
+  ]
+}

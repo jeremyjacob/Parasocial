@@ -1,0 +1,24 @@
+{
+  "volume": 57616.0773,
+  "area": 17863.5961,
+  "faces": 14,
+  "edges": 31,
+  "vertices": 20,
+  "valid": true,
+  "faceNames": [
+    "flange/body · side · bore",
+    "flange/body · side · bottom",
+    "flange/body · side · hub",
+    "flange/body · side · rim",
+    "flange/body · side · shoulder",
+    "flange/body · side · top",
+    "flange/bolt · side",
+    "flange/copy1 · #1 · (flange/bolt · side)",
+    "flange/copy2 · #2 · (flange/bolt · side)",
+    "flange/copy3 · #3 · (flange/bolt · side)",
+    "flange/copy4 · #4 · (flange/bolt · side)",
+    "flange/copy5 · #5 · (flange/bolt · side)",
+    "flange/edgeBreak · chamfer · ((flange/body · side · bottom) & (flange/body · side · rim))",
+    "flange/hubFillet · fillet · ((flange/body · side · hub) & (flange/body · side · shoulder))"
+  ]
+}

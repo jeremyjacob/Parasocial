@@ -1,0 +1,22 @@
+{
+  "volume": 2835.6302,
+  "area": 2340.6632,
+  "faces": 12,
+  "edges": 29,
+  "vertices": 19,
+  "valid": true,
+  "faceNames": [
+    "bracket/base · cap.end",
+    "bracket/base · cap.start",
+    "bracket/base · side · bore",
+    "bracket/base · side · outline/bottom",
+    "bracket/base · side · outline/left",
+    "bracket/base · side · outline/right",
+    "bracket/base · side · outline/top",
+    "bracket/chamfer1 · chamfer · ((bracket/base · cap.end) & (bracket/base · side · bore))",
+    "bracket/corners · fillet · ((bracket/base · side · outline/bottom) & (bracket/base · side · outline/left))",
+    "bracket/corners · fillet · ((bracket/base · side · outline/bottom) & (bracket/base · side · outline/right))",
+    "bracket/corners · fillet · ((bracket/base · side · outline/left) & (bracket/base · side · outline/top))",
+    "bracket/corners · fillet · ((bracket/base · side · outline/right) & (bracket/base · side · outline/top))"
+  ]
+}

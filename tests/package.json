@@ -1,0 +1,6 @@
+{
+  "name": "@parasocial/tests",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@parasocial/kernel": "workspace:*", "@parasocial/naming": "workspace:*", "@parasocial/api": "workspace:*", "@parasocial/runtime": "workspace:*" }
+}
