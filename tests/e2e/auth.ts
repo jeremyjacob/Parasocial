@@ -12,7 +12,8 @@ export async function virtualAuthenticator(page: Page) {
 
 export async function signUp(page: Page, name: string, base = "http://localhost:5173") {
   await page.goto(`${base}/signin`);
-  if (await page.getByTestId("to-signup").isVisible().catch(() => false)) await page.getByTestId("to-signup").click();
+  await page.locator("html[data-hydrated]").waitFor();
+  if (await page.getByTestId("to-signup").isVisible()) await page.getByTestId("to-signup").click();
   await page.getByTestId("name").fill(name);
   await page.getByTestId("create-account").click();
   await page.waitForURL((u) => !u.pathname.startsWith("/signin"), { timeout: 20000 });
@@ -20,6 +21,7 @@ export async function signUp(page: Page, name: string, base = "http://localhost:
 
 export async function signIn(page: Page, base = "http://localhost:5173") {
   await page.goto(`${base}/signin`);
+  await page.locator("html[data-hydrated]").waitFor();
   await page.getByTestId("signin-passkey").click();
   await page.waitForURL((u) => !u.pathname.startsWith("/signin"), { timeout: 20000 });
 }

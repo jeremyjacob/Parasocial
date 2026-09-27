@@ -128,9 +128,9 @@
 				{#each g.params as p (p.name)}
 					{@const changed = codeDefaultChanged(g.part, p)}
 					{#if p.options}
-						<div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] items-center gap-2">
-							<span class="flex items-center gap-1.5 truncate text-ui text-fg-secondary">
-								{#if p.overridden}<span class="size-1.5 rounded-full bg-override"></span>{/if}
+						<div class="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2">
+							<span class="relative flex h-7 items-center truncate text-ui {p.overridden ? 'text-fg' : 'text-fg-secondary'}">
+								{#if p.overridden}<span class="absolute top-1/2 -left-2.5 size-[5px] -translate-y-1/2 rounded-full bg-override"></span>{/if}
 								{p.label ?? p.name}
 							</span>
 							<Select
@@ -143,7 +143,7 @@
 						</div>
 					{:else}
 						<NumberField
-							label={p.label ?? p.name}
+							rowLabel={p.label ?? p.name}
 							value={typeof p.value === 'number' ? p.value / factor(p) : 0}
 							expression={p.overridden && p.expression && !/^\s*-?\d*\.?\d+\s*$/.test(p.expression) ? p.expression : undefined}
 							unit={p.unit}
@@ -155,7 +155,6 @@
 							source={p.source ? `${p.source.file.split('/').pop()}:${p.source.line}` : undefined}
 							error={p.error}
 							evaluate={evaluatorFor(g.part, p)}
-							size="sm"
 							oninput={(v) => ws.scrub(g.part, p.name, v * factor(p))}
 							oncommit={(v, expr) => commit(g.part, p, v, expr)}
 							onreset={() => ws.resetParam(g.part, p.name)}

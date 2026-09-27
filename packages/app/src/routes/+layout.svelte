@@ -19,7 +19,10 @@
 	// One icon grammar everywhere: 16px, 1.5 stroke. Override per-icon only with reason.
 	setLucideProps({ size: 16, strokeWidth: 1.5 });
 
-	onMount(() => theme.start());
+	onMount(() => {
+		theme.start();
+		document.documentElement.dataset.hydrated = 'true'; // tests wait for this before interacting
+	});
 </script>
 
 <!--

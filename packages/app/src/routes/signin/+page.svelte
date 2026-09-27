@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { KeyRound, ArrowRight, LoaderCircle } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { signIn, signUp, isCancel, browserSupportsWebAuthnAutofill } from '$lib/auth';
+	import { signIn, signUp, isCancel } from '$lib/auth';
 	import HeroArt from '$lib/components/app/hero-art.svelte';
 	import Logo from '$lib/components/app/logo.svelte';
 
@@ -52,14 +51,6 @@
 		}
 	}
 
-	onMount(async () => {
-		// passkey autofill: returning users pick their passkey straight from the field's suggestions
-		if (mode === 'signin' && (await browserSupportsWebAuthnAutofill())) {
-			signIn({ autofill: true })
-				.then(done)
-				.catch(() => {});
-		}
-	});
 </script>
 
 <svelte:head><title>{mode === 'signup' ? 'Create account' : 'Sign in'} · Parasocial</title></svelte:head>
@@ -101,10 +92,8 @@
 			{/if}
 		{:else}
 			<h1 class="text-heading font-semibold">Welcome back</h1>
-			<p class="mt-1 text-body text-fg-secondary">Sign in with the passkey on this device or your phone.</p>
+			<p class="mt-1 text-body text-fg-secondary">Use the passkey saved on this device, or scan from your phone.</p>
 			<div class="mt-5 flex flex-col gap-3">
-				<!-- passkey autofill anchor: the browser offers saved passkeys here -->
-				<Input placeholder="Name" autocomplete="username webauthn" aria-label="Name (passkey autofill)" data-testid="autofill" />
 				<Button variant="primary" size="lg" onclick={passkey} disabled={!!busy} class="w-full justify-center" data-testid="signin-passkey">
 					{#if busy === 'signin'}<LoaderCircle class="animate-spin" size={14} />{:else}<KeyRound size={14} />{/if}
 					Sign in with passkey

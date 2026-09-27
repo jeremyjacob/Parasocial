@@ -17,6 +17,8 @@
 		value: number;
 		/** The expression as typed ("=width/2", "1/4 in"), when the value came from one. */
 		expression?: string;
+		/** Full-width row label outside the field (params panel); also the scrub handle. */
+		rowLabel?: string;
 		/** Short leading label (Figma's "W", "X") — drag it to scrub. */
 		label?: string;
 		/** Leading icon instead of a letter (also a scrub handle). */
@@ -60,6 +62,7 @@
 		value = $bindable(),
 		expression = $bindable(),
 		label,
+		rowLabel,
 		icon: Icon,
 		unit,
 		min = -Infinity,
@@ -242,6 +245,21 @@
 </script>
 
 <div class={cn('flex min-w-0 flex-col gap-1', className)}>
+	<div class={rowLabel ? 'grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2' : 'contents'}>
+	{#if rowLabel}
+		<span
+			class={cn('relative flex h-7 min-w-0 cursor-ew-resize touch-none items-center text-ui select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
+			title={defaultValue !== undefined ? `${rowLabel} · default ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}${source ? ` · ${source}` : ''}` : rowLabel}
+			onpointerdown={onScrubDown}
+			onpointermove={onScrubMove}
+			onpointerup={onScrubUp}
+			onpointercancel={onScrubUp}
+			data-testid="param-label"
+		>
+			{#if overridden}<span aria-hidden="true" class="absolute top-1/2 -left-2.5 size-[5px] -translate-y-1/2 rounded-full bg-override"></span>{/if}
+			<span class="truncate">{rowLabel}</span>
+		</span>
+	{/if}
 	<div
 		class={cn('field group/nf', size === 'sm' && 'h-6', !(label || Icon) && 'pl-2', scrubbing && '[--field-ring:var(--border-focus)]')}
 		data-invalid={shownError ? '' : undefined}
@@ -273,7 +291,7 @@
 			autocomplete="off"
 			spellcheck="false"
 			role="spinbutton"
-			aria-label={ariaLabel ?? label}
+			aria-label={ariaLabel ?? rowLabel ?? label}
 			aria-valuenow={value}
 			aria-valuemin={Number.isFinite(min) ? min : undefined}
 			aria-valuemax={Number.isFinite(max) ? max : undefined}
@@ -328,6 +346,7 @@
 				)}
 			></span>
 		{/if}
+	</div>
 	</div>
 	{#if shownError}
 		<p id={errorId} class="px-0.5 text-label text-error" role="alert">{shownError}</p>

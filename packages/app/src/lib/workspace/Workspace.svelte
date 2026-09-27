@@ -153,7 +153,11 @@
 		// ⌘K and Escape work everywhere; single keys never fire while typing
 		const always = combo === 'mod+k' || combo === 'escape';
 		if (!cmd || (isTyping(e) && !always && !combo.startsWith('mod+'))) return;
-		if (isTyping(e) && combo.startsWith('mod+z')) return; // inputs own their undo
+		if (combo === 'escape' && isTyping(e)) return (e.target as HTMLElement).blur();
+		// text inputs own their undo; numeric fields commit on every change, so ⌘Z is the app's
+		const numeric = (e.target as HTMLElement | null)?.getAttribute?.('role') === 'spinbutton';
+		if (isTyping(e) && combo.includes('+z') && !numeric) return;
+		if (numeric && combo.includes('+z')) (e.target as HTMLElement).blur();
 		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen)) return;
 		e.preventDefault();
 		cmd.run();
