@@ -111,7 +111,7 @@
 			class={cn(
 				'flex h-6 items-center gap-1.5 [grid-area:slot] transition-opacity duration-[var(--duration-fast)]',
 				!pinned && 'pr-[9px]',
-				!pinned && 'group-hover/row:opacity-0 group-focus-within/row:opacity-0',
+				!pinned && 'group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0',
 				!pinned && showActions && 'opacity-0',
 				pinned && 'invisible group-hover/row:invisible'
 			)}
@@ -122,10 +122,10 @@
 		<div
 			class={cn(
 				'flex items-center gap-0.5 [grid-area:slot] transition-opacity duration-[var(--duration-fast)]',
-				pinned || showActions ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100'
+				pinned || showActions ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100'
 			)}
 		>
-			{#if actions}<span class={cn('flex items-center gap-0.5', pinned && 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100')}>{@render actions()}</span>{/if}
+			{#if actions}<span class={cn('flex items-center gap-0.5', pinned && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}>{@render actions()}</span>{/if}
 			{#if onIsolateChange}
 				<Tooltip label={isolated ? 'Show all parts' : 'Isolate'}>
 					{#snippet trigger(tp)}
@@ -134,7 +134,7 @@
 							type="button"
 							aria-label={isolated ? 'Show all parts' : `Isolate ${name}`}
 							aria-pressed={isolated}
-							class={cn(toggleClass, pinned && !isolated && 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100')}
+							class={cn(toggleClass, pinned && !isolated && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
 							onclick={toggleIsolate}><IsolateIcon on={isolated} /></button
 						>
 					{/snippet}
@@ -147,7 +147,7 @@
 						type="button"
 						aria-label="{visible ? 'Hide' : 'Show'} {name}"
 						aria-pressed={!visible}
-						class={cn(toggleClass, pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100')}
+						class={cn(toggleClass, pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
 						onclick={toggleVisible}>{#if visible}<Eye />{:else}<EyeOff />{/if}</button
 					>
 				{/snippet}

@@ -328,7 +328,8 @@ export class Viewer {
           selEdges.push(...(p.data.faceEdges[r.index] ?? []));
         } else if (r.kind === "edge") selEdges.push(r.index);
       }
-    // a selected part keeps its own colour; the outline carries the selection (Onshape-style)
+    // a selected part reads as orange (Onshape-style): a strong tint, shading still visible, plus the outline
+    if (partSelected) for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, { color: selFill, amount: 0.85 });
     p.setOutline(partSelected, selStroke);
     if (this.preselect?.part === id) {
       if (this.preselect.kind === "face") preEdges.push(...(p.data.faceEdges[this.preselect.index] ?? []));
