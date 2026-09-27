@@ -15,7 +15,7 @@ export default defineConfig({
 	preview: { headers: isolation },
 	resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
 	test: {
-		environment: 'jsdom',
+		environment: 'happy-dom',
 		include: ['src/**/*.test.ts']
 	}
 });

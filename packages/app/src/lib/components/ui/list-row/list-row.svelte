@@ -77,10 +77,15 @@
 			style="background-image:linear-gradient(100deg, transparent 30%, var(--accent-subtle) 50%, transparent 70%)"
 		></span>
 	{/if}
-	{#if leading}
-		{@render leading()}
-	{:else if color}
-		<ColorSwatch {color} size={12} class={cn(!visible && 'opacity-40')} />
+	<!-- Fixed 16px leading cell so swatches and file icons share one text column. -->
+	{#if leading || color}
+		<span class="flex w-4 shrink-0 items-center justify-center">
+			{#if leading}
+				{@render leading()}
+			{:else if color}
+				<ColorSwatch {color} size={12} class={cn(!visible && 'opacity-40')} />
+			{/if}
+		</span>
 	{/if}
 	<span class={cn('min-w-0 flex-1 truncate', visible ? 'text-fg' : 'text-fg-tertiary', selected && 'font-medium')}
 		>{name}</span

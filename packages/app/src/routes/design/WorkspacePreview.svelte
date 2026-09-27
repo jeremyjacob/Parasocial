@@ -4,7 +4,7 @@
 	import { TopBar } from '$lib/components/ui/top-bar';
 	import { Tabs } from '$lib/components/ui/tabs';
 	import { ListRow } from '$lib/components/ui/list-row';
-	import { IconButton } from '$lib/components/ui/button';
+	import { IconButton, Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Avatar } from '$lib/components/ui/avatar';
 	import { Select } from '$lib/components/ui/select';
@@ -107,6 +107,22 @@
 				</ListRow>
 				<ListRow name="Hinge pin" color={pc('straw')} visible={false} />
 			</div>
+
+			<!-- Agent presence: what's happening right now, without opening a thread. -->
+			<div class="mt-auto flex flex-col gap-2 border-t border-line-subtle p-3">
+				<span class="text-label font-medium text-fg-secondary">Activity</span>
+				<div class="flex items-start gap-2.5 rounded-md bg-input p-2.5">
+					<Avatar name="Claude Code" kind="agent" status="working" size={20} class="mt-px" />
+					<div class="flex min-w-0 flex-col gap-0.5">
+						<span class="text-ui text-fg"><span class="font-medium">Claude Code</span> is editing gasket.ts</span>
+						<span class="text-label text-fg-tertiary">Note #14 · “Gasket lip too tall” · 12 s</span>
+					</div>
+				</div>
+				<div class="flex items-center gap-2.5 px-2.5">
+					<Avatar name="Codex" kind="agent" size={20} />
+					<span class="truncate text-label text-fg-tertiary">Codex · idle · last write v13</span>
+				</div>
+			</div>
 		</aside>
 
 		<!-- Canvas -->
@@ -205,6 +221,11 @@
 					</PropertyRow>
 				</PropertySection>
 				<PropertySection title="Gasket" collapsible open={false} meta="2 params" />
+			</div>
+			<div class="flex h-11 shrink-0 items-center gap-2 border-t border-line-subtle pr-2 pl-4 text-label text-fg-tertiary">
+				<span class="size-[5px] rounded-full bg-override"></span>
+				<span class="tabular">3 overrides in M4</span>
+				<Button variant="ghost" size="sm" class="ml-auto text-fg-secondary">Reset all</Button>
 			</div>
 		</aside>
 	</div>

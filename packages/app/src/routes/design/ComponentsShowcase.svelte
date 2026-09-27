@@ -448,7 +448,7 @@
 	</div>
 </Section>
 
-<Section id="display" title="Display" description="Small, quiet status: 6px dots, 20px chips. Agents are squircles in inverted monochrome; working agents get an accent sweep.">
+<Section id="display" title="Display" description="Small, quiet status: 6px dots, 20px chips. Agents are graphite squircles with a sparkle; working agents get a slow accent sweep.">
 	<div class="grid grid-cols-2 gap-3">
 		<Specimen title="Kbd · Badge · StatusBadge">
 			<div class="flex flex-wrap items-center gap-2">

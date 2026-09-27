@@ -29,7 +29,7 @@
 			tokens: t('fill', '--accent', '--accent-hover', '--accent-subtle', '--override', '--status-ok', '--status-warning', '--status-error', '--status-info')
 		},
 		{
-			title: 'Selection',
+			title: 'Selection · overlays',
 			note: 'orange is reserved for this',
 			tokens: [
 				...t('fill', '--selection-preselect', '--selection-selected-stroke', '--selection-selected-fill'),

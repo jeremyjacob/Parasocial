@@ -16,7 +16,5 @@
 	</g>
 	<g fill="var(--fg-tertiary)" font-family="var(--font-sans)" font-size="7" font-weight="600" text-anchor="middle">
 		<text transform="translate(32 20.5) matrix(.866 .5 -.866 .5 0 0)" y="2.5">TOP</text>
-		<text transform="translate(22 37.75) matrix(.866 .5 0 1 0 0)" y="2" font-size="5.5">FRONT</text>
-		<text transform="translate(42 37.75) matrix(.866 -.5 0 1 0 0)" y="2" font-size="5.5">RIGHT</text>
 	</g>
 </svg>
