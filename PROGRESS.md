@@ -26,12 +26,15 @@ Living status for resuming after a context reset. PLAN.md is the source of truth
 - **M3 workspace** — done: passkey sign-in (one button), documents list (SSR + live Zero), examples import, workspace (viewport w/ selection label, status pill, controls, view cube drag, context menu), parts/scripts/history panels, params (Figma fields, scrub, expressions, configurations, overrides, code-default-changed), properties (doc/part/entity + provenance), ⌘K, shortcuts + cheatsheet, undo/redo (own mutations), cache-first open (Cache Storage), SW WASM precache + brotli, progressive meshing (coarse while scrubbing), clay art.
 - **M4 notes + markup** — done: note mode (C, click or selection), draft composer, snapshot upload → note.create, pins (follow geometry via closest point, occlusion, clustering, ghost when orphaned), resolution on every regen (name → query → nearest → orphaned; engine errors never orphan), threads (mentions, activity log, version links, status, remove/restore, filters), re-anchor, pencil (surface-projected strokes, colors, eraser, crossed entities → targets), compare (snapshot engine, ghost + blend slider, hold B), History view read-only + restore.
 
+- **M5 MCP** — done: OAuth 2.1 AS (metadata, DCR, PKCE S256, refresh rotation w/ family revoke, revoke), consent page, Settings (passkeys, connected agents + revoke, admin sign-up/invites), MCP at /mcp (Web-standard streamable HTTP; sessions = agent identity per user+client+label; avatars; claims released on disconnect), 31 tools (§7), resources (instructions, generated API d.ts, examples, document), engine pool (headless Chromium per document, same build, warm per-op cache, 10 s timeouts w/ worker replacement, no egress), STEP/STL/3MF export. Verified live: `scripts/mcp-cli.ts` (OAuth through the consent screen with a virtual passkey) → list_notes → claim → render → edit_script → measure/query → reply (Awaiting review, linked version).
+- **M6 breadth + output** — done: sweep, loft, shell, draft, split, holes (simple/counterbore/countersink), thicken, extrude up-to, rounded rect/polyline, sketch offset/mirror; measure tool (dimension + "note this measurement"); section view; export dialog; Code mode (Monaco lazy + idle prefetch, live preview, ⌘S versions, dirty-buffer banner, markers, geometry↔source).
+- Subagent passes merged: motion + spacing; UI copy; logo ("Face" mark).
+
 ## In progress
-- M5 MCP (OAuth 2.1 AS, MCP endpoint, tools, engine pool).
+- M7 polish.
 
 ## Blocked / stubs
-- engine-pool container is a stub (M5).
-- OAuth/MCP not started (M5).
+- deploy: engine-pool container image not yet written for compose (service runs on host in dev via `bun packages/engine-pool/src/server.ts`); app Dockerfile untested.
 
 ## Queued (user requests)
 - **Subagent pass: motion + spacing** — once M4 UI settles: more motion (snappy, utilitarian, polished), spacing/padding refinement across the workspace.
