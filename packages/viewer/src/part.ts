@@ -288,6 +288,7 @@ export class PartObject {
 
   /** Swap to pick materials for the ID pass. */
   pickMode(on: boolean, edgesPickable: boolean, facesPickable: boolean) {
+    if (this.cap) this.cap.visible = !on && !!this.faceMaterial.clippingPlanes;
     this.faceMesh.visible = !on && this.faceMesh.userData.shown !== false;
     this.edgeLines.visible = !on;
     this.overlay.visible = !on && this.overlay.geometry.attributes.instanceStart !== undefined && this.overlay.userData.active === true;
@@ -304,7 +305,32 @@ export class PartObject {
     return cnt ? target.divideScalar(cnt) : target;
   }
 
+  private cap: THREE.Mesh | null = null;
+
+  /** Section view: clip everything of this part; inside surfaces render flat in `capColor`, reading as a cut. */
+  setClip(planes: THREE.Plane[], capColor: THREE.Color) {
+    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial] as THREE.Material[];
+    for (const m of mats) {
+      m.clippingPlanes = planes.length ? planes : null;
+      (m as any).clipping = planes.length > 0;
+      m.needsUpdate = true;
+    }
+    if (planes.length) {
+      if (!this.cap) {
+        this.cap = new THREE.Mesh(this.faceMesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.BackSide, color: capColor, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
+        this.cap.renderOrder = -0.5;
+        this.group.add(this.cap);
+      }
+      const cm = this.cap.material as THREE.MeshBasicMaterial;
+      cm.color.copy(capColor);
+      cm.clippingPlanes = planes;
+      cm.needsUpdate = true;
+      this.cap.visible = true;
+    } else if (this.cap) this.cap.visible = false;
+  }
+
   dispose() {
+    if (this.cap) (this.cap.material as THREE.Material).dispose();
     this.faceMesh.geometry.dispose();
     this.edgeLines.geometry.dispose();
     this.pickEdges.geometry.dispose();

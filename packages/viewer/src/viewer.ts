@@ -176,6 +176,7 @@ export class Viewer {
     if (this.preselect && !valid(this.preselect)) this.preselect = null;
     this.errors = this.errors.filter(valid);
     this.restyle(d.id);
+    if (this.section) p.setClip([this.section], new THREE.Color(this.theme.dark ? "#5a5a60" : "#b9bac0"));
     this.updateGrid();
     this.requestRender();
   }
@@ -465,6 +466,49 @@ export class Viewer {
       l.renderOrder = 4;
       l.userData.id = s.id;
       this.markup.add(l);
+    }
+    this.requestRender();
+  }
+
+  // ---------- section view ----------
+  private section: THREE.Plane | null = null;
+
+  /** Clip the model by a plane (normal points at the kept side), or null to clear. */
+  setSection(plane: { origin: number[]; normal: number[] } | null) {
+    this.renderer.localClippingEnabled = true;
+    this.section = plane ? new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3().fromArray(plane.normal).normalize().negate(), new THREE.Vector3().fromArray(plane.origin)) : null;
+    const cap = new THREE.Color(this.theme.dark ? "#5a5a60" : "#b9bac0");
+    for (const p of this.parts.values()) p.setClip(this.section ? [this.section] : [], cap);
+    this.requestRender();
+  }
+
+  getSection() {
+    if (!this.section) return null;
+    const n = this.section.normal.clone().negate();
+    return { origin: this.section.coplanarPoint(new THREE.Vector3()).toArray(), normal: n.toArray() };
+  }
+
+  // ---------- dimensions (measure tool) ----------
+  private dims = new THREE.Group();
+  /** Draw a dimension between two points (or clear with null). */
+  setDimension(a: THREE.Vector3 | null, b?: THREE.Vector3) {
+    for (const c of this.dims.children) (c as any).geometry?.dispose?.(), (c as any).material?.dispose?.();
+    this.dims.clear();
+    if (!this.dims.parent) this.scene.add(this.dims);
+    if (a && b) {
+      const g = new LineGeometry();
+      g.setPositions([...a.toArray(), ...b.toArray()]);
+      const line = new Line2(g, withDepthBias(new LineMaterial({ color: new THREE.Color(this.theme.accent), linewidth: 2, resolution: this.resolution, worldUnits: false, depthTest: false, transparent: true }), 0.001) as LineMaterial);
+      line.renderOrder = 7;
+      const r = Math.max(0.3, a.distanceTo(b) * 0.012);
+      const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(this.theme.accent), depthTest: false, transparent: true });
+      for (const p of [a, b]) {
+        const d = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), dotMat);
+        d.position.copy(p);
+        d.renderOrder = 7;
+        this.dims.add(d);
+      }
+      this.dims.add(line);
     }
     this.requestRender();
   }
