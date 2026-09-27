@@ -25,11 +25,19 @@
       "dependencies": {
         "@fontsource-variable/inter": "^5.3.0",
         "@lucide/svelte": "^1.48.0",
+        "@parasocial/api": "workspace:*",
+        "@parasocial/kernel": "workspace:*",
+        "@parasocial/naming": "workspace:*",
+        "@parasocial/runtime": "workspace:*",
+        "@parasocial/sync": "workspace:*",
+        "@parasocial/viewer": "workspace:*",
+        "@simplewebauthn/browser": "^14.0.0",
         "bits-ui": "^2.19.3",
         "clsx": "^2.1.1",
         "svelte-toolbelt": "^0.10.6",
         "tailwind-merge": "^3.7.0",
         "tailwind-variants": "^3.3.1",
+        "three": "^0.186.1",
       },
       "devDependencies": {
         "@sveltejs/kit": "^2.70.3",
@@ -517,6 +525,8 @@
     "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.11", "", { "os": "win32", "cpu": "x64" }, "sha512-/PzKqzAJ03i19oy2ItPvyvaVjOjBCNnfaJs8yvUdGBKmiESgnrJSQ2awd81QzFbbnAmu7YO9ZnJrDCb9VSJPRA=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
+
+    "@simplewebauthn/browser": ["@simplewebauthn/browser@14.0.0", "", {}, "sha512-1odWVqeEBTl7lJ9zMKLEsmTlnyrDO5iRcTvfMKKk1WThUnp/i8JJdffdj2icP+tty159s4PgwE3BiMoEW9NFow=="],
 
     "@simplewebauthn/server": ["@simplewebauthn/server@14.0.3", "", { "dependencies": { "@hexagon/base64": "^1.1.27", "@levischuck/tiny-cbor": "^0.2.2", "@peculiar/asn1-android": "^2.6.0", "@peculiar/asn1-ecc": "^2.6.1", "@peculiar/asn1-rsa": "^2.6.1", "@peculiar/asn1-schema": "^2.6.0", "@peculiar/asn1-x509": "^2.6.1", "@peculiar/asn1-x509-post-quantum": "^2.9.4", "@peculiar/x509": "^2.1.0", "reflect-metadata": "^0.2.2" } }, "sha512-D39/0fiDiYmGV+nraY9s63D1Ho2AX/waMLy22/9gUadTUuvbAnstfb4bpbHYbwZuV5ZLDYN1SmzDKuiHzKAA4Q=="],
 

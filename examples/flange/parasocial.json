@@ -1,1 +1,24 @@
-{ "name": "Pipe flange", "units": { "length": "mm", "angle": "deg" }, "configurations": [{ "name": "Default", "overrides": {} }, { "name": "M6", "overrides": { "flange": { "boltDiameter": "6.6", "bolts": "8" } } }] }
+{
+  "format": "parasocial/1",
+  "name": "Pipe flange",
+  "units": "mm",
+  "configurations": [
+    {
+      "name": "M6",
+      "overrides": [
+        {
+          "part": "flange",
+          "name": "boltDiameter",
+          "expression": "6.6",
+          "value": 6.6
+        },
+        {
+          "part": "flange",
+          "name": "bolts",
+          "expression": "8",
+          "value": 8
+        }
+      ]
+    }
+  ]
+}

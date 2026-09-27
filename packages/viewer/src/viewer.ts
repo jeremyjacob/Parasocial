@@ -172,6 +172,16 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** The mesh currently shown for a part (e.g. to write derived-data caches). */
+  meshOf(id: string) {
+    return this.parts.get(id)?.data.mesh;
+  }
+
+  /** Replace the error highlights of one part, keeping other parts' highlights. */
+  setPartErrors(part: string, refs: EntityRef[]) {
+    this.setErrors([...this.errors.filter((r) => r.part !== part), ...refs]);
+  }
+
   partIds() {
     return [...this.parts.keys()];
   }

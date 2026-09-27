@@ -1,1 +1,6 @@
-{ "name": "Knob", "units": { "length": "mm", "angle": "deg" }, "configurations": [{ "name": "Default", "overrides": {} }] }
+{
+  "format": "parasocial/1",
+  "name": "Knob",
+  "units": "mm",
+  "configurations": []
+}

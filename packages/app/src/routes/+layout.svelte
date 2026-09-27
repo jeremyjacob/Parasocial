@@ -7,7 +7,14 @@
 
 	import { setLucideProps } from '@lucide/svelte';
 
-	let { children } = $props();
+	import { browser } from '$app/environment';
+	import { setZero } from '@parasocial/sync/svelte';
+	import { zeroFor } from '$lib/zero';
+
+	let { children, data } = $props();
+
+	// Zero is client-only; SSR pages (sign-in, documents list) render from the server load.
+	if (browser && data.user) setZero(zeroFor(data.user.userID));
 
 	// One icon grammar everywhere: 16px, 1.5 stroke. Override per-icon only with reason.
 	setLucideProps({ size: 16, strokeWidth: 1.5 });

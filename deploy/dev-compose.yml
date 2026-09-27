@@ -1,0 +1,33 @@
+# Development services: Postgres + zero-cache. The app (vite dev, :5173) and the engine
+# origin (:5174) run on the host; zero-cache calls back into the host app.
+# Start everything with `bun run dev` from the repo root.
+name: parasocial-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+    environment: { POSTGRES_USER: parasocial, POSTGRES_PASSWORD: dev, POSTGRES_DB: parasocial }
+    ports: ["54330:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U parasocial -d parasocial"], interval: 2s, timeout: 3s, retries: 30 }
+  zero-cache:
+    image: rocicorp/zero:1.9.0
+    depends_on: { postgres: { condition: service_healthy } }
+    environment:
+      ZERO_UPSTREAM_DB: postgres://parasocial:dev@postgres:5432/parasocial
+      ZERO_CVR_DB: postgres://parasocial:dev@postgres:5432/parasocial
+      ZERO_CHANGE_DB: postgres://parasocial:dev@postgres:5432/parasocial
+      ZERO_REPLICA_FILE: /data/zero.db
+      ZERO_APP_PUBLICATIONS: parasocial_zero
+      ZERO_PORT: "4848"
+      ZERO_MUTATE_URL: http://host.docker.internal:5173/api/zero/mutate
+      ZERO_QUERY_URL: http://host.docker.internal:5173/api/zero/query
+      ZERO_MUTATE_FORWARD_COOKIES: "true"
+      ZERO_QUERY_FORWARD_COOKIES: "true"
+      ZERO_MUTATE_API_KEY: dev-zero-key
+      ZERO_QUERY_API_KEY: dev-zero-key
+      ZERO_ADMIN_PASSWORD: dev
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["4848:4848"]
+    volumes: [zerodata:/data]
+volumes: { pgdata: {}, zerodata: {} }

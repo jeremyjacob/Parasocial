@@ -135,6 +135,7 @@ const paramOverrides = table("paramOverrides")
     name: string(),
     expression: string(),
     value: json<number | string | boolean>(),
+    codeDefault: string().from("code_default").optional(),
     updatedAt: number().from("updated_at"),
   })
   .primaryKey("id");

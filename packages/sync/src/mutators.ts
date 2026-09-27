@@ -277,7 +277,8 @@ const paramKey = z.object({ part: z.string().min(1), name: z.string().min(1) });
 const overrideInput = paramKey.extend({
   expression: z.string().min(1).max(500),
   value: paramValue,
-  codeDefault: z.string().optional(), // for the version message when there was no override before
+  codeDefault: z.string().optional(), // the code default at the time (version message; "code default changed" hint)
+  rebase: z.boolean().optional(), // "keep": accept the new code default under this override
 });
 const snapshotOverride = paramKey.extend({ expression: z.string(), value: paramValue });
 
@@ -429,6 +430,8 @@ async function applyParamsImpl(
       name: s.name,
       expression: s.expression,
       value: s.value,
+      // keep the default the override was first made against; an explicit "keep" re-bases it
+      codeDefault: (s as { rebase?: boolean }).rebase ? (s.codeDefault ?? null) : (prev?.codeDefault ?? s.codeDefault ?? null),
       updatedAt: now,
     });
     entries[key(s)] = { kind: "param", label: label(s), from: prev?.expression ?? s.codeDefault ?? "default", to: s.expression };

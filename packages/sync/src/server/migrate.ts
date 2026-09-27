@@ -9,8 +9,9 @@
 import postgres from "postgres";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const MIGRATIONS_DIR = join(import.meta.dir, "../../migrations");
+export const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations", import.meta.url));
 const LOCK_ID = 0x7061_7261; // "para"
 
 export async function migrate(

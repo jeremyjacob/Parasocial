@@ -17,6 +17,12 @@
 		user: Person;
 		documentMenu?: MenuEntry[];
 		onCommand?: () => void;
+		/** Right-side actions (e.g. Connect agent), before the account avatar. */
+		actions?: import('svelte').Snippet;
+		/** Account control; defaults to a plain avatar. */
+		account?: import('svelte').Snippet;
+		/** Presence control; defaults to the agent avatar stack. */
+		presence?: import('svelte').Snippet;
 		class?: string;
 	};
 	let {
@@ -28,6 +34,9 @@
 		user,
 		documentMenu = [{ label: 'Rename' }, { label: 'Duplicate' }, { label: 'Export…', shortcut: ['mod', 'shift', 'E'] }],
 		onCommand,
+		actions,
+		account,
+		presence,
 		class: className
 	}: Props = $props();
 </script>
@@ -69,13 +78,17 @@
 	/>
 
 	<div class="flex items-center justify-end gap-1">
-		<span class="mr-1 flex items-center gap-1.5">
-			<AvatarStack people={agents} size={24} />
-			<span class="text-label text-fg-secondary tabular">{agents.length}</span>
-		</span>
+		{#if presence}
+			{@render presence()}
+		{:else if agents.length}
+			<span class="mr-1 flex items-center gap-1.5">
+				<AvatarStack people={agents} size={24} />
+				<span class="text-label text-fg-secondary tabular">{agents.length}</span>
+			</span>
+		{/if}
 		<IconButton label="Command palette" shortcut={['mod', 'K']} onclick={onCommand}><CommandIcon /></IconButton>
 		<ThemeToggle variant="menu" />
-		<Button variant="primary" size="md" class="ml-1">Share</Button>
-		<Avatar {...user} size={28} class="ml-1.5" />
+		{#if actions}{@render actions()}{/if}
+		{#if account}{@render account()}{:else}<Avatar {...user} size={28} class="ml-1.5" />{/if}
 	</div>
 </header>

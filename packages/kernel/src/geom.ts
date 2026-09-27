@@ -95,7 +95,7 @@ export function faceInfo(face: Shape): FaceInfo {
         info.axis = p3(tmp(ax.Direction()));
         info.radius = c.Radius();
       } else if (surface === "cone") {
-        const c = tmp(ad.Cone());
+        const c: any = tmp((ad as any).Cone());
         const ax = tmp(c.Axis());
         info.origin = p3(tmp(ax.Location()));
         info.axis = p3(tmp(ax.Direction()));
@@ -105,7 +105,7 @@ export function faceInfo(face: Shape): FaceInfo {
         info.origin = p3(tmp(s.Location()));
         info.radius = s.Radius();
       } else if (surface === "torus") {
-        const t = tmp(ad.Torus());
+        const t: any = tmp((ad as any).Torus());
         const ax = tmp(t.Axis());
         info.origin = p3(tmp(ax.Location()));
         info.axis = p3(tmp(ax.Direction()));

@@ -120,3 +120,18 @@ test("budgets: warm param change < 100 ms, cold regen < 2 s (engine only)", () =
   console.log("bracket cold", cold.timings.total.toFixed(1), "warm param", warm.timings.total.toFixed(1), warm.timings);
   expect(warm.timings.total).toBeLessThan(100);
 });
+
+test("pack/unpack round-trips a regeneration result", async () => {
+  const { packResult, unpackResult, derivedKey } = await import("../src/pack");
+  const e = new Engine();
+  e.setDocument({ scripts: docFrom("bracket") });
+  const r = e.regenerate("bracket");
+  const back = unpackResult(packResult({ ...r, names: { face: e.names("bracket").face, edge: [] } }))!;
+  expect(back.faces).toEqual(JSON.parse(JSON.stringify(r.faces)));
+  expect([...back.mesh!.indices]).toEqual([...r.mesh!.indices]);
+  expect([...back.mesh!.edgeRanges]).toEqual([...r.mesh!.edgeRanges]);
+  expect(back.names!.face.length).toBe(r.faces.length);
+  const k1 = await derivedKey({ part: "bracket", scripts: { "parts/a.ts": "x" }, overrides: { w: 1 }, build: "b" });
+  const k2 = await derivedKey({ part: "bracket", scripts: { "parts/a.ts": "x" }, overrides: { w: 2 }, build: "b" });
+  expect(k1).not.toBe(k2);
+});

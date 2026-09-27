@@ -62,12 +62,14 @@ export function circleEdge(center: Vec3, normal: Vec3, radius: number): Shape {
 export function splineEdge(points: Vec3[], closed = false): Shape {
   const O = oc();
   return guard("spline", () => scoped(() => {
-    const arr = tmp(new O.NCollection_HArray1_gp_Pnt(1, points.length));
-    points.forEach((p, i) => arr.SetValue(i + 1, pnt(p)));
-    const interp = tmp(new O.GeomAPI_Interpolate(arr, closed, 1e-6));
-    interp.Perform();
-    if (!interp.IsDone()) throw new KernelError("spline interpolation failed");
-    return tmp(new O.BRepBuilderAPI_MakeEdge(tmp(interp.Curve()))).Edge();
+    if (points.length < 2) throw new KernelError("spline needs at least 2 points");
+    const pts = closed ? [...points, points[0]] : points;
+    const arr: any = tmp(new O.NCollection_Array1_gp_Pnt(1, pts.length));
+    pts.forEach((p, i) => arr.SetValue(i + 1, pnt(p)));
+    const b = tmp(new O.GeomAPI_PointsToBSpline());
+    b.Init(arr, 3, 8, O.GeomAbs_Shape.GeomAbs_C2, 1e-4);
+    if (!b.IsDone()) throw new KernelError("spline fit failed; check the points aren't coincident");
+    return tmp(new O.BRepBuilderAPI_MakeEdge(tmp(b.Curve()))).Edge();
   }));
 }
 

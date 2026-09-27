@@ -11,7 +11,13 @@ const isolation = {
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
-	server: { headers: isolation },
+	server: {
+		headers: isolation,
+		// zero-cache (docker) calls back into the dev server for mutators and synced queries
+		allowedHosts: ['host.docker.internal'],
+		// zero-cache must be same-origin so the session cookie reaches it (see packages/sync/README.md)
+		proxy: { '/zero': { target: process.env.ZERO_CACHE_URL ?? 'http://localhost:4848', ws: true, rewrite: (p) => p.replace(/^\/zero/, '') } }
+	},
 	preview: { headers: isolation },
 	resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
 	test: {

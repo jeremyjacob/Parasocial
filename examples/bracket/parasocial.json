@@ -1,1 +1,24 @@
-{ "name": "Bracket", "units": { "length": "mm", "angle": "deg" }, "configurations": [{ "name": "Default", "overrides": {} }, { "name": "Heavy", "overrides": { "bracket": { "thickness": "5", "width": "50" } } }] }
+{
+  "format": "parasocial/1",
+  "name": "Bracket",
+  "units": "mm",
+  "configurations": [
+    {
+      "name": "Heavy",
+      "overrides": [
+        {
+          "part": "bracket",
+          "name": "thickness",
+          "expression": "5",
+          "value": 5
+        },
+        {
+          "part": "bracket",
+          "name": "width",
+          "expression": "50",
+          "value": 50
+        }
+      ]
+    }
+  ]
+}
