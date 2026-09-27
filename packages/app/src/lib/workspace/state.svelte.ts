@@ -47,6 +47,8 @@ export class WorkspaceState {
 	hidden = $state<string[]>([]);
 	isolated = $state<string[]>([]);
 	openScript = $state<string | null>(null);
+	/** Section view (S): axis, offset along it (mm), flipped. */
+	section = $state<{ axis: 'X' | 'Y' | 'Z'; offset: number; flip: boolean } | null>(null);
 	revealLine = $state<number | null>(null);
 
 	// ---- engine-derived metadata ----

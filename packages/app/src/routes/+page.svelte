@@ -62,7 +62,7 @@
 			await r.client;
 			goto(`/d/${id}`);
 		} catch (err) {
-			toast.error?.(`Couldn't open ${ex.name}: ${(err as Error).message}`);
+			toast.error?.(`Couldn't open ${ex.name}. Try again.`);
 		} finally {
 			importing = '';
 		}
@@ -77,7 +77,7 @@
 			if (!f) return;
 			const res = await fetch('/api/documents/import', { method: 'POST', body: f, headers: { 'Content-Type': 'application/zip' } });
 			const body = await res.json().catch(() => ({}));
-			if (!res.ok) return toast.error?.(body.message ?? 'Import failed');
+			if (!res.ok) return toast.error?.(body.message ?? "Couldn't import that file");
 			goto(`/d/${body.id ?? body.documentID}`);
 		};
 		input.click();
@@ -99,9 +99,6 @@
 			<section class="animate-enter flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
 				<HeroArt name="hero" fit="contain" class="relative h-[300px] w-full max-w-[640px]" />
 				<h1 class="mt-2 text-heading font-semibold">Create your first document</h1>
-				<p class="mt-1 max-w-[440px] text-body text-fg-secondary">
-					Parts are TypeScript scripts. Review them here, pin notes on faces and edges, and let your agents make the changes.
-				</p>
 				<Button variant="primary" size="lg" class="mt-5" onclick={() => (newOpen = true)}><Plus size={14} /> New document</Button>
 			</section>
 		{:else}
@@ -132,8 +129,7 @@
 
 		{#if examples.length}
 			<section class="animate-enter mt-12" style="--ps-delay: 60ms">
-				<h2 class="mb-1 text-ui font-semibold">Examples</h2>
-				<p class="mb-4 text-ui text-fg-secondary">Open a copy to explore. Each is a few short scripts with params and configurations.</p>
+				<h2 class="mb-4 text-ui font-semibold">Examples</h2>
 				<ul class="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3" data-testid="examples">
 					{#each examples as ex, i (ex.slug)}
 						<li class="animate-enter" style="--ps-delay: {Math.min(i, 8) * 30}ms">
@@ -159,7 +155,7 @@
 	</main>
 </div>
 
-<Dialog bind:open={newOpen} title="New document" description="An empty document. Add a part, or connect an agent to write one.">
+<Dialog bind:open={newOpen} title="New document">
 	<form id="new-doc" onsubmit={create} class="flex flex-col gap-1.5">
 		<span class="text-label text-fg-secondary">Name</span>
 		<Input bind:value={newName} placeholder="Untitled" autofocus data-testid="new-document-name" />

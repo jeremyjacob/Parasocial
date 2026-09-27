@@ -120,6 +120,14 @@ export class EngineClient {
   regenerateSnapshot(key: string, doc: DocumentState, part: string) {
     return this.call<PartResult>({ op: "regenerateSnapshot", key, doc, part });
   }
+  /** Export a part as STEP / STL / 3MF bytes. */
+  async exportPart(part: string, format: "step" | "stl" | "3mf"): Promise<Uint8Array> {
+    const r = await this.call<{ base64: string }>({ op: "export", part, format });
+    const bin = atob(r.base64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
   opsAtLine(part: string, file: string, line: number) {
     return this.call<string[]>({ op: "opsAtLine", part, file, line });
   }

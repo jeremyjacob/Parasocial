@@ -9,7 +9,7 @@ import { toast } from '$lib/components/ui/toast';
 import type { WorkspaceState } from './state.svelte';
 
 export type DraftTarget = { ref: EntityRef; point: Vec3; normal?: Vec3 };
-export type Draft = { targets: DraftTarget[]; strokeIDs: string[]; screen: { x: number; y: number } };
+export type Draft = { targets: DraftTarget[]; strokeIDs: string[]; screen: { x: number; y: number }; text?: string };
 export type Pin = { noteID: string; number: number; status: Note['status']; orphaned: boolean; removed: boolean; point: Vec3; part: string; resolution: string; authorKind: 'human' | 'agent'; authorName: string };
 
 export const STROKE_COLORS = ['#e5484d', '#3e63dd', '#30a46c', '#18181b'] as const;
@@ -37,9 +37,9 @@ export class NotesController {
 	}
 
 	// ---------- drafting ----------
-	startFromTargets(targets: DraftTarget[], screen: { x: number; y: number }) {
+	startFromTargets(targets: DraftTarget[], screen: { x: number; y: number }, text?: string) {
 		if (!targets.length) return;
-		this.draft = { targets, strokeIDs: this.draft?.strokeIDs ?? [], screen };
+		this.draft = { targets, strokeIDs: this.draft?.strokeIDs ?? [], screen, text };
 		this.ws.rightTab = 'notes';
 	}
 
@@ -79,7 +79,7 @@ export class NotesController {
 			// snapshot of the view (with markup) → upload first, then reference (§3)
 			const blob = await ws.viewer.snapshot('image/webp', 0.85);
 			const up = await fetch(`/api/blobs?document=${encodeURIComponent(ws.documentID)}`, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/webp' } });
-			if (!up.ok) throw new Error(`Couldn't save the note (${up.status})`);
+			if (!up.ok) throw new Error("Couldn't save the note. Try again.");
 			const { hash } = await up.json();
 			const cam = ws.viewer.cameraState();
 			const id = newID();
@@ -88,6 +88,7 @@ export class NotesController {
 				camera: { position: cam.position as Vec3, target: cam.target as Vec3, up: cam.up as Vec3, fov: cam.fov, ortho: cam.ortho },
 				version: ws.versions[0]?.id ?? '',
 				configuration: ws.activeConfig?.name ?? 'Default',
+				sectionPlane: ws.viewer.getSection() ?? undefined,
 				snapshot: hash
 			};
 			await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs: d.strokeIDs } as any), 'Add note').then((r) => r.client);

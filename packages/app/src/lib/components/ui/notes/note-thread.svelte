@@ -43,7 +43,7 @@
 				<textarea
 					bind:value={reply}
 					rows="1"
-					placeholder="Reply… @ for params, # for parts"
+					placeholder="Reply…"
 					aria-label="Reply"
 					class="field-sizing-content max-h-32 min-h-6 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary"
 				></textarea>

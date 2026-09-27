@@ -26,7 +26,7 @@
 				<li>Read your documents, notes and scripts</li>
 				<li>Edit scripts and params, reply to notes</li>
 			</ul>
-			<p class="mt-3 flex items-center gap-1.5 text-label text-fg-tertiary"><ShieldCheck size={12} /> Every change is a version you can restore. Revoke access anytime in Settings.</p>
+			<p class="mt-3 flex items-center gap-1.5 text-label text-fg-tertiary"><ShieldCheck size={12} /> You can revoke access anytime in Settings.</p>
 			<form method="POST" class="mt-5 flex justify-end gap-2">
 				<Button variant="ghost" type="submit" name="decision" value="deny" data-testid="deny">Deny</Button>
 				<Button variant="primary" type="submit" name="decision" value="approve" data-testid="approve">Allow</Button>

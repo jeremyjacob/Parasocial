@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { Crosshair, Copy, EyeOff, Focus, Code2, MessageCircle, Ruler, Layers, Plus, Bot, Box } from '@lucide/svelte';
+	import { Crosshair, Copy, EyeOff, Focus, Code2, MessageCircle, Ruler, Layers, Plus, Bot, Box, X, FlipVertical2 } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, SelectionLabel, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
 	import { ContextMenu, type MenuEntry } from '$lib/components/ui/menu';
-	import { Button } from '$lib/components/ui/button';
+	import { Button, IconButton } from '$lib/components/ui/button';
+	import { SegmentedControl } from '$lib/components/ui/segmented-control';
+	import { Slider } from '$lib/components/ui/slider';
 	import { toast } from '$lib/components/ui/toast';
 	import { theme } from '$lib/theme.svelte';
 	import { num } from '$lib/format';
@@ -54,6 +56,7 @@
 		ws.viewer = viewer;
 		(window as any).__viewer = viewer; // test hook
 		viewer.on('camera', updateLabel);
+		viewer.on('camera', () => updateDim());
 		// re-apply any results that arrived before the viewer existed
 		ws.sync();
 	});
@@ -256,15 +259,63 @@
 		return { value: r.name, unit: '' };
 	});
 
+	// ---- measure tool (M): a dimension between two entities, "Note this measurement" ----
+	let dim = $state.raw<{ a: THREE.Vector3; b: THREE.Vector3; distance: number; angle?: number } | null>(null);
+	let dimPos = $state<{ x: number; y: number } | null>(null);
+
 	async function measureSelection() {
 		measured = null;
+		dim = null;
+		viewer?.setDimension(null);
 		const sel = ws.selection;
 		if (sel.length !== 2 || !ws.engine || !ws.kernelReady) return;
 		try {
 			const m = await ws.engine.measure(sel[0] as any, sel[1] as any);
-			if (ws.selection === sel) measured = `${num(m.distance, 2)} mm`;
+			if (ws.selection !== sel) return;
+			measured = `${num(m.distance, 2)} mm`;
+			if (ws.tool !== 'measure') return;
+			let angle: number | undefined;
+			const dirOf = (r: any) => (r.kind === 'face' ? (ws.results[r.part]?.faces[r.index]?.surface === 'plane' ? ws.results[r.part]?.faces[r.index]?.normal : undefined) : ws.results[r.part]?.edges[r.index]?.direction);
+			const da = dirOf(sel[0]),
+				db = dirOf(sel[1]);
+			if (da && db) angle = (Math.acos(Math.min(1, Math.abs(da[0] * db[0] + da[1] * db[1] + da[2] * db[2]))) * 180) / Math.PI;
+			dim = { a: new THREE.Vector3(...m.a), b: new THREE.Vector3(...m.b), distance: m.distance, angle };
+			viewer?.setDimension(dim.a, dim.b);
+			updateDim();
 		} catch {}
 	}
+	function updateDim() {
+		if (!dim || !viewer) return (dimPos = null);
+		dimPos = viewer.project(dim.a.clone().add(dim.b).multiplyScalar(0.5));
+	}
+	$effect(() => {
+		if (ws.tool !== 'measure') {
+			dim = null;
+			viewer?.setDimension(null);
+		}
+	});
+	function noteMeasurement() {
+		if (!dim || ws.selection.length !== 2) return;
+		const text = `${num(dim.distance, 2)} mm${dim.angle !== undefined ? `, ${num(dim.angle, 1)}°` : ''}: `;
+		const targets = ws.selection.map((ref, i) => ({ ref, point: (i ? dim!.b : dim!.a).toArray() as [number, number, number] }));
+		nc.startFromTargets(targets, dimPos ?? { x: 200, y: 200 }, text);
+	}
+
+	// ---- section view (S) ----
+	const sectionRange = $derived.by(() => {
+		const r = Object.values(ws.results).filter((x) => x.bbox);
+		if (!r.length || !ws.section) return { min: -50, max: 50 };
+		const k = { X: 0, Y: 1, Z: 2 }[ws.section.axis];
+		return { min: Math.min(...r.map((x) => x.bbox!.min[k])), max: Math.max(...r.map((x) => x.bbox!.max[k])) };
+	});
+	$effect(() => {
+		const s = ws.section;
+		if (!viewer) return;
+		if (!s) return viewer.setSection(null);
+		const n = s.axis === 'X' ? [1, 0, 0] : s.axis === 'Y' ? [0, 1, 0] : [0, 0, 1];
+		const o = n.map((c) => c * s.offset);
+		viewer.setSection({ origin: o, normal: s.flip ? n.map((c) => -c) : n });
+	});
 
 	// ---- markup: drafts, open notes' strokes, and the hovered note's (§8 Pencil) ----
 	function markupFor() {
@@ -294,6 +345,8 @@
 	const failing = $derived(Object.values(ws.results).filter((r) => r.problems.some((p) => p.severity === 'error')));
 	const warnings = $derived(Object.values(ws.results).filter((r) => !r.problems.some((p) => p.severity === 'error') && r.problems.length));
 	const pill = $derived.by(() => {
+		// the engine failing to load used to show only in Properties; say it where people look
+		if (ws.engineError) return { tone: 'error' as const, title: "Couldn't load the model", detail: 'reload the page', message: undefined, source: undefined, file: undefined, line: undefined };
 		if (failing.length) {
 			const r = failing[0];
 			const p = r.problems.find((x) => x.severity === 'error')!;
@@ -364,14 +417,14 @@
 				}
 			});
 			items.push({
-				label: 'Copy stable name',
+				label: 'Copy reference',
 				icon: Copy,
 				onSelect: async () => {
 					const r = ws.results[target.part];
 					const name = r?.names?.[target.kind as 'face' | 'edge']?.[target.index] ?? (ws.kernelReady ? (await ws.engine!.describe(target.part, target.kind, target.index)).name : null);
 					if (name) {
 						await navigator.clipboard.writeText(name);
-						toast('Copied stable name');
+						toast('Copied');
 					}
 				}
 			});
@@ -393,7 +446,7 @@
 		aria-label="3D viewport"
 	></div>
 
-	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading kernel' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
+	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
 	<div class="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 [&>*]:pointer-events-auto">
 		{#if ws.dirty.length}
@@ -410,17 +463,35 @@
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[108px] right-[22px] z-10">
-			<ViewportControls bind:display={ws.display} bind:ortho={ws.ortho} bind:filters={ws.filters} orientation="vertical" onZoomToFit={() => viewer?.fit()} />
+			<ViewportControls bind:display={ws.display} bind:ortho={ws.ortho} bind:filters={ws.filters} bind:section={() => !!ws.section, (v) => (ws.section = v ? { axis: 'Z', offset: 0, flip: false } : null)} orientation="vertical" onZoomToFit={() => viewer?.fit()} />
 		</div>
 	{/if}
 
-	{#if label && labelPos}
+	{#if dim && dimPos}
+		<div class="absolute z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-2.5 shadow-popover" style="left:{dimPos.x}px;top:{dimPos.y}px" data-testid="measure-card">
+			<span class="text-ui font-medium tabular-nums">{num(dim.distance, 2)} mm</span>
+			{#if dim.angle !== undefined}<span class="text-label text-fg-secondary tabular-nums">· {num(dim.angle, 1)}°</span>{/if}
+			<Button size="sm" variant="ghost" onclick={noteMeasurement}><MessageCircle size={14} /> Note</Button>
+		</div>
+	{/if}
+	{#if ws.section}
+		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-3 shadow-toolbar" data-testid="section-bar">
+			<span class="text-ui font-medium">Section</span>
+			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }]} onValueChange={(v) => (ws.section = { axis: v as any, offset: 0, flip: false })} class="w-28" />
+			<Slider value={ws.section.offset} min={sectionRange.min} max={sectionRange.max} step={(sectionRange.max - sectionRange.min) / 200 || 0.1} onValueChange={(v: number) => (ws.section = { ...ws.section!, offset: v })} class="w-40" aria-label="Section offset" />
+			<span class="w-16 text-label text-fg-secondary tabular-nums">{num(ws.section.offset, 1)} mm</span>
+			<IconButton label="Flip" size="sm" onclick={() => (ws.section = { ...ws.section!, flip: !ws.section!.flip })}><FlipVertical2 /></IconButton>
+			<IconButton label="Close section" shortcut={['S']} size="sm" onclick={() => (ws.section = null)}><X /></IconButton>
+		</div>
+	{/if}
+
+	{#if label && labelPos && !dim}
 		<SelectionLabel value={label.value} unit={label.unit} class="pointer-events-none absolute z-10 -translate-x-1/2" style="left:{labelPos.x}px;top:{labelPos.y + 14}px" />
 	{/if}
 
 	{#if empty}
 		<div class="absolute inset-0 z-10 grid place-items-center" data-testid="empty-document">
-			<EmptyState size="panel" class="animate-enter" title="This document has no parts yet" description="Parts are scripts in parts/. Start one yourself, or connect an agent and ask it to model something.">
+			<EmptyState size="panel" class="animate-enter" title="No parts yet">
 				{#snippet action()}
 					<div class="flex gap-2">
 						<Button variant="primary" onclick={onAddPart} data-testid="add-part"><Plus size={14} /> Add a part</Button>
@@ -457,6 +528,6 @@
 				<button class="focus-ring h-8 rounded-[var(--toolbar-item-radius)] px-2.5 text-ui font-medium transition-colors-fast {nc.eraser ? 'bg-active text-fg' : 'text-fg-secondary hover:bg-hover hover:text-fg'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
 			</div>
 		{/if}
-		<FloatingToolbar bind:tool={ws.tool} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to add notes' } : {}} />
+		<FloatingToolbar bind:tool={ws.tool} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to draw' } : {}} />
 	</div>
 </ContextMenu>

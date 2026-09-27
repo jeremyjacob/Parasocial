@@ -16,7 +16,7 @@
 
 	let { ws }: { ws: WorkspaceState } = $props();
 
-	const configItems = $derived([{ value: 'default', label: 'Default', hint: 'code values' }, ...ws.configurations.map((c) => ({ value: c.id, label: c.name, hint: `${c.overrides.length} override${c.overrides.length === 1 ? '' : 's'}` }))]);
+	const configItems = $derived([{ value: 'default', label: 'Default' }, ...ws.configurations.map((c) => ({ value: c.id, label: c.name, hint: `${c.overrides.length} override${c.overrides.length === 1 ? '' : 's'}` }))]);
 	let dialog = $state<null | { kind: 'create' | 'duplicate' | 'rename'; name: string }>(null);
 	let dialogOpen = $state(false);
 	$effect(() => {
@@ -111,9 +111,6 @@
 			</DropdownMenu>
 		{/snippet}
 		<Select items={configItems} value={ws.activeConfigID ?? 'default'} onValueChange={(v) => ws.setActiveConfig(v === 'default' ? null : v)} icon={SlidersHorizontal} aria-label="Active configuration" />
-		{#if !ws.activeConfig}
-			<p class="mt-2 text-label text-fg-tertiary">Default is exactly what the code says. Changing a value creates a configuration.</p>
-		{/if}
 	</PropertySection>
 
 	{#each groups as g (g.part)}
@@ -172,10 +169,10 @@
 		</PropertySection>
 	{:else}
 		<div class="px-4 py-6 text-ui text-fg-secondary">
-			{#if Object.keys(ws.results).length}
-				No params yet. Declare one in a script with <code class="rounded-xs bg-hover px-1 font-mono text-label">param("width", 40)</code> and it shows up here.
+			{#if Object.keys(ws.results).length || !ws.parts.length}
+				No params yet. Add <code class="rounded-xs bg-hover px-1 font-mono text-label">param()</code> to a script.
 			{:else}
-				Params appear once the model has generated.
+				Loading…
 			{/if}
 		</div>
 	{/each}
@@ -189,10 +186,10 @@
 	{/if}
 </div>
 
-<Dialog bind:open={dialogOpen} title={dialog?.kind === 'rename' ? 'Rename configuration' : dialog?.kind === 'duplicate' ? 'Duplicate configuration' : 'New configuration'} description="A configuration is a named set of param overrides, like M3 or Print-draft.">
+<Dialog bind:open={dialogOpen} title={dialog?.kind === 'rename' ? 'Rename configuration' : dialog?.kind === 'duplicate' ? 'Duplicate configuration' : 'New configuration'}>
 	{#if dialog}
 		<form id="config-form" onsubmit={submitDialog}>
-			<Input bind:value={dialog.name} placeholder="e.g. M4" autofocus />
+			<Input bind:value={dialog.name} placeholder="Name" autofocus />
 		</form>
 	{/if}
 	{#snippet footer()}

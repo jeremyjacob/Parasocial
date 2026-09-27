@@ -1,0 +1,33 @@
+import { chromium } from "playwright";
+import { virtualAuthenticator, signUp } from "./auth";
+const out = process.argv[2];
+const b = await chromium.launch();
+const ctx = await b.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, acceptDownloads: true });
+const page = await ctx.newPage();
+page.on("pageerror", (e) => console.log("[pageerror]", e.message));
+await virtualAuthenticator(page);
+await signUp(page, "Hedy Lamarr");
+await page.getByTestId("example-enclosure").click();
+await page.waitForURL(/\/d\//);
+await page.waitForFunction(() => (globalThis as any).__ws?.results?.body && (globalThis as any).__ws.results?.lid && (globalThis as any).__ws.kernelReady, null, { timeout: 40000 });
+await page.waitForTimeout(800);
+await page.keyboard.press("s");
+await page.waitForTimeout(700);
+await page.screenshot({ path: `${out}/section.png` });
+await page.keyboard.press("s");
+// measure: two faces
+await page.keyboard.press("m");
+const vp = (await page.getByTestId("viewport").boundingBox())!;
+await page.mouse.click(vp.x + vp.width * 0.45, vp.y + vp.height * 0.3);
+await page.mouse.click(vp.x + vp.width * 0.5, vp.y + vp.height * 0.7);
+await page.waitForTimeout(800);
+console.log("measure", await page.getByTestId("measure-card").textContent().catch(() => "none"));
+await page.screenshot({ path: `${out}/measure.png` });
+// export STEP
+await page.keyboard.press("Escape");
+await page.keyboard.press("Meta+Shift+e");
+const dl = page.waitForEvent("download");
+await page.getByTestId("export-go").click();
+const d = await dl;
+console.log("download", d.suggestedFilename());
+await b.close();
