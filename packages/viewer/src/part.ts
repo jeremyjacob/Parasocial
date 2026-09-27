@@ -108,6 +108,9 @@ export class PartObject {
   overlay!: LineSegments2;
   silhouette!: THREE.Mesh;
   private silMaterial!: THREE.ShaderMaterial;
+  /** Selected-part outline: stencil mask of the whole part, then a screen-space hull outside it. */
+  private outlineMask!: THREE.Mesh;
+  private outline!: THREE.Mesh;
   /** per face: first vertex, vertex count (faces own contiguous vertex runs) */
   faceVerts!: Uint32Array;
   private baseColor = new THREE.Color();
@@ -191,6 +194,20 @@ export class PartObject {
     });
     this.silhouette = new THREE.Mesh(geo, this.silMaterial);
     this.silhouette.renderOrder = -1;
+    // Selected part (§8 Selection): an outline at its visible silhouette that shows through other
+    // parts but never over itself. The mask marks every pixel the part covers (ignoring depth);
+    // the hull, drawn on top of everything, only lands outside that mask.
+    this.outlineMask = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ colorWrite: false, depthTest: false, depthWrite: false, side: THREE.DoubleSide, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp }),
+    );
+    this.outlineMask.renderOrder = 20;
+    const om = this.silMaterial.clone();
+    om.uniforms = { resolution: { value: this.resolution }, width: { value: 2 }, color: { value: new THREE.Color(0xff8a00) } };
+    Object.assign(om, { depthTest: false, depthWrite: false, transparent: true, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.KeepStencilOp });
+    this.outline = new THREE.Mesh(geo, om);
+    this.outline.renderOrder = 21;
+    this.outlineMask.visible = this.outline.visible = false;
     this.pickFaces = new THREE.Mesh(geo, this.pickFaceMaterial);
     this.pickFaces.visible = false;
 
@@ -225,7 +242,7 @@ export class PartObject {
     this.overlay.renderOrder = 2;
     this.overlay.visible = false;
 
-    this.group.add(this.faceMesh, this.silhouette, this.edgeLines, this.overlay, this.pickFaces, this.pickEdges);
+    this.group.add(this.faceMesh, this.silhouette, this.edgeLines, this.overlay, this.pickFaces, this.pickEdges, this.outlineMask, this.outline);
   }
 
   /** Line segment positions for the given edges, plus which edge each segment belongs to. */
@@ -297,6 +314,12 @@ export class PartObject {
     this.faceMaterial.emissive.setRGB(amount * 0.35, amount * 0.55, amount);
   }
 
+  setOutline(on: boolean, color?: THREE.Color) {
+    this.outlineMask.visible = this.outline.visible = on;
+    this.outlineMask.userData.shown = on;
+    if (color) (this.outline.material as THREE.ShaderMaterial).uniforms.color.value.copy(color);
+  }
+
   setSilhouette(visible: boolean, color: THREE.Color) {
     this.silhouette.visible = visible;
     this.silMaterial.uniforms.color.value.copy(color);
@@ -333,6 +356,7 @@ export class PartObject {
     if (this.cap) this.cap.visible = !on && !!this.faceMaterial.clippingPlanes;
     this.faceMesh.visible = !on && this.faceMesh.userData.shown !== false;
     this.silhouette.visible = !on && this.silhouette.userData.shown === true;
+    this.outlineMask.visible = this.outline.visible = !on && this.outlineMask.userData.shown === true;
     this.edgeLines.visible = !on;
     this.overlay.visible = !on && this.overlay.geometry.attributes.instanceStart !== undefined && this.overlay.userData.active === true;
     this.pickFaces.visible = on && facesPickable;
@@ -355,7 +379,7 @@ export class PartObject {
    * a flat cap with a screen-space 45° hatch, reading as cut material.
    */
   setClip(planes: THREE.Plane[], capColor: THREE.Color, hatchColor = capColor, pixelRatio = 1) {
-    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial] as THREE.Material[];
+    const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial, this.outlineMask.material, this.outline.material] as THREE.Material[];
     for (const m of mats) {
       m.clippingPlanes = planes.length ? planes : null;
       (m as any).clipping = planes.length > 0;
@@ -403,6 +427,8 @@ export class PartObject {
     this.overlay.geometry.dispose();
     this.faceMaterial.dispose();
     this.silMaterial.dispose();
+    (this.outlineMask.material as THREE.Material).dispose();
+    (this.outline.material as THREE.Material).dispose();
     this.edgeMaterial.dispose();
     this.overlayMaterial.dispose();
     this.pickFaceMaterial.dispose();

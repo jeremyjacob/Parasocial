@@ -190,12 +190,14 @@ export class CadControls {
     cam.getWorldDirection(fwd);
     const pitch = -dy * speed;
     const cur = Math.asin(THREE.MathUtils.clamp(fwd.z, -1, 1));
-    const next = THREE.MathUtils.clamp(cur - pitch, -Math.PI / 2 + 0.001, Math.PI / 2 - 0.001);
-    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, cur - next);
+    // rotating about camera-right by θ raises the view elevation by θ; clamp the elevation, not the step
+    const next = THREE.MathUtils.clamp(cur + pitch, -Math.PI / 2 + 1e-4, Math.PI / 2 - 1e-4);
+    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, next - cur);
     const q = qYaw.multiply(qPitch);
     for (const v of [cam.position, this.target]) v.sub(pivot).applyQuaternion(q).add(pivot);
+    // rotate the orientation itself: lookAt with a Z up is degenerate looking straight up/down
+    cam.quaternion.premultiply(q);
     cam.up.set(0, 0, 1);
-    cam.lookAt(this.target);
     cam.updateMatrixWorld();
     this.host.changed();
   }

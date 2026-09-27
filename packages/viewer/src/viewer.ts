@@ -92,7 +92,7 @@ export class Viewer {
       const probe = document.createElement("canvas").getContext("webgl2");
       reversed = !!probe?.getExtension("EXT_clip_control");
     } catch {}
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", stencil: true, reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
     (this.renderer as any).__psReversed = reversed;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, o.maxDpr ?? 2));
     // GTAO handles reversed-Z but not the logarithmic-depth fallback
@@ -321,6 +321,7 @@ export class Viewer {
         } else if (r.kind === "edge") selEdges.push(r.index);
       }
     if (partSelected) for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, { color: selFill, amount: 0.22 });
+    p.setOutline(partSelected, selStroke);
     if (this.preselect?.part === id) {
       if (this.preselect.kind === "face") preEdges.push(...(p.data.faceEdges[this.preselect.index] ?? []));
       else if (this.preselect.kind === "edge") preEdges.push(this.preselect.index);
@@ -955,7 +956,9 @@ export class Viewer {
     if (this.composer) return this.composer;
     const w = this.container.clientWidth,
       h = this.container.clientHeight;
-    const c = new EffectComposer(this.renderer);
+    // stencil in the composer targets too: the selected-part outline masks with it
+    const dpr = this.renderer.getPixelRatio();
+    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true }));
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
     this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
