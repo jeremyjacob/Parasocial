@@ -105,12 +105,31 @@
 		font: 600 11px/24px var(--font-sans);
 		font-variant-numeric: tabular-nums;
 		box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 1.5px var(--color-panel);
-		transition: transform var(--duration-fast) var(--ease-out), background-color var(--duration-fast);
+		transform-origin: 50% 100%;
+		transition:
+			transform var(--duration-fast) var(--ease-out),
+			background-color var(--duration-fast) var(--ease-out),
+			color var(--duration-fast) var(--ease-out),
+			opacity var(--duration-fast) var(--ease-out),
+			box-shadow var(--duration-fast) var(--ease-out);
+		/* Drops onto its geometry when it appears (placed, un-occluded, or un-clustered). */
+		animation: pin-drop var(--duration-base) var(--ease-out);
 		cursor: pointer;
 	}
 	.pin:hover,
 	.pin.active {
-		transform: translate(-50%, -100%) translateY(-4px) scale(1.12);
+		transform: translate(-50%, -100%) translateY(-5px) scale(1.12);
+		box-shadow: 0 3px 8px rgb(0 0 0 / 0.22), 0 0 0 1.5px var(--color-panel);
+	}
+	.pin:active {
+		transform: translate(-50%, -100%) translateY(-4px) scale(1.04);
+		transition-duration: var(--duration-instant);
+	}
+	@keyframes pin-drop {
+		from {
+			opacity: 0;
+			transform: translate(-50%, -100%) translateY(-12px) scale(0.6);
+		}
 	}
 	.pin.agent {
 		background: var(--color-agent, #2a2a30);
@@ -138,6 +157,7 @@
 	@media (prefers-reduced-motion: reduce) {
 		.pin {
 			transition: none;
+			animation: none;
 		}
 	}
 </style>

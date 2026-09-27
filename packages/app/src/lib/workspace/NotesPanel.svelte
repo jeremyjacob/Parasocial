@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Kbd } from '$lib/components/ui/kbd';
 	import { Select } from '$lib/components/ui/select';
+	import { flip } from 'svelte/animate';
+	import { rise, fadeOut, flipDuration, easeOut } from '$lib/styles/motion';
 	import NoteCard from './NoteCard.svelte';
 	import type { WorkspaceState } from './state.svelte';
 	import type { NotesController } from './notes.svelte';
@@ -46,9 +48,11 @@
 	{/if}
 	<div class="flex min-h-0 flex-1 flex-col gap-2 overflow-auto p-2">
 		{#each list as n (n.id)}
-			<NoteCard {ws} {nc} note={n as any} pin={pinOf(n.id)} onfocus={() => onfocus(n.id)} {onversion} />
+			<div class="shrink-0" animate:flip={{ duration: flipDuration(), easing: easeOut }} in:rise={{ y: 6, scale: 0.98, duration: 200 }} out:fadeOut>
+				<NoteCard {ws} {nc} note={n as any} pin={pinOf(n.id)} onfocus={() => onfocus(n.id)} {onversion} />
+			</div>
 		{:else}
-			<div class="flex flex-col gap-2 px-2 py-4 text-ui text-fg-secondary">
+			<div class="flex flex-col gap-2 px-2 py-4 text-ui text-fg-secondary" in:rise>
 				{#if ws.notes.length}
 					<p>No notes match these filters.</p>
 				{:else}
