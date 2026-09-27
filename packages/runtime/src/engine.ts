@@ -1,7 +1,7 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Material, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
@@ -274,6 +274,12 @@ export class Engine {
 
   indexOfName(part: string, kind: EntityKind, name: string): number[] {
     return nameIndex(this.need(part), kind).get(name) ?? [];
+  }
+
+  /** Closest point on an entity to `p` (pins follow their geometry across regenerations). */
+  closestPoint(part: string, kind: EntityKind, index: number, p: Vec3): Vec3 {
+    const rec = this.need(part);
+    return pointDistance(entityShape(rec, kind, index), p).b;
   }
 
   measure(a: { part: string; kind: EntityKind | "part"; index?: number }, b: { part: string; kind: EntityKind | "part"; index?: number }) {

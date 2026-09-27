@@ -59,7 +59,7 @@ export class EngineClient {
       if (!p) return;
       this.pending.delete(m.id);
       if (!m.ok) return p.reject(Object.assign(new Error(m.error), { timeout: !!m.timeout }));
-      if (p.op === "regenerate" && m.value !== null) {
+      if ((p.op === "regenerate" || p.op === "regenerateSnapshot") && m.value !== null) {
         const r = validatePartResult(m.value);
         if (!r) return p.reject(new Error("engine returned a malformed regeneration result"));
         return p.resolve(r);
@@ -115,6 +115,13 @@ export class EngineClient {
   }
   measure(a: MeasureRef, b: MeasureRef) {
     return this.call<{ distance: number; a: Vec3; b: Vec3 }>({ op: "measure", a, b });
+  }
+  /** Regenerate a part of another version (separate engine instance, own cache). */
+  regenerateSnapshot(key: string, doc: DocumentState, part: string) {
+    return this.call<PartResult>({ op: "regenerateSnapshot", key, doc, part });
+  }
+  closestPoint(part: string, kind: EntityKind, index: number, point: Vec3) {
+    return this.call<Vec3>({ op: "closestPoint", part, kind, index, point });
   }
   check(part: string) {
     return this.call<unknown[]>({ op: "check", part });

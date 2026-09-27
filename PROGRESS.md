@@ -30,6 +30,12 @@ Living status for resuming after a context reset. PLAN.md is the source of truth
 - engine-pool container is a stub (M5).
 - OAuth/MCP not started (M5).
 
+## Queued (user requests)
+- **Subagent pass: motion + spacing** — once M4 UI settles: more motion (snappy, utilitarian, polished), spacing/padding refinement across the workspace.
+- **Subagent pass: UI copy** — refine and remove: cut explanatory text, never expose implementation details.
+- **Logo** — subagent designing 5 concepts at /design/logo (running); lead picks one.
+- **Real document thumbnails** (roadmap): render a thumbnail of each document's current geometry (engine render on save/regen, stored as a blob, shown on the documents list instead of the generic clay art).
+
 ## Next
 - M3: app routes wired to platform, sign-in, documents list, workspace shell with real engine + viewer, params/configs, errors, ⌘K, undo, cache-first open, SW WASM caching.
 - M4 notes/markup/compare/history, M5 MCP, M6 breadth, M7 polish; then full test pass.

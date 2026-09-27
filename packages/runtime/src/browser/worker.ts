@@ -8,6 +8,8 @@ import type { EngineRequest, EngineInfo } from "../protocol";
 export type WorkerInit = { type: "init"; glueSingle: string; glueMulti: string; wasmSingle: string; wasmMulti: string; threads: boolean; build: string };
 
 const engine = new Engine();
+// snapshots (other versions) regenerate in their own engine so the live document's cache stays warm
+const snapshot = { engine: new Engine(), key: "" };
 const stats = { results: 0, transferred: 0 };
 let ready: Promise<EngineInfo> | null = null;
 
@@ -69,6 +71,16 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       return { value: engine.measure(req.a, req.b) };
     case "check":
       return { value: engine.check(req.part) };
+    case "closestPoint":
+      return { value: engine.closestPoint(req.part, req.kind, req.index, req.point) };
+    case "regenerateSnapshot": {
+      if (snapshot.key !== req.key) {
+        snapshot.engine.setDocument(req.doc);
+        snapshot.key = req.key;
+      }
+      const r = snapshot.engine.regenerate(req.part, "fine");
+      return { value: r, transfer: r.mesh ? meshTransferables(r.mesh) : [] };
+    }
   }
 }
 

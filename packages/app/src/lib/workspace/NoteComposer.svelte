@@ -1,0 +1,42 @@
+<script lang="ts">
+	import { ArrowUp, X, LoaderCircle } from '@lucide/svelte';
+	import { IconButton } from '$lib/components/ui/button';
+	import type { NotesController } from './notes.svelte';
+	import type { WorkspaceState } from './state.svelte';
+
+	let { ws, nc }: { ws: WorkspaceState; nc: NotesController } = $props();
+	let text = $state('');
+	let el: HTMLTextAreaElement;
+	const d = $derived(nc.draft!);
+	const label = $derived.by(() => {
+		const kinds = d.targets.map((t) => t.ref.kind as string);
+		const one = kinds.length === 1 ? kinds[0] : `${kinds.length} items`;
+		const parts = [...new Set(d.targets.map((t) => ws.results[t.ref.part]?.name ?? t.ref.part))];
+		return `${one === 'part' ? 'Part' : one.charAt(0).toUpperCase() + one.slice(1)} · ${parts.join(', ')}${d.strokeIDs.length ? ` · ${d.strokeIDs.length} stroke${d.strokeIDs.length > 1 ? 's' : ''}` : ''}`;
+	});
+	$effect(() => {
+		d;
+		queueMicrotask(() => el?.focus());
+	});
+	async function post() {
+		if (!text.trim() && !d.strokeIDs.length) return;
+		await nc.post(text.trim());
+		text = '';
+	}
+	function onkey(e: KeyboardEvent) {
+		e.stopPropagation();
+		if (e.key === 'Enter' && !e.shiftKey) (e.preventDefault(), post());
+		if (e.key === 'Escape') (e.preventDefault(), nc.discard());
+	}
+</script>
+
+<div class="w-[280px] rounded-panel border border-line-subtle bg-elevated p-2 shadow-popover" data-testid="note-composer" role="dialog" aria-label="New note">
+	<div class="mb-1.5 flex items-center gap-1 px-1 text-label text-fg-secondary">
+		<span class="truncate">{label}</span>
+		<IconButton label="Discard (Esc)" size="sm" class="ml-auto" onclick={() => nc.discard()}><X /></IconButton>
+	</div>
+	<div class="field h-auto min-h-8 items-end gap-1 py-1 pr-1 pl-2.5">
+		<textarea bind:this={el} bind:value={text} rows="2" placeholder="What's wrong here? @ params, # parts" onkeydown={onkey} class="field-sizing-content max-h-40 min-h-10 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary" data-testid="note-text"></textarea>
+		<IconButton label="Post (Enter)" variant="accent" active size="sm" class="rounded-full" onclick={post} disabled={nc.posting} data-testid="note-post">{#if nc.posting}<LoaderCircle class="animate-spin" />{:else}<ArrowUp />{/if}</IconButton>
+	</div>
+</div>

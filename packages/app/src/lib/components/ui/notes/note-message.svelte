@@ -7,7 +7,7 @@
 		author: import('$lib/components/ui/avatar').Person;
 		time: string;
 		body: NoteSegment[];
-		version?: { version: number; time?: string; summary?: string };
+		version?: { version: number; time?: string; summary?: string; onclick?: () => void };
 		/** Agent activity log (render, measure, edit …), collapsible. */
 		activity?: string[];
 	};

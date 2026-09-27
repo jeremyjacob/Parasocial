@@ -6,11 +6,12 @@
 	import { IconButton } from '$lib/components/ui/button';
 	import type { WorkspaceState } from './state.svelte';
 
-	let { ws }: { ws: WorkspaceState } = $props();
+	let { ws, viewScripts = null }: { ws: WorkspaceState; viewScripts?: Record<string, string> | null } = $props();
 	let scroller: HTMLDivElement;
 	const path = $derived(ws.openScript ?? ws.scripts.find((s) => s.path.startsWith('parts/'))?.path ?? null);
 	const script = $derived(ws.scripts.find((s) => s.path === path));
-	const lines = $derived(script?.content.split('\n') ?? []);
+	const content = $derived(viewScripts ? (path ? viewScripts[path] : undefined) : script?.content);
+	const lines = $derived(content?.split('\n') ?? []);
 	const markers = $derived(
 		new Map(
 			ws.problems

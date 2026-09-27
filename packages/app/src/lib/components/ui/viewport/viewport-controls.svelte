@@ -143,15 +143,20 @@
 	</DropdownMenu>
 	<span class={cn('bg-line', orientation === 'vertical' ? 'my-0.5 h-px w-5' : 'mx-0.5 h-4 w-px')} aria-hidden="true"
 	></span>
-	<DropdownMenu items={zoomItems} side={orientation === 'vertical' ? 'left' : 'bottom'} align="end">
-		{#snippet trigger(props)}
-			<button
-				{...props}
-				aria-label="Zoom {zoom}%"
-				class="inline-flex h-7 items-center gap-0.5 rounded-md pr-1 pl-2 text-ui font-medium text-fg-secondary tabular transition-colors-fast hover:bg-hover hover:text-fg focus-ring data-[state=open]:bg-active"
-			>
-				{zoom}%<ChevronDown size={12} class="text-fg-tertiary" />
-			</button>
-		{/snippet}
-	</DropdownMenu>
+	{#if orientation === 'vertical'}
+		<!-- icon-width control so the vertical cluster stays one icon wide -->
+		<IconButton label="Zoom to fit" shortcut={['F']} tooltipSide="left" onclick={() => onZoomToFit?.()}><Maximize /></IconButton>
+	{:else}
+	<DropdownMenu items={zoomItems} side="bottom" align="end">
+			{#snippet trigger(props)}
+				<button
+					{...props}
+					aria-label="Zoom {zoom}%"
+					class="inline-flex h-7 items-center gap-0.5 rounded-md pr-1 pl-2 text-ui font-medium text-fg-secondary tabular transition-colors-fast hover:bg-hover hover:text-fg focus-ring data-[state=open]:bg-active"
+				>
+					{zoom}%<ChevronDown size={12} class="text-fg-tertiary" />
+				</button>
+			{/snippet}
+		</DropdownMenu>
+	{/if}
 </div>

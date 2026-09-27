@@ -22,6 +22,7 @@ export class WorkspaceState {
 	readonly documentID: string;
 	readonly zero: ParasocialZero;
 	readonly userID: string;
+	userName = '';
 	engine: EngineClient | null = null;
 	viewer: Viewer | null = null;
 
@@ -191,6 +192,11 @@ export class WorkspaceState {
 		// progressive meshing: a settled fine pass after scrubbing ends
 		if (!this.scrubbing) for (const p of parts) if (this.results[p]?.quality === 'coarse') toRegen.add(p);
 		for (const p of toRegen) this.regenerate(p, quality);
+	}
+
+	/** Re-show the live geometry for every part (e.g. after viewing an old version). */
+	async refreshAll() {
+		await Promise.all(this.parts.map((p) => this.regenerate(p, 'fine')));
 	}
 
 	private async regenerate(part: string, quality: 'coarse' | 'fine') {

@@ -70,7 +70,7 @@ function send(m: { id: number; req: any }) {
   const op = m.req?.op;
   if (op === "setDocument") docState = [m.req];
   else if (op === "setScript" || op === "setOverrides") docState.push(m.req);
-  const timer = op === "regenerate" ? setTimeout(replaceWorker, cfg.timeoutMs) : null;
+  const timer = op === "regenerate" || op === "regenerateSnapshot" ? setTimeout(replaceWorker, cfg.timeoutMs) : null;
   pending.set(m.id, { timer, req: m.req });
   current.worker.postMessage(m);
 }

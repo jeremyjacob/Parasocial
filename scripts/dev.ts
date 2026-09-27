@@ -22,7 +22,8 @@ if (import.meta.main) {
   await $`bun ${join(root, "packages/sync/src/server/migrate.ts")}`.env({ ...process.env, ...DEV_ENV });
   await $`docker compose ${compose} up -d zero-cache`.quiet();
   const env = { ...process.env, ...DEV_ENV };
-  const engine = Bun.spawn(["bun", join(root, "packages/runtime/src/server/serve.ts")], { env: { ...env, ENGINE_PORT: "5174", APP_ORIGINS: DEV_ENV.APP_ORIGIN }, stdout: "inherit", stderr: "inherit" });
+  // the engine origin rebuilds its bundle on start; `--watch` restarts it when runtime sources change
+  const engine = Bun.spawn(["bun", "--watch", join(root, "packages/runtime/src/server/serve.ts")], { env: { ...env, ENGINE_PORT: "5174", APP_ORIGINS: DEV_ENV.APP_ORIGIN }, stdout: "inherit", stderr: "inherit" });
   const app = Bun.spawn(["bun", "--bun", "vite", "dev", "--port", "5173", "--strictPort"], { cwd: join(root, "packages/app"), env, stdout: "inherit", stderr: "inherit" });
   const stop = () => (engine.kill(), app.kill(), process.exit(0));
   process.on("SIGINT", stop);

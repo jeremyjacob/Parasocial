@@ -1,0 +1,143 @@
+<script lang="ts">
+	// Note pins (§6 UX): sit on their geometry, hide when occluded, cluster when zoomed out,
+	// ghost (dashed) when orphaned. Avatars distinguish the human from each agent.
+	import { onMount, onDestroy } from 'svelte';
+	import * as THREE from 'three';
+	import type { Viewer } from '@parasocial/viewer';
+	import type { NotesController, Pin } from './notes.svelte';
+
+	let { viewer, nc, onopen }: { viewer: Viewer; nc: NotesController; onopen: (noteID: string) => void } = $props();
+
+	type Placed = { pins: Pin[]; x: number; y: number };
+	let placed = $state.raw<Placed[]>([]);
+	let occluded = new Set<string>();
+	let raf = 0;
+	let offs: (() => void)[] = [];
+
+	const shown = $derived(nc.pins.filter((p) => !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
+
+	function layout() {
+		raf = 0;
+		const out: Placed[] = [];
+		for (const p of shown) {
+			if (occluded.has(p.noteID) && !p.orphaned && nc.active !== p.noteID) continue;
+			const s = viewer.project(new THREE.Vector3(...p.point));
+			if (!s) continue;
+			// cluster pins that land within 22px of each other
+			const near = out.find((c) => Math.hypot(c.x - s.x, c.y - s.y) < 22);
+			if (near) near.pins.push(p);
+			else out.push({ pins: [p], x: s.x, y: s.y });
+		}
+		placed = out;
+	}
+	const schedule = () => (raf ||= requestAnimationFrame(layout));
+
+	function occlusion() {
+		const next = new Set<string>();
+		for (const p of shown) if (!viewer.isPointVisible(new THREE.Vector3(...p.point))) next.add(p.noteID);
+		occluded = next;
+		schedule();
+	}
+
+	onMount(() => {
+		offs.push(viewer.on('camera', schedule));
+		offs.push(viewer.on('moving', (on: boolean) => !on && occlusion()));
+		occlusion();
+	});
+	onDestroy(() => {
+		offs.forEach((f) => f());
+		cancelAnimationFrame(raf);
+	});
+	$effect(() => {
+		shown;
+		nc.active;
+		queueMicrotask(occlusion);
+	});
+
+	function zoomTo(c: Placed) {
+		const box = new THREE.Box3();
+		for (const p of c.pins) box.expandByPoint(new THREE.Vector3(...p.point));
+		box.expandByScalar(Math.max(5, box.getSize(new THREE.Vector3()).length() * 0.3));
+		viewer.fit(box, true);
+	}
+</script>
+
+{#each placed as c (c.pins[0].noteID)}
+	{@const p = c.pins[0]}
+	{#if c.pins.length > 1}
+		<button
+			class="pin cluster focus-ring"
+			style="left:{c.x}px;top:{c.y}px"
+			onclick={() => zoomTo(c)}
+			aria-label="{c.pins.length} notes here — zoom in"
+			data-testid="pin-cluster"
+		>{c.pins.length}</button>
+	{:else}
+		<button
+			class="pin focus-ring"
+			class:agent={p.authorKind === 'agent'}
+			class:ghost={p.orphaned}
+			class:active={nc.active === p.noteID || nc.hovered === p.noteID}
+			class:resolved={p.status === 'Resolved'}
+			class:working={p.status === 'AgentWorking'}
+			style="left:{c.x}px;top:{c.y}px"
+			onclick={() => onopen(p.noteID)}
+			onmouseenter={() => (nc.hovered = p.noteID)}
+			onmouseleave={() => nc.hovered === p.noteID && (nc.hovered = null)}
+			aria-label="Note #{p.number}{p.orphaned ? ' (orphaned)' : ''}"
+			title="{p.authorName}{p.orphaned ? ' · lost its geometry' : ''}"
+			data-testid="pin"
+		>{p.number}</button>
+	{/if}
+{/each}
+
+<style>
+	.pin {
+		position: absolute;
+		z-index: 6;
+		transform: translate(-50%, -100%) translateY(-4px);
+		min-width: 24px;
+		height: 24px;
+		padding: 0 6px;
+		border-radius: 12px 12px 12px 3px;
+		background: var(--color-fg);
+		color: var(--color-panel);
+		font: 600 11px/24px var(--font-sans);
+		font-variant-numeric: tabular-nums;
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 1.5px var(--color-panel);
+		transition: transform var(--duration-fast) var(--ease-out), background-color var(--duration-fast);
+		cursor: pointer;
+	}
+	.pin:hover,
+	.pin.active {
+		transform: translate(-50%, -100%) translateY(-4px) scale(1.12);
+	}
+	.pin.agent {
+		background: var(--color-agent, #2a2a30);
+		color: #fff;
+	}
+	.pin.working {
+		background: var(--color-accent);
+		color: var(--color-fg-on-accent);
+	}
+	.pin.resolved {
+		opacity: 0.6;
+	}
+	.pin.ghost {
+		background: transparent;
+		color: var(--color-error);
+		outline: 1.5px dashed var(--color-error);
+		box-shadow: none;
+	}
+	.pin.cluster {
+		border-radius: 12px;
+		background: var(--color-elevated);
+		color: var(--color-fg);
+		box-shadow: var(--shadow-popover);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pin {
+			transition: none;
+		}
+	}
+</style>

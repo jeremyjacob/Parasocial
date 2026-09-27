@@ -131,7 +131,7 @@
 @keyframes ps-dialog-in {
 	from {
 		opacity: 0;
-		transform: translate(-50%, calc(-50% + 6px)) scale(0.97);
+		transform: translateY(8px) scale(0.97);
 	}
 }
 @keyframes ps-shimmer {

@@ -30,6 +30,7 @@ export class ViewCube {
   constructor(
     parent: HTMLElement,
     private onPick: (dir: THREE.Vector3, up?: THREE.Vector3) => void,
+    private onDrag?: (dx: number, dy: number, phase: "start" | "move" | "end") => void,
   ) {
     const el = document.createElement("div");
     el.className = "ps-viewcube";
@@ -37,7 +38,45 @@ export class ViewCube {
     parent.appendChild(el);
     this.el = el;
     this.cube = el.querySelector(".ps-viewcube-cube")!;
+    // drag the cube to orbit; a click (no drag) picks a view
+    let drag: { x: number; y: number; moved: boolean; id: number } | null = null;
+    let suppressClick = false;
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      drag = { x: e.clientX, y: e.clientY, moved: false, id: e.pointerId };
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = e.clientX - drag.x,
+        dy = e.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        el.setPointerCapture(e.pointerId);
+        el.classList.add("dragging");
+        this.onDrag?.(0, 0, "start");
+      }
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      this.onDrag?.(dx, dy, "move");
+    });
+    const end = (e: PointerEvent) => {
+      if (!drag) return;
+      if (drag.moved) {
+        suppressClick = true;
+        el.classList.remove("dragging");
+        this.onDrag?.(0, 0, "end");
+      }
+      drag = null;
+      el.releasePointerCapture?.(e.pointerId);
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
     el.addEventListener("click", (e) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
       const t = (e.target as HTMLElement).closest("[data-dir]") as HTMLElement | null;
       const f = (e.target as HTMLElement).closest("[data-face]") as HTMLElement | null;
       if (t) {
@@ -56,7 +95,7 @@ export class ViewCube {
     // CSS = F·R·W with F = W = diag(1,-1,1) (CSS y points down): negate entries where exactly
     // one of row/column is y, so the result stays a rotation (no mirroring)
     const css = [e[0], -e[1], e[2], 0, -e[4], e[5], -e[6], 0, e[8], -e[9], e[10], 0, 0, 0, 0, 1];
-    this.cube.style.transform = `translateZ(-96px) matrix3d(${css.map((v) => v.toFixed(6)).join(",")})`;
+    this.cube.style.transform = `translateZ(-81px) matrix3d(${css.map((v) => v.toFixed(6)).join(",")})`;
   }
 
   dispose() {
@@ -64,7 +103,7 @@ export class ViewCube {
   }
 }
 
-const HALF = 32;
+const HALF = 27;
 /** Face-local CSS (x right, y down, z out) -> cube CSS, built from the face's world frame. */
 function faceMatrix(face: string): string {
   const [u, v] = FRAMES[face];
@@ -109,10 +148,11 @@ function injectStyles() {
   injected = true;
   const st = document.createElement("style");
   st.textContent = `
-.ps-viewcube{--s:64px;--h:32px;position:absolute;width:var(--s);height:var(--s);perspective:none;user-select:none}
-.ps-viewcube-scene{width:100%;height:100%;perspective:1200px}
+.ps-viewcube{position:absolute;width:100px;height:100px;display:grid;place-items:center;user-select:none;touch-action:none;cursor:grab}
+.ps-viewcube.dragging{cursor:grabbing}
+.ps-viewcube-scene{width:54px;height:54px;perspective:1200px}
 .ps-viewcube-cube{position:relative;width:100%;height:100%;transform-style:preserve-3d;transform-origin:50% 50%}
-.ps-vc-face{all:unset;box-sizing:border-box;position:absolute;left:50%;top:50%;width:64px;height:64px;display:grid;place-items:center;
+.ps-vc-face{all:unset;box-sizing:border-box;position:absolute;left:50%;top:50%;width:54px;height:54px;display:grid;place-items:center;
   background:var(--vc-face,rgba(255,255,255,.92));border:1px solid var(--vc-border,rgba(0,0,0,.14));
   font:500 9.5px/1 var(--font-sans,system-ui);letter-spacing:.02em;color:var(--vc-fg,#52525b);text-transform:uppercase;
   backface-visibility:hidden;cursor:pointer;transition:background-color .12s ease-out,color .12s ease-out}

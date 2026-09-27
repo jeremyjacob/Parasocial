@@ -30,10 +30,15 @@
 	import NotesPanel from './NotesPanel.svelte';
 	import CodeView from './CodeView.svelte';
 	import ConnectAgentDialog from './ConnectAgentDialog.svelte';
+	import { NotesController } from './notes.svelte';
+	import { CompareController } from './compare.svelte';
+	import CompareBar from './CompareBar.svelte';
+	import { clockTime } from '$lib/format';
 
 	let { documentID, zero, user }: { documentID: string; zero: ParasocialZero; user: { userID: string; name: string } } = $props();
 
 	const ws = new WorkspaceState({ documentID, zero, userID: user.userID });
+	ws.userName = user.name;
 	(globalThis as any).__ws = ws; // test hook
 
 	const docQ = useQuery(() => queries.documents.byID({ documentID }));
@@ -42,13 +47,20 @@
 	const versionsQ = useQuery(() => queries.versions({ documentID }));
 	const notesQ = useQuery(() => queries.notes({ documentID }));
 	const agentsQ = useQuery(() => queries.agentSessions({ documentID }));
+	const markupQ = useQuery(() => queries.markupStrokes({ documentID }));
+	const notesAllQ = useQuery(() => queries.notes({ documentID, includeRemoved: true }));
+	const nc = new NotesController(ws);
+	const cmp = new CompareController(ws);
+	(globalThis as any).__cmp = cmp;
+	(globalThis as any).__nc = nc;
 
 	$effect(() => {
 		ws.doc = (docQ.data as any) ?? null;
 		ws.scripts = (scriptsQ.data as any) ?? [];
 		ws.configurations = (configsQ.data as any) ?? [];
 		ws.versions = (versionsQ.data as any) ?? [];
-		ws.notes = (notesQ.data as any) ?? [];
+		ws.notes = (notesAllQ.data as any) ?? (notesQ.data as any) ?? [];
+		nc.strokes = (markupQ.data as any) ?? [];
 		ws.agents = (agentsQ.data as any) ?? [];
 		if (scriptsQ.status === 'complete' && docQ.status === 'complete') ws.synced = true;
 	});
@@ -71,6 +83,37 @@
 		ws.synced;
 		ws.untracked(() => ws.sync());
 	});
+
+	// re-resolve note anchors whenever geometry or notes change (§6 Resolution)
+	let resolveTimer: any;
+	$effect(() => {
+		ws.results;
+		ws.notes;
+		ws.kernelReady;
+		clearTimeout(resolveTimer);
+		resolveTimer = setTimeout(() => nc.resolveAll(), 60);
+	});
+
+	function openNote(id: string, fly = false) {
+		nc.active = id;
+		ws.rightTab = 'notes';
+		const n = ws.notes.find((x) => x.id === id);
+		if (fly && n) ws.viewer?.setCameraState({ position: n.anchor.camera.position, target: n.anchor.camera.target, up: n.anchor.camera.up, ortho: n.anchor.camera.ortho });
+	}
+
+	/** C with a selection: note the selection directly (Figma convention). */
+	function noteTool() {
+		if (ws.selection.length && ws.viewer) {
+			const v = ws.viewer;
+			const targets = ws.selection.map((ref) => {
+				const c = v.entityCenter(ref)!;
+				return { ref, point: [c.x, c.y, c.z] as [number, number, number] };
+			});
+			const s = v.project(v.entityCenter(ws.selection[ws.selection.length - 1])!) ?? { x: 200, y: 200 };
+			nc.startFromTargets(targets, s);
+		}
+		ws.tool = 'note';
+	}
 
 	let paletteOpen = $state(false);
 	let cheatsOpen = $state(false);
@@ -99,6 +142,10 @@
 		URL.revokeObjectURL(a.href);
 	}
 
+	function openVersion(versionID: string) {
+		cmp.open(versionID);
+	}
+
 	async function doUndo() {
 		const l = await ws.undo();
 		toast(l ? `Undid ${l}` : 'Nothing to undo');
@@ -110,7 +157,7 @@
 
 	const commands: Command[] = [
 		{ id: 'tool.select', label: 'Select', group: 'Tools', keys: ['V'], icon: MousePointer2, run: () => (ws.tool = 'select') },
-		{ id: 'tool.note', label: 'Note', group: 'Tools', keys: ['C'], icon: MessageCircle, run: () => (ws.tool = 'note') },
+		{ id: 'tool.note', label: 'Note', group: 'Tools', keys: ['C'], icon: MessageCircle, run: noteTool },
 		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.tool = 'pencil') },
 		{ id: 'tool.measure', label: 'Measure', group: 'Tools', keys: ['M'], icon: Ruler, run: () => (ws.tool = 'measure') },
 		{ id: 'view.fit', label: 'Zoom to fit', group: 'View', keys: ['F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection() : ws.viewer?.fit()) },
@@ -129,7 +176,7 @@
 		{ id: 'filter.vertex', label: 'Select vertices', group: 'Selection', keys: ['3'], run: () => (ws.filters = ['vertex']) },
 		{ id: 'filter.part', label: 'Select parts', group: 'Selection', keys: ['4'], run: () => (ws.filters = ['part']) },
 		{ id: 'filter.all', label: 'Select faces and edges', group: 'Selection', keys: ['5'], run: () => (ws.filters = ['face', 'edge']) },
-		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (ws.tool !== 'select' ? (ws.tool = 'select') : ws.clearSelection()) },
+		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (nc.draft ? nc.discard() : ws.tool !== 'select' ? (ws.tool = 'select') : ws.clearSelection()) },
 		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => (ws.hidden.forEach((p) => ws.setHidden(p, false)), ws.isolate(null)) },
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
@@ -146,8 +193,18 @@
 	const keyOf = (c: Command) => custom[c.id] ?? c.keys;
 	const byCombo = new Map(commands.filter((c) => keyOf(c)).map((c) => [comboOfKeys(keyOf(c)!), c]));
 
+	function onKeyUp(e: KeyboardEvent) {
+		if (e.key.toLowerCase() === 'b') cmp.flash(false);
+	}
+
 	function onKey(e: KeyboardEvent) {
 		if (e.defaultPrevented) return;
+		// hold B: flash the before state while comparing
+		if (e.key.toLowerCase() === 'b' && !e.metaKey && !e.ctrlKey && cmp.against && !isTyping(e)) {
+			e.preventDefault();
+			if (!e.repeat) cmp.flash(true);
+			return;
+		}
 		const combo = comboOf(e);
 		const cmd = byCombo.get(combo);
 		// ⌘K and Escape work everywhere; single keys never fire while typing
@@ -227,11 +284,11 @@
 	const rightTabs = $derived([
 		{ value: 'properties', label: 'Properties' },
 		{ value: 'params', label: 'Params' },
-		{ value: 'notes', label: 'Notes', count: ws.notes.filter((n) => n.status !== 'Resolved').length || undefined }
+		{ value: 'notes', label: 'Notes', count: ws.notes.filter((n) => n.status !== 'Resolved' && !n.removedAt).length || undefined }
 	]);
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onkeyup={onKeyUp} />
 <svelte:head><title>{ws.doc?.name ?? 'Document'} · Parasocial</title></svelte:head>
 
 {#if notFound}
@@ -270,30 +327,41 @@
 
 		<div class="grid min-h-0 grid-cols-[240px_minmax(0,1fr)_288px]">
 			<aside class="flex min-h-0 flex-col border-r border-line-subtle bg-panel" aria-label="Document">
-				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col">
+				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line-subtle">
 					{#snippet content(tab)}
 						{#if tab === 'parts'}<PartsPanel {ws} onAddPart={addPart} />
 						{:else if tab === 'scripts'}<ScriptsPanel {ws} />
-						{:else}<HistoryPanel {ws} />{/if}
+						{:else}<HistoryPanel {ws} onOpen={(id) => cmp.view(id)} onCompare={(id) => cmp.open(id)} viewing={cmp.viewing} />{/if}
 					{/snippet}
 				</Tabs>
 			</aside>
 
 			<main class="flex min-h-0 min-w-0">
 				{#if ws.mode === 'code'}
-					<CodeView {ws} />
+					<CodeView {ws} viewScripts={cmp.viewScripts} />
 				{/if}
 				<div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-					<Viewport {ws} onAddPart={addPart} onConnect={() => (connectOpen = true)} />
+					{#if cmp.viewing}
+						{@const v = ws.versions.find((x) => x.id === cmp.viewing)}
+						<div class="flex h-9 shrink-0 items-center gap-3 border-b border-line-subtle bg-accent-subtle px-3 text-ui" data-testid="version-banner">
+							<span>Viewing <b class="font-medium">v{v?.number}</b> from {v ? clockTime(v.createdAt) : ''} · read-only</span>
+							<Button size="sm" variant="primary" class="ml-auto" onclick={() => cmp.restore(cmp.viewing!)} data-testid="restore-version">Restore</Button>
+							<Button size="sm" variant="ghost" onclick={() => cmp.back()}>Back to current</Button>
+						</div>
+					{/if}
+					{#if cmp.against}
+						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 [&>*]:pointer-events-auto"><CompareBar {ws} {cmp} /></div>
+					{/if}
+					<Viewport {ws} {nc} onAddPart={addPart} onConnect={() => (connectOpen = true)} onOpenNote={(id) => openNote(id)} />
 				</div>
 			</main>
 
 			<aside class="flex min-h-0 flex-col border-l border-line-subtle bg-panel" aria-label="Inspector">
-				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col">
+				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line-subtle">
 					{#snippet content(tab)}
 						{#if tab === 'properties'}<PropertiesPanel {ws} />
 						{:else if tab === 'params'}<ParamsPanel {ws} />
-						{:else}<NotesPanel {ws} />{/if}
+						{:else}<NotesPanel {ws} {nc} onfocus={(id) => openNote(id, true)} onversion={openVersion} />{/if}
 					{/snippet}
 				</Tabs>
 			</aside>

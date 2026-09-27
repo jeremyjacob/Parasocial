@@ -19,6 +19,9 @@ export type EngineRequest =
   | { op: "indexOfName"; part: string; kind: EntityKind; name: string }
   | { op: "measure"; a: MeasureRef; b: MeasureRef }
   | { op: "check"; part: string }
+  | { op: "closestPoint"; part: string; kind: EntityKind; index: number; point: Vec3 }
+  /** Regenerate a snapshot (another version) in a separate engine: compare ghosts, viewing old versions. */
+  | { op: "regenerateSnapshot"; key: string; doc: DocumentState; part: string }
   | { op: "ping" };
 
 export type MeasureRef = { part: string; kind: EntityKind | "part"; index?: number };

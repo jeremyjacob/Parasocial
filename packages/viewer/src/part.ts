@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { withDepthBias } from "./depthbias";
 
 export type EntityKind = "face" | "edge" | "vertex";
 export type EntityRef = { part: string; kind: EntityKind; index: number };
@@ -108,7 +109,7 @@ export class PartObject {
       side: THREE.DoubleSide,
     });
     this.edgeMaterial = new LineMaterial({ color: 0x1f2023, linewidth: 1.15, resolution, worldUnits: false });
-    this.overlayMaterial = new LineMaterial({ vertexColors: true, linewidth: 2.4, resolution, worldUnits: false, depthTest: true });
+    this.overlayMaterial = withDepthBias(new LineMaterial({ vertexColors: true, linewidth: 2.4, resolution, worldUnits: false, depthTest: true })) as LineMaterial;
     this.pickFaceMaterial = new THREE.ShaderMaterial({
       vertexShader: FACE_PICK_VERT,
       fragmentShader: FACE_PICK_FRAG,

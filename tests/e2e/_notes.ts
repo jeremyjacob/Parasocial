@@ -1,0 +1,50 @@
+import { chromium } from "playwright";
+import { virtualAuthenticator, signUp } from "./auth";
+const out = process.argv[2];
+const b = await chromium.launch();
+const page = await (await b.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 })).newPage();
+page.on("pageerror", (e) => console.log("[pageerror]", e.message));
+page.on("console", (m) => m.type() === "error" && !m.text().includes("404") && console.log("[console]", m.text().slice(0, 300)));
+await virtualAuthenticator(page);
+await signUp(page, "Katherine Johnson");
+await page.getByTestId("example-bracket").click();
+await page.waitForURL(/\/d\//);
+await page.waitForFunction(() => (globalThis as any).__ws?.results?.bracket && (globalThis as any).__ws.kernelReady, null, { timeout: 30000 });
+await page.waitForTimeout(800);
+const vp = (await page.getByTestId("viewport").boundingBox())!;
+const at = (fx: number, fy: number) => [vp.x + vp.width * fx, vp.y + vp.height * fy] as const;
+// right-drag: no menu
+let [x, y] = at(0.3, 0.3);
+await page.mouse.move(x, y); await page.mouse.down({ button: "right" }); await page.mouse.move(x + 60, y + 20, { steps: 5 }); await page.mouse.up({ button: "right" });
+await page.waitForTimeout(300);
+console.log("menu after right-drag:", await page.getByRole("menu").count());
+// right-click: menu
+[x, y] = at(0.62, 0.55);
+await page.mouse.click(x, y, { button: "right" });
+await page.waitForTimeout(300);
+console.log("menu after right-click:", await page.getByRole("menu").count());
+await page.keyboard.press("Escape");
+await page.keyboard.press("Escape");
+// note on a face
+await page.keyboard.press("c");
+await page.mouse.click(x, y);
+await page.getByTestId("note-text").fill("Wall too thin here, make @thickness 4");
+await page.screenshot({ path: `${out}/note-draft.png` });
+await page.keyboard.press("Enter");
+await page.waitForFunction(() => (globalThis as any).__ws.notes.length === 1, null, { timeout: 15000 });
+await page.waitForTimeout(1500);
+console.log("debug", await page.evaluate(async () => { const ws = (globalThis as any).__ws; const n = ws.notes[0]; const t = n.anchor.targets[0]; try { return JSON.stringify({ t, r: await ws.engine.resolve(t.part, [{ kind: t.kind, name: t.name, point: t.point }]) }); } catch (e) { return "ERR " + (e as Error).message; } }));
+console.log("pins", await page.getByTestId("pin").count(), await page.evaluate(() => JSON.stringify((globalThis as any).__nc.pins.map((p: any) => [p.number, p.resolution, p.orphaned]))));
+await page.screenshot({ path: `${out}/note-posted.png` });
+// change width: pin should follow, still resolved by name
+await page.getByRole("tab", { name: "Params" }).click();
+const f = page.getByTestId("params-panel").getByRole("spinbutton").nth(1);
+await f.click(); await f.fill("70"); await f.press("Enter");
+await page.waitForTimeout(3000);
+console.log("after width change", await page.evaluate(() => JSON.stringify((globalThis as any).__nc.pins.map((p: any) => [p.number, p.resolution, p.orphaned, p.point.map((v: number) => Math.round(v))]))));
+await page.getByRole("tab", { name: "Notes" }).click();
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${out}/note-thread.png` });
+await page.keyboard.press("Meta+k"); await page.waitForTimeout(80);
+await page.screenshot({ path: `${out}/palette-anim.png` });
+await b.close();

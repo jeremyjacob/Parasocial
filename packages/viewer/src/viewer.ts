@@ -6,6 +6,12 @@ import { PartObject, decodeId, type EntityKind, type EntityRef, type PartData } 
 import { CadControls, type NavPreset, type CamState } from "./controls";
 import { ViewCube, VIEW_DIRS } from "./viewcube";
 import { LIGHT, type ViewerTheme } from "./theme";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { withDepthBias } from "./depthbias";
+
+export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean };
 
 export type DisplayMode = "shaded" | "shadedEdges" | "wireframe" | "hiddenLine";
 export type SelectionFilter = { face: boolean; edge: boolean; vertex: boolean; part: boolean };
@@ -49,6 +55,9 @@ export class Viewer {
   private dimmed = new Set<string>();
   private hidden = new Set<string>();
   private grid: THREE.Group;
+  private markup = new THREE.Group();
+  private ghosts = new Map<string, THREE.Group>();
+  private blend = 0.5;
   private triad: THREE.Group;
   private envTex: THREE.Texture | null = null;
   filter: SelectionFilter = { face: true, edge: true, vertex: false, part: false };
@@ -71,6 +80,7 @@ export class Viewer {
       reversed = !!probe?.getExtension("EXT_clip_control");
     } catch {}
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
+    (this.renderer as any).__psReversed = reversed;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, o.maxDpr ?? 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -96,7 +106,8 @@ export class Viewer {
 
     this.grid = new THREE.Group();
     this.triad = new THREE.Group();
-    this.scene.add(this.grid, this.triad);
+    this.scene.add(this.grid, this.triad, this.markup);
+    this.markup.renderOrder = 4;
 
     this.controls = new CadControls(canvas, {
       camera: () => this.camera,
@@ -108,9 +119,17 @@ export class Viewer {
     this.controls.reducedMotion = o.reducedMotion ?? matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
     if (o.viewCube !== false) {
-      this.viewCube = new ViewCube(container, (dir) => this.setViewDir(dir));
-      this.viewCube.el.style.top = "14px";
-      this.viewCube.el.style.right = "18px";
+      this.viewCube = new ViewCube(
+        container,
+        (dir) => this.setViewDir(dir),
+        (dx, dy, phase) => {
+          if (phase === "start") this.controls.stopAnim(), this.emit("moving", true);
+          else if (phase === "end") this.emit("moving", false);
+          else this.controls.orbit(dx, dy, this.controls.target);
+        },
+      );
+      this.viewCube.el.style.top = "4px";
+      this.viewCube.el.style.right = "8px";
     }
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -428,6 +447,88 @@ export class Viewer {
     animate ? this.controls.animateTo(to) : this.controls.apply(to);
   }
 
+  // ---------- markup (pencil strokes) ----------
+  /** Replace the drawn markup strokes (world coordinates). */
+  setMarkup(strokes: MarkupStroke[]) {
+    for (const c of this.markup.children) {
+      (c as Line2).geometry.dispose();
+      ((c as Line2).material as LineMaterial).dispose();
+    }
+    this.markup.clear();
+    for (const s of strokes) {
+      if (s.points.length < 2) continue;
+      const g = new LineGeometry();
+      g.setPositions(s.points.flat());
+      const m = withDepthBias(new LineMaterial({ color: new THREE.Color(s.color), linewidth: s.width ?? 3, resolution: this.resolution, worldUnits: false, transparent: true, opacity: s.dim ? 0.35 : 0.95, depthTest: true }), 0.001) as LineMaterial;
+      const l = new Line2(g, m);
+      l.computeLineDistances();
+      l.renderOrder = 4;
+      l.userData.id = s.id;
+      this.markup.add(l);
+    }
+    this.requestRender();
+  }
+
+  // ---------- compare (ghost of previous geometry) ----------
+  /** Show `mesh` as the "before" ghost of `part` (null removes it). */
+  setGhost(part: string, mesh: import("./part").PartMesh | null) {
+    const prev = this.ghosts.get(part);
+    if (prev) {
+      this.scene.remove(prev);
+      prev.traverse((o: any) => (o.geometry?.dispose(), o.material?.dispose?.()));
+      this.ghosts.delete(part);
+    }
+    if (mesh) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+      g.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
+      g.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(this.theme.ghost), roughness: 0.6, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute("position", new THREE.BufferAttribute(mesh.edgePositions, 3));
+      const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: new THREE.Color(this.theme.ghost), transparent: true, depthWrite: false }));
+      const grp = new THREE.Group();
+      grp.add(new THREE.Mesh(g, mat), edges);
+      grp.renderOrder = 5;
+      this.ghosts.set(part, grp);
+      this.scene.add(grp);
+    }
+    this.applyBlend();
+  }
+
+  clearGhosts() {
+    for (const p of [...this.ghosts.keys()]) this.setGhost(p, null);
+  }
+
+  /**
+   * Before ↔ after (§8 Compare): 0 = old geometry alone (solid), 0.5 = ghost overlay,
+   * 1 = new geometry alone.
+   */
+  setBlend(t: number) {
+    this.blend = THREE.MathUtils.clamp(t, 0, 1);
+    this.applyBlend();
+  }
+
+  private applyBlend() {
+    const t = this.blend;
+    const comparing = this.ghosts.size > 0;
+    // ghost: opaque at 0, faint at 0.5, gone at 1
+    const ghostOpacity = t <= 0.5 ? 1 - t * 1.3 : Math.max(0, 0.35 - (t - 0.5) * 0.7);
+    for (const g of this.ghosts.values()) {
+      g.visible = ghostOpacity > 0.01;
+      g.traverse((o: any) => {
+        if (o.material) {
+          o.material.opacity = o.isLineSegments ? Math.min(1, ghostOpacity + 0.2) : ghostOpacity;
+          o.material.depthWrite = ghostOpacity > 0.95;
+        }
+      });
+    }
+    // current: hidden at 0, full from 0.5
+    const cur = !comparing ? 1 : t >= 0.5 ? 1 : t * 2;
+    for (const [id, p] of this.parts) if (this.ghosts.has(id)) p.setFaceStyle({ visible: cur > 0.02, opacity: cur }), (p.edgeLines.visible = cur > 0.3 && this.mode !== "shaded");
+    this.requestRender();
+  }
+
   // ---------- picking ----------
   /**
    * GPU ID-buffer pick at CSS pixel (x, y): renders a small window around the cursor with pick
@@ -536,6 +637,22 @@ export class Viewer {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(new THREE.Vector2((x / w) * 2 - 1, -(y / h) * 2 + 1), this.camera);
     return rc.ray;
+  }
+
+  /**
+   * Is `p` (on a surface) visible from the camera? Compares the depth of the surface under its
+   * screen position with the point's own distance. Used to hide pins behind geometry.
+   */
+  isPointVisible(p: THREE.Vector3, tolerance = 0.02): boolean {
+    const s = this.project(p);
+    if (!s || s.x < 0 || s.y < 0 || s.x > this.container.clientWidth || s.y > this.container.clientHeight) return false;
+    const hit = this.pickPoint(s.x, s.y);
+    if (!hit) return true;
+    const cam = this.camera.position;
+    const dp = cam.distanceTo(p),
+      dh = cam.distanceTo(hit.point);
+    const scale = Math.max(1, this.bounds().getBoundingSphere(new THREE.Sphere()).radius);
+    return dp <= dh + tolerance * scale;
   }
 
   /** Screen position (CSS px) of a world point, or null if behind the camera. */
