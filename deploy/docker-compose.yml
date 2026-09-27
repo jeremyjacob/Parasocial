@@ -1,0 +1,188 @@
+# Parasocial self-hosted stack (PLAN §3 Services).
+#
+#   cp deploy/.env.example deploy/.env     # then edit it — DOMAIN is permanent, read the warning
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+#
+# Networks:
+#   edge     caddy ↔ app / zero-cache. The only network with a published port.
+#   backend  internal (no egress): postgres, storage, migrate, zero-cache, app.
+#   engine   internal (no egress): app ↔ engine-pool only. The engine pool runs
+#            user code, so it gets no route to the internet or to the backend.
+
+name: parasocial
+
+x-db-url: &db-url postgres://parasocial:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/parasocial
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+    environment:
+      POSTGRES_USER: parasocial
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: parasocial
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parasocial -d parasocial"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [backend]
+
+  # Applies packages/sync/migrations before anything else starts. zero-cache
+  # needs the `parasocial_zero` publication to exist when it boots.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/migrate.Dockerfile
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [backend]
+
+  zero-cache:
+    # Must match the @rocicorp/zero version pinned in packages/sync/package.json.
+    image: rocicorp/zero:1.9.0
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      ZERO_UPSTREAM_DB: *db-url
+      ZERO_CVR_DB: *db-url
+      ZERO_CHANGE_DB: *db-url
+      ZERO_REPLICA_FILE: /data/zero.db
+      ZERO_APP_PUBLICATIONS: parasocial_zero
+      ZERO_PORT: "4848"
+      # Custom mutators and synced queries run in the app. zero-cache forwards
+      # the browser's session cookie and Origin to these endpoints.
+      ZERO_MUTATE_URL: http://app:3000/api/zero/mutate
+      ZERO_QUERY_URL: http://app:3000/api/zero/query
+      ZERO_MUTATE_FORWARD_COOKIES: "true"
+      ZERO_QUERY_FORWARD_COOKIES: "true"
+      ZERO_MUTATE_API_KEY: ${ZERO_API_KEY:?set ZERO_API_KEY}
+      ZERO_QUERY_API_KEY: ${ZERO_API_KEY}
+      ZERO_ENABLE_CRUD_MUTATIONS: "false"
+      ZERO_ADMIN_PASSWORD: ${ZERO_ADMIN_PASSWORD:?set ZERO_ADMIN_PASSWORD}
+      ZERO_LOG_LEVEL: info
+    volumes:
+      - zero-replica:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4848/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [backend, edge]
+
+  # SvelteKit on Bun: UI, mutators (push endpoint), passkeys, blobs, MCP,
+  # and the engine page on the engine origin. Built from packages/app.
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/app.Dockerfile
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      storage-init: { condition: service_completed_successfully }
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+      APP_ORIGIN: https://${DOMAIN}
+      ENGINE_ORIGIN: https://${ENGINE_HOST:-engine.${DOMAIN}}
+      ORIGIN: https://${DOMAIN} # SvelteKit adapter
+      PORT: "3000"
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET}
+      DATABASE_URL: *db-url
+      ZERO_API_KEY: ${ZERO_API_KEY}
+      PUBLIC_ZERO_CACHE_URL: https://${DOMAIN}/zero
+      ENGINE_POOL_URL: http://engine-pool:4000
+      S3_ENDPOINT: http://storage:8333
+      S3_BUCKET: ${S3_BUCKET:-parasocial}
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+    restart: unless-stopped
+    networks: [backend, edge, engine]
+
+  # STUB — see deploy/engine-pool/Dockerfile. Real service lands in M5
+  # (Playwright-driven headless Chromium running the engine build).
+  engine-pool:
+    build:
+      context: ./engine-pool
+    environment:
+      PORT: "4000"
+    restart: unless-stopped
+    networks: [engine] # internal: no egress, no route to postgres or storage
+
+  # S3-compatible object storage (SeaweedFS). Replace with S3/R2 by pointing
+  # the app's S3_* variables elsewhere and removing this service.
+  storage:
+    image: chrislusf/seaweedfs:3.97
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/s3.json <<EOF
+        {"identities":[{"name":"parasocial","credentials":[{"accessKey":"$${S3_ACCESS_KEY_ID}","secretKey":"$${S3_SECRET_ACCESS_KEY}"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+        EOF
+        exec weed server -dir=/data -ip=storage -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=1024 -s3 -s3.port=8333 -s3.config=/tmp/s3.json
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+    volumes:
+      - storage:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+    networks: [backend]
+
+  storage-init:
+    image: chrislusf/seaweedfs:3.97
+    depends_on:
+      storage: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          echo "s3.bucket.create -name ${S3_BUCKET:-parasocial}" | weed shell -master=storage:9333 2>&1 | tee /tmp/out
+          grep -qiE "error|fail" /tmp/out || exit 0
+          grep -qi "already exist" /tmp/out && exit 0
+          sleep 2
+        done
+        exit 1
+    restart: "no"
+    networks: [backend]
+
+  caddy:
+    image: caddy:2.10-alpine
+    depends_on: [app, zero-cache]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ENGINE_HOST: ${ENGINE_HOST:-engine.${DOMAIN}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    networks: [edge]
+
+networks:
+  edge: {}
+  backend:
+    internal: true
+  engine:
+    internal: true
+
+volumes:
+  pgdata:
+  zero-replica:
+  storage:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,57 @@
+# TLS and routing for the two origins (PLAN §3, §5 Sandboxing).
+#
+#   https://{$DOMAIN}        app (UI, API, MCP) + /zero/* → zero-cache (websocket)
+#   https://{$ENGINE_HOST}   engine iframe origin (served by the app), locked down with CSP
+#
+# Both origins are cross-origin isolated (COOP/COEP) so the engine can use
+# SharedArrayBuffer for threaded OCCT, and send CORP so each can embed the other.
+# For DOMAIN=localhost Caddy issues local certs (trust them with `caddy trust`).
+
+# ACME works without an email. To get expiry notices, add a global block:
+#   { email you@example.com }
+
+(isolation) {
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		Cross-Origin-Resource-Policy "same-site"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000"
+	}
+}
+
+{$DOMAIN} {
+	import isolation
+	encode zstd gzip
+
+	# `route` keeps these in written order (Caddy would otherwise sort directives).
+	route {
+		# Defense in depth: the app also rejects the engine origin, and zero-cache
+		# forwards Origin to the app's push/query endpoints.
+		@fromEngine header Origin https://{$ENGINE_HOST}
+		respond @fromEngine "Forbidden" 403
+
+		# Zero client: cacheURL = https://{$DOMAIN}/zero (zero-cache accepts one base path segment).
+		reverse_proxy /zero/* zero-cache:4848
+
+		reverse_proxy app:3000
+	}
+}
+
+{$ENGINE_HOST} {
+	import isolation
+	encode zstd gzip
+
+	# No network, no remote code (PLAN §5). Note: `connect-src 'none'` also
+	# applies inside a service worker on this origin, so SW precaching of the
+	# WASM (PLAN §9) needs its own, narrower policy on the SW script route.
+	header Content-Security-Policy "default-src 'none'; connect-src 'none'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; frame-ancestors https://{$DOMAIN}"
+
+	# The engine page never gets credentials: strip cookies on the way in and out.
+	reverse_proxy app:3000 {
+		header_up -Cookie
+		header_up X-Parasocial-Engine "1"
+		header_down -Set-Cookie
+	}
+}
