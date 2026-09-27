@@ -1,0 +1,16 @@
+{
+  "name": "parasocial",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "bun test packages/kernel packages/naming packages/api packages/runtime packages/sync packages/mcp",
+    "corpus": "bun run packages/naming/corpus/run.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/bun": "latest"
+  }
+}

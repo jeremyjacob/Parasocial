@@ -1,0 +1,11 @@
+{
+  "name": "@parasocial/kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*" },
+  "dependencies": {
+    "replicad-opencascadejs": "1.1.0"
+  }
+}
