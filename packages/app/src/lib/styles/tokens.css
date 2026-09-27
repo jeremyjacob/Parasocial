@@ -1,0 +1,370 @@
+/*
+ * Parasocial design tokens.
+ *
+ * Two layers:
+ *   1. Raw semantic CSS custom properties (--bg-panel, --fg-secondary, --selection-preselect …),
+ *      defined per theme on :root / [data-theme]. Anything (Three.js, canvas code, inline styles)
+ *      can read these with getComputedStyle.
+ *   2. A Tailwind v4 `@theme inline` block that maps those vars onto utility names
+ *      (bg-panel, text-fg-secondary, border-line, rounded-control, shadow-popover …).
+ *
+ * Theme scoping: any element with data-theme="light" | "dark" re-declares every var, so a
+ * subtree can force a theme (the /design side-by-side panes rely on this).
+ *
+ * Keep tokens.ts in sync with the literal values here (part palette + selection colors).
+ */
+
+/* ------------------------------------------------------------------------------------------ */
+/* Tailwind theme: utilities                                                                   */
+/* ------------------------------------------------------------------------------------------ */
+
+@theme {
+	/* Drop Tailwind's default palette and type scale: only tokens exist. */
+	--color-*: initial;
+	--text-*: initial;
+	--shadow-*: initial;
+	--radius-*: initial;
+	--ease-*: initial;
+
+	--color-white: #fff;
+	--color-black: #000;
+	--color-transparent: transparent;
+	--color-current: currentColor;
+
+	/* Typography ----------------------------------------------------------------------------- */
+	--font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+	/* Compact UI scale. 11 = labels, 12 = default UI/controls, 13 = reading text (notes). */
+	--text-caption: 10px;
+	--text-caption--line-height: 14px;
+	--text-caption--letter-spacing: 0.02em;
+	--text-label: 11px;
+	--text-label--line-height: 16px;
+	--text-label--letter-spacing: 0.01em;
+	--text-ui: 12px;
+	--text-ui--line-height: 16px;
+	--text-ui--letter-spacing: 0.003em;
+	--text-body: 13px;
+	--text-body--line-height: 20px;
+	--text-body--letter-spacing: -0.003em;
+	--text-title: 15px;
+	--text-title--line-height: 20px;
+	--text-title--letter-spacing: -0.01em;
+	--text-heading: 20px;
+	--text-heading--line-height: 28px;
+	--text-heading--letter-spacing: -0.017em;
+	--text-display: 28px;
+	--text-display--line-height: 34px;
+	--text-display--letter-spacing: -0.022em;
+
+	/* Spacing: Tailwind's default 0.25rem = 4px base already gives the 4px grid (p-1 = 4px). */
+	--spacing: 4px;
+
+	/* Radii. Concentric nesting rule: inner = outer − padding (see .nest / innerRadius()). */
+	--radius-xs: 2px;
+	--radius-sm: 4px; /* chips inside controls, checkbox, segmented thumb (6 − 2) */
+	--radius-control: 6px; /* 28px inputs, buttons, menu items */
+	--radius-md: 8px; /* toolbar buttons (12 − 4), cards inside panels */
+	--radius-popover: 10px; /* menus, popovers: 10 − 4 padding = 6 = control */
+	--radius-panel: 12px; /* floating toolbar, panels, dialogs */
+	--radius-dialog: 14px;
+	--radius-full: 9999px;
+
+	/* Elevation (values live on the theme so dark mode can swap them). */
+	--shadow-xs: var(--elev-xs);
+	--shadow-control: var(--elev-control);
+	--shadow-thumb: var(--elev-thumb);
+	--shadow-toolbar: var(--elev-toolbar);
+	--shadow-popover: var(--elev-popover);
+	--shadow-dialog: var(--elev-dialog);
+	--shadow-focus: var(--focus-ring);
+
+	/* Motion */
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	--ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+	--ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@theme inline {
+	/* Surfaces */
+	--color-app: var(--bg-app);
+	--color-panel: var(--bg-panel);
+	--color-canvas: var(--bg-canvas);
+	--color-elevated: var(--bg-elevated);
+	--color-input: var(--bg-input);
+	--color-control: var(--bg-control);
+	--color-control-hover: var(--bg-control-hover);
+	--color-hover: var(--bg-hover);
+	--color-active: var(--bg-active);
+	--color-tooltip: var(--bg-tooltip);
+	--color-overlay: var(--bg-overlay);
+
+	/* Foreground */
+	--color-fg: var(--fg-primary);
+	--color-fg-secondary: var(--fg-secondary);
+	--color-fg-tertiary: var(--fg-tertiary);
+	--color-fg-disabled: var(--fg-disabled);
+	--color-fg-on-accent: var(--fg-on-accent);
+	--color-fg-tooltip: var(--fg-tooltip);
+
+	/* Lines (named line-* because Tailwind has no border-color namespace) */
+	--color-line-subtle: var(--border-subtle);
+	--color-line: var(--border-default);
+	--color-line-strong: var(--border-strong);
+	--color-focus: var(--border-focus);
+
+	/* Accent */
+	--color-accent: var(--accent);
+	--color-accent-hover: var(--accent-hover);
+	--color-accent-subtle: var(--accent-subtle);
+	--color-accent-fg: var(--accent-fg);
+
+	/* Status */
+	--color-ok: var(--status-ok);
+	--color-ok-subtle: var(--status-ok-subtle);
+	--color-warning: var(--status-warning);
+	--color-warning-subtle: var(--status-warning-subtle);
+	--color-error: var(--status-error);
+	--color-error-subtle: var(--status-error-subtle);
+	--color-info: var(--status-info);
+	--color-info-subtle: var(--status-info-subtle);
+
+	/* Selection (orange is reserved for this, nothing else may use it) */
+	--color-preselect: var(--selection-preselect);
+	--color-selected: var(--selection-selected-stroke);
+	--color-selected-fill: var(--selection-selected-fill);
+
+	/* Overridden params */
+	--color-override: var(--override);
+
+	/* Agents */
+	--color-agent: var(--agent);
+	--color-agent-subtle: var(--agent-subtle);
+
+	/* On the dark tooltip / toast surface */
+	--color-inverse-ok: var(--inverse-ok);
+	--color-inverse-error: var(--inverse-error);
+	--color-inverse-accent: var(--inverse-accent);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Theme-independent vars                                                                      */
+/* ------------------------------------------------------------------------------------------ */
+
+:root {
+	--duration-instant: 80ms; /* hover colour changes; below perception of "animation" */
+	--duration-fast: 150ms; /* small state changes, tooltips, toggles */
+	--duration-base: 200ms; /* popovers, menus, panel reveals */
+	--duration-slow: 250ms; /* dialogs, camera-style moves, cross-fades */
+
+	/* Status hues for content on the always-dark tooltip/toast surface. */
+	--inverse-ok: #4ade80;
+	--inverse-error: #ff7a7e;
+	--inverse-accent: #8cc2ff;
+
+	--control-h-sm: 24px;
+	--control-h: 28px;
+	--control-h-lg: 32px;
+	--row-h: 32px;
+
+	/* Concentric radius presets: pair each outer radius with its padding. */
+	--toolbar-radius: 12px;
+	--toolbar-pad: 4px;
+	--toolbar-item-radius: calc(var(--toolbar-radius) - var(--toolbar-pad)); /* 8px */
+	--popover-radius: 10px;
+	--popover-pad: 4px;
+	--popover-item-radius: calc(var(--popover-radius) - var(--popover-pad)); /* 6px */
+	--segment-radius: 6px;
+	--segment-pad: 2px;
+	--segment-item-radius: calc(var(--segment-radius) - var(--segment-pad)); /* 4px */
+
+	/* Part palette (light-theme variants; dark overrides below). Mirrors tokens.ts. */
+	--part-graphite: #8e939a;
+	--part-chalk: #d9d5cc;
+	--part-sage: #93b29c;
+	--part-pine: #5e8f78;
+	--part-teal: #5fa6a4;
+	--part-moss: #a3aa6e;
+	--part-straw: #d2c27f;
+	--part-rose: #cf96a4;
+	--part-plum: #a189b6;
+	--part-iris: #8d8fd6;
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Light                                                                                       */
+/* ------------------------------------------------------------------------------------------ */
+
+:root,
+[data-theme='light'] {
+	color-scheme: light;
+
+	--bg-app: #ececee;
+	--bg-panel: #ffffff;
+	--bg-canvas: #f3f3f5;
+	--bg-elevated: #ffffff;
+	--bg-input: #f3f3f5;
+	--bg-control: #ffffff;
+	--bg-control-hover: #f5f5f7;
+	--bg-hover: rgb(20 20 30 / 0.045);
+	--bg-active: rgb(20 20 30 / 0.08);
+	--bg-tooltip: #1c1c1f;
+	--bg-overlay: rgb(12 12 16 / 0.28);
+
+	--fg-primary: #1b1b1f;
+	--fg-secondary: #6a6a73;
+	--fg-tertiary: #9a9aa3;
+	--fg-disabled: #bcbcc3;
+	--fg-on-accent: #ffffff;
+	--fg-tooltip: #f5f5f7;
+
+	--border-subtle: #efeff1;
+	--border-default: #e3e3e7;
+	--border-strong: #cdcdd3;
+	--border-focus: #1273eb;
+
+	--accent: #1273eb;
+	--accent-hover: #0d64d2;
+	--accent-subtle: rgb(18 115 235 / 0.1);
+	--accent-fg: #0c66d9;
+
+	--status-ok: #1f9a54;
+	--status-ok-subtle: rgb(31 154 84 / 0.11);
+	--status-warning: #b98300;
+	--status-warning-subtle: rgb(214 160 0 / 0.14);
+	--status-error: #dc3b40;
+	--status-error-subtle: rgb(220 59 64 / 0.1);
+	--status-info: #1273eb;
+	--status-info-subtle: rgb(18 115 235 / 0.1);
+
+	--selection-preselect: #ff9933;
+	--selection-selected-stroke: #f77f00;
+	--selection-selected-fill: rgb(255 146 30 / 0.5);
+
+	--override: #0c66d9;
+
+	--agent: #2a2a30; /* agents: graphite squircles, not a new hue */
+	--agent-subtle: rgb(20 20 30 / 0.07);
+
+	--elev-xs: 0 1px 2px rgb(16 16 24 / 0.06);
+	--elev-control: 0 0 0 1px rgb(16 16 24 / 0.07), 0 1px 2px rgb(16 16 24 / 0.06);
+	--elev-thumb: 0 0 0 0.5px rgb(16 16 24 / 0.1), 0 1px 3px rgb(16 16 24 / 0.12);
+	--elev-toolbar:
+		0 0 0 1px rgb(16 16 24 / 0.06), 0 1px 2px rgb(16 16 24 / 0.05), 0 6px 20px -4px rgb(16 16 24 / 0.1);
+	--elev-popover:
+		0 0 0 1px rgb(16 16 24 / 0.07), 0 2px 6px rgb(16 16 24 / 0.06), 0 12px 32px -6px rgb(16 16 24 / 0.16);
+	--elev-dialog:
+		0 0 0 1px rgb(16 16 24 / 0.06), 0 8px 24px rgb(16 16 24 / 0.1), 0 32px 64px -12px rgb(16 16 24 / 0.22);
+	--focus-ring: 0 0 0 2px var(--bg-panel), 0 0 0 3.5px var(--border-focus);
+
+	--canvas-grid: rgb(16 16 24 / 0.06);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Dark: layered depth, not flat grey. Each step up in elevation gets lighter.                 */
+/* app 0 → canvas 1 → panel 2 → input/control 3 → elevated 4                                   */
+/* ------------------------------------------------------------------------------------------ */
+
+[data-theme='dark'] {
+	color-scheme: dark;
+
+	--bg-app: #0e0e10;
+	--bg-panel: #1b1b1e;
+	--bg-canvas: #141416;
+	--bg-elevated: #252529;
+	--bg-input: #26262a;
+	--bg-control: #34343a;
+	--bg-control-hover: #3b3b42;
+	--bg-hover: rgb(255 255 255 / 0.055);
+	--bg-active: rgb(255 255 255 / 0.09);
+	--bg-tooltip: #3a3a40;
+	--bg-overlay: rgb(0 0 0 / 0.5);
+
+	--fg-primary: #ededf0;
+	--fg-secondary: #a0a0a9;
+	--fg-tertiary: #72727b;
+	--fg-disabled: #4d4d54;
+	--fg-on-accent: #ffffff;
+	--fg-tooltip: #f5f5f7;
+
+	--border-subtle: #242428;
+	--border-default: #2e2e33;
+	--border-strong: #3d3d44;
+	--border-focus: #3d8bff;
+
+	--accent: #2f7ff0;
+	--accent-hover: #4a90f5;
+	--accent-subtle: rgb(61 139 255 / 0.16);
+	--accent-fg: #69a6ff;
+
+	--status-ok: #3cc57a;
+	--status-ok-subtle: rgb(60 197 122 / 0.14);
+	--status-warning: #f0bb3c;
+	--status-warning-subtle: rgb(240 187 60 / 0.14);
+	--status-error: #ff5f64;
+	--status-error-subtle: rgb(255 95 100 / 0.14);
+	--status-info: #5a9dff;
+	--status-info-subtle: rgb(90 157 255 / 0.15);
+
+	--selection-preselect: #ffa347;
+	--selection-selected-stroke: #ff8c1a;
+	--selection-selected-fill: rgb(255 150 40 / 0.46);
+
+	--override: #69a6ff;
+
+	--agent: #4a4a53;
+	--agent-subtle: rgb(255 255 255 / 0.08);
+
+	--elev-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+	--elev-control: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 0 0 1px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.3);
+	--elev-thumb: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 0.5px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+	--elev-toolbar:
+		inset 0 1px 0 rgb(255 255 255 / 0.05), 0 0 0 1px rgb(0 0 0 / 0.5), 0 0 0 1.5px rgb(255 255 255 / 0.04),
+		0 8px 24px -4px rgb(0 0 0 / 0.5);
+	--elev-popover:
+		inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(0 0 0 / 0.55), 0 0 0 1.5px rgb(255 255 255 / 0.05),
+		0 16px 40px -8px rgb(0 0 0 / 0.6);
+	--elev-dialog:
+		inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(0 0 0 / 0.6), 0 0 0 1.5px rgb(255 255 255 / 0.05),
+		0 32px 72px -12px rgb(0 0 0 / 0.7);
+	--focus-ring: 0 0 0 2px var(--bg-panel), 0 0 0 3.5px var(--border-focus);
+
+	--canvas-grid: rgb(255 255 255 / 0.045);
+
+	--part-graphite: #7d828a;
+	--part-chalk: #b9b5ad;
+	--part-sage: #7b9a84;
+	--part-pine: #4f7d68;
+	--part-teal: #4f908e;
+	--part-moss: #8a915a;
+	--part-straw: #b7a86a;
+	--part-rose: #b37f8c;
+	--part-plum: #8b74a0;
+	--part-iris: #7779be;
+}
+
+/* The pre-paint script in app.html always sets data-theme on <html>, resolving "system"
+   with matchMedia, so there is no separate prefers-color-scheme block to keep in sync. */
+
+/* ------------------------------------------------------------------------------------------ */
+/* Reduced motion: collapse durations globally. Components read the vars, so this is enough.   */
+/* ------------------------------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--duration-instant: 0ms;
+		--duration-fast: 0ms;
+		--duration-base: 0ms;
+		--duration-slow: 0ms;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}

@@ -1,0 +1,196 @@
+/* Base element styles + a few token-driven utilities. */
+
+@layer base {
+	html {
+		font-family: var(--font-sans);
+		font-size: 12px;
+		line-height: 16px;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+		font-feature-settings: 'cv11' 0;
+		background: var(--bg-app);
+		color: var(--fg-primary);
+	}
+
+	/* Every themed scope repaints its own text colour so nested data-theme panes work. */
+	[data-theme] {
+		color: var(--fg-primary);
+	}
+
+	body {
+		margin: 0;
+		min-height: 100dvh;
+	}
+
+	/* Numbers in inputs are always tabular. */
+	input,
+	output,
+	[role='spinbutton'] {
+		font-variant-numeric: tabular-nums;
+	}
+
+	::selection {
+		/* Text selection is not "selection" in the CAD sense; keep it accent, never orange. */
+		background: var(--accent-subtle);
+	}
+
+	:focus-visible {
+		outline: none;
+	}
+
+	button {
+		cursor: default;
+	}
+}
+
+@utility tabular {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Visible keyboard focus: two-ring (gap + accent) so it reads on any surface. */
+@utility focus-ring {
+	&:focus-visible {
+		box-shadow: var(--focus-ring);
+	}
+}
+
+/* Concentric nesting helper.
+ * <div class="nest" style="--r: 12px; --p: 4px"> <button class="nest-inner"> …
+ * The child radius is always r − p, so corners stay parallel. */
+@utility nest {
+	border-radius: var(--r, 12px);
+	padding: var(--p, 4px);
+}
+@utility nest-inner {
+	border-radius: max(0px, calc(var(--r, 12px) - var(--p, 4px)));
+}
+
+/* Field shell: every text-like control (Input, NumberField, Select trigger, Combobox).
+ * Borderless fill at rest (Figma UI3), hairline on hover, accent hairline on focus, red when invalid. */
+@utility field {
+	position: relative;
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	height: var(--control-h);
+	border-radius: var(--radius-control);
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	font-size: var(--text-ui);
+	line-height: var(--text-ui--line-height);
+	box-shadow: inset 0 0 0 1px var(--field-ring, transparent);
+	transition:
+		box-shadow var(--duration-instant) var(--ease-out),
+		background-color var(--duration-instant) var(--ease-out);
+	&:hover {
+		--field-ring: var(--border-strong);
+	}
+	&:focus-within,
+	&[data-state='open'] {
+		--field-ring: var(--border-focus);
+	}
+	&[data-invalid] {
+		--field-ring: var(--status-error);
+	}
+	&[data-disabled] {
+		opacity: 0.45;
+		pointer-events: none;
+	}
+}
+
+@utility transition-colors-fast {
+	transition-property: color, background-color, border-color, box-shadow, opacity;
+	transition-duration: var(--duration-instant);
+	transition-timing-function: var(--ease-out);
+}
+
+/* Enter/exit animations for bits-ui floating content (data-state driven). */
+@keyframes ps-pop-in {
+	from {
+		opacity: 0;
+		transform: translateY(var(--ps-pop-y, 2px)) scale(0.97);
+	}
+}
+@keyframes ps-pop-out {
+	to {
+		opacity: 0;
+		transform: scale(0.98);
+	}
+}
+@keyframes ps-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+@keyframes ps-fade-out {
+	to {
+		opacity: 0;
+	}
+}
+@keyframes ps-dialog-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, calc(-50% + 6px)) scale(0.97);
+	}
+}
+@keyframes ps-shimmer {
+	from {
+		background-position: 150% 0;
+	}
+	to {
+		background-position: -50% 0;
+	}
+}
+@keyframes ps-progress {
+	0% {
+		transform: translateX(-100%) scaleX(0.3);
+	}
+	50% {
+		transform: translateX(10%) scaleX(0.6);
+	}
+	100% {
+		transform: translateX(110%) scaleX(0.3);
+	}
+}
+@keyframes ps-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+@keyframes ps-pulse-ring {
+	0% {
+		box-shadow: 0 0 0 0 var(--agent);
+	}
+	70%,
+	100% {
+		box-shadow: 0 0 0 4px transparent;
+	}
+}
+
+@utility animate-pop {
+	transform-origin: var(--bits-floating-transform-origin, center);
+	&[data-state='open'],
+	&[data-state='delayed-open'],
+	&[data-state='instant-open'] {
+		animation: ps-pop-in var(--duration-fast) var(--ease-out);
+	}
+	&[data-state='closed'] {
+		animation: ps-pop-out var(--duration-fast) var(--ease-out);
+	}
+	&[data-side='top'] {
+		--ps-pop-y: 2px;
+	}
+	&[data-side='bottom'] {
+		--ps-pop-y: -2px;
+	}
+}
+
+@utility animate-fade {
+	&[data-state='open'] {
+		animation: ps-fade-in var(--duration-base) var(--ease-out);
+	}
+	&[data-state='closed'] {
+		animation: ps-fade-out var(--duration-fast) var(--ease-out);
+	}
+}
