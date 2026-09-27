@@ -98,8 +98,11 @@
 	});
 
 	// synced changes: clean buffers reload in place (keeping cursor/scroll); dirty ones get a banner
+	// also on buffer changes, so "Reload" on a conflict replaces the editor text (typing already
+	// matches its buffer, so it's a no-op there)
 	$effect(() => {
 		ws.scripts;
+		ws.buffers;
 		ws.untracked(() => {
 			ws.reconcileBuffers();
 			for (const [path, m] of models) {

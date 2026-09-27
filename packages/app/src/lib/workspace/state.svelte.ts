@@ -450,7 +450,9 @@ export class WorkspaceState {
 				if (sc.version !== b.base) (next[path] = { ...b, base: sc.version }), (changed = true);
 				continue;
 			}
-			if (b.content === b.baseContent) next[path] = { content: sc.content, base: sc.version, baseContent: sc.content };
+			// the synced row already has exactly this text (our own save landing): clean, no conflict
+			if (b.content === sc.content) next[path] = { content: sc.content, base: sc.version, baseContent: sc.content };
+			else if (b.content === b.baseContent) next[path] = { content: sc.content, base: sc.version, baseContent: sc.content };
 			else if (!conflicts[path]) {
 				const agent = sc.updatedByAgent ? this.agents.find((a) => a.id === sc.updatedByAgent) : null;
 				conflicts[path] = agent ? agent.clientName : sc.updatedByUser === this.userID ? 'you (another tab)' : 'someone else';
