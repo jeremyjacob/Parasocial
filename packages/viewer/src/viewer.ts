@@ -10,6 +10,7 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
+import { InfiniteGrid } from "./grid";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
@@ -25,6 +26,9 @@ export type ViewerOptions = {
   theme?: ViewerTheme;
   nav?: NavPreset;
   viewCube?: boolean;
+  /** View cube container offset from the viewport's top-right corner (px). The container is
+   *  larger than the drawn cube, so the visible cube sits ~16px further in. */
+  viewCubeInset?: { top: number; right: number };
   /** device pixel ratio cap */
   maxDpr?: number;
   reducedMotion?: boolean;
@@ -32,6 +36,11 @@ export type ViewerOptions = {
 };
 
 type Highlight = { refs: EntityRef[] };
+
+/** Orange tint on selected faces and parts alike: strong, with shading still visible. */
+const SELECTED_TINT = 0.75;
+/** Origin axis lines, shared with the view cube's triad so the two match. */
+const AXIS_OPACITY = 0.375;
 
 export class Viewer {
   readonly renderer: THREE.WebGLRenderer;
@@ -59,6 +68,7 @@ export class Viewer {
   private dimmed = new Set<string>();
   private hidden = new Set<string>();
   private grid: THREE.Group;
+  private groundGrid = new InfiniteGrid();
   private markup = new THREE.Group();
   private ghosts = new Map<string, THREE.Group>();
   private blend = 0.5;
@@ -130,6 +140,7 @@ export class Viewer {
     this.scene.add(this.persp, this.ortho);
 
     this.grid = new THREE.Group();
+    this.grid.add(this.groundGrid.mesh);
     this.triad = new THREE.Group();
     this.scene.add(this.grid, this.triad, this.markup);
     this.markup.renderOrder = 4;
@@ -161,8 +172,8 @@ export class Viewer {
           else this.controls.orbit(dx, dy, this.controls.target);
         },
       );
-      this.viewCube.el.style.top = "4px";
-      this.viewCube.el.style.right = "8px";
+      this.viewCube.el.style.top = `${o.viewCubeInset?.top ?? 4}px`;
+      this.viewCube.el.style.right = `${o.viewCubeInset?.right ?? 8}px`;
     }
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -324,12 +335,12 @@ export class Viewer {
     for (const r of this.selection.refs)
       if (r.part === id) {
         if (r.kind === "face") {
-          tints.set(r.index, { color: selFill, amount: 0.42 });
+          tints.set(r.index, { color: selFill, amount: SELECTED_TINT });
           selEdges.push(...(p.data.faceEdges[r.index] ?? []));
         } else if (r.kind === "edge") selEdges.push(r.index);
       }
-    // a selected part reads as orange (Onshape-style): a strong tint, shading still visible, plus the outline
-    if (partSelected) for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, { color: selFill, amount: 0.85 });
+    // a selected part reads as orange: the same tint as a selected face, plus the outline
+    if (partSelected) for (let f = 0; f < p.data.mesh.faceRanges.length / 2; f++) tints.set(f, { color: selFill, amount: SELECTED_TINT });
     p.setOutline(partSelected, selStroke);
     if (this.preselect?.part === id) {
       if (this.preselect.kind === "face") preEdges.push(...(p.data.faceEdges[this.preselect.index] ?? []));
@@ -406,6 +417,10 @@ export class Viewer {
     this.container.style.setProperty("--vc-border", t.dark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.12)");
     this.container.style.setProperty("--vc-fg", t.dark ? "#a1a1aa" : "#71717a");
     this.container.style.setProperty("--vc-fg-hover", t.dark ? "#fafafa" : "#18181b");
+    this.container.style.setProperty("--vc-axis-x", t.axisX);
+    this.container.style.setProperty("--vc-axis-y", t.axisY);
+    this.container.style.setProperty("--vc-axis-z", t.axisZ);
+    this.container.style.setProperty("--vc-axis-opacity", String(AXIS_OPACITY));
     this.updateGrid();
   }
 
@@ -972,6 +987,14 @@ export class Viewer {
     this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
     this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
     this.aoPass.blendIntensity = 0.75;
+    // GTAO's own normal/depth pass only skips lines; keep the ground grid quad out of it too
+    const aoRender = this.aoPass.render.bind(this.aoPass);
+    this.aoPass.render = (...a: Parameters<GTAOPass["render"]>) => {
+      const g = this.groundGrid.mesh.visible;
+      this.groundGrid.mesh.visible = false;
+      aoRender(...a);
+      this.groundGrid.mesh.visible = g;
+    };
     c.addPass(this.renderPass);
     c.addPass(this.aoPass);
     c.addPass(new OutputPass());
@@ -1017,6 +1040,7 @@ export class Viewer {
     const t0 = performance.now();
     this.needsRender = false;
     this.viewCube?.update(this.camera);
+    this.syncHelpers();
     const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.section;
     if (useAO) {
       const c = this.ensureComposer();
@@ -1046,40 +1070,34 @@ export class Viewer {
   }
 
   private updateGrid() {
-    this.grid.clear();
     this.triad.clear();
     const b = this.bounds();
     const size = b.isEmpty() ? 100 : Math.max(b.max.x - b.min.x, b.max.y - b.min.y) * 1.6;
     const step = Math.pow(10, Math.floor(Math.log10(Math.max(size, 1) / 8)));
-    const half = Math.ceil(size / 2 / (step * 10)) * step * 10;
     const t = this.theme;
-    const pts: number[] = [],
-      major: number[] = [];
-    for (let v = -half; v <= half + 1e-9; v += step) {
-      const arr = Math.abs(Math.round(v / step) % 10) === 0 ? major : pts;
-      arr.push(-half, v, 0, half, v, 0, v, -half, 0, v, half, 0);
-    }
-    const mk = (arr: number[], color: string, opacity: number) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
-      const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
-      const l = new THREE.LineSegments(g, m);
-      l.renderOrder = -1;
+    const z = b.isEmpty() ? 0 : Math.min(0, b.min.z);
+    this.groundGrid.configure(step, z - 1e-4 * step, t.grid, t.gridMajor);
+    // origin axes: the positive half-lines, depth-tested like any other object. Unit
+    // length here; syncHelpers scales them out to the far plane so they run to the horizon.
+    const axis = (d: number[], c: string) => {
+      const g = new LineGeometry();
+      g.setPositions([0, 0, 0, ...d]);
+      const m = withDepthBias(new LineMaterial({ color: new THREE.Color(c), linewidth: 2, resolution: this.resolution, worldUnits: false, transparent: true, opacity: AXIS_OPACITY, depthWrite: false }), 0.0004) as LineMaterial;
+      const l = new Line2(g, m);
+      l.frustumCulled = false;
       return l;
     };
-    const z = b.isEmpty() ? 0 : Math.min(0, b.min.z);
-    const g1 = mk(pts, t.grid, 0.9),
-      g2 = mk(major, t.gridMajor, 1);
-    g1.position.z = g2.position.z = z - 1e-3 * half;
-    this.grid.add(g1, g2);
-    const L = step * 2;
-    const axis = (x: number, y: number, zz: number, c: string) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, x * L, y * L, zz * L], 3));
-      return new THREE.Line(g, new THREE.LineBasicMaterial({ color: c, depthTest: false, transparent: true, opacity: 0.9 }));
-    };
-    this.triad.add(axis(1, 0, 0, t.axisX), axis(0, 1, 0, t.axisY), axis(0, 0, 1, t.axisZ));
-    this.triad.renderOrder = 3;
+    for (const [d, c] of [[[1, 0, 0], t.axisX], [[0, 1, 0], t.axisY], [[0, 0, 1], t.axisZ]] as [number[], string][])
+      this.triad.add(axis(d, c));
+    this.triad.renderOrder = 1;
+  }
+
+  /** Keep the grid and axes reaching the horizon from wherever the camera is. */
+  private syncHelpers() {
+    const cam = this.camera;
+    this.groundGrid.update(cam, this.controls.target);
+    const reach = (cam as THREE.PerspectiveCamera).isPerspectiveCamera ? (cam as THREE.PerspectiveCamera).far : cam.position.distanceTo(this.controls.target) * 50 + 1e3;
+    this.triad.scale.setScalar(reach);
   }
 
   /** PNG of the current view (for note snapshots and renders). */
@@ -1094,6 +1112,7 @@ export class Viewer {
     this.ro.disconnect();
     this.controls.dispose();
     this.viewCube?.dispose();
+    this.groundGrid.dispose();
     for (const p of this.parts.values()) p.dispose();
     this.pickTarget.dispose();
     this.envTex?.dispose();

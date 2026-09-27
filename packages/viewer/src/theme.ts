@@ -52,7 +52,7 @@ export const DARK: ViewerTheme = {
   edge: "#0b0b0c",
   edgeHidden: "#52525b",
   silhouette: "#0b0b0c",
-  preselect: "#fb923c",
+  preselect: "#fa9c50",
   selectedFill: "#f97316",
   selectedStroke: "#fdba74",
   error: "#ff6369",

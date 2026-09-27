@@ -15,8 +15,8 @@ export type DocumentState = {
   units?: { length: string; angle: string };
 };
 
-export type FaceMeta = { surface: string; area: number; center: Vec3; normal: Vec3; radius?: number; axis?: Vec3 };
-export type EdgeMeta = { curve: string; length: number; mid: Vec3; radius?: number; direction?: Vec3; center?: Vec3; seam?: boolean };
+export type FaceMeta = { surface: string; area: number; center: Vec3; normal: Vec3; radius?: number; axis?: Vec3; origin?: Vec3 };
+export type EdgeMeta = { curve: string; length: number; mid: Vec3; radius?: number; direction?: Vec3; center?: Vec3; axis?: Vec3; seam?: boolean };
 
 export type PartResult = {
   part: string;
@@ -178,11 +178,11 @@ export class Engine {
       result.timings.mesh = performance.now() - tm;
       result.faces = rec.topo.faces.items.map((_, i) => {
         const f = faceOf(rec!, i);
-        return { surface: f.surface, area: f.area, center: f.center, normal: f.normal, radius: f.radius, axis: f.axis };
+        return { surface: f.surface, area: f.area, center: f.center, normal: f.normal, radius: f.radius, axis: f.axis, origin: f.origin };
       });
       result.edges = rec.topo.edges.items.map((_, i) => {
         const e = edgeOf(rec!, i);
-        return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, seam: isSeamEdge(rec!, i) || undefined };
+        return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, axis: e.axis, seam: isSeamEdge(rec!, i) || undefined };
       });
       result.vertices = rec.topo.vertices.items.map((_, i) => vertexOf(rec!, i));
       result.faceEdges = rec.topo.faceEdges.map((l) => [...l]);

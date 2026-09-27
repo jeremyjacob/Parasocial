@@ -69,7 +69,6 @@ export class InfiniteGrid {
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
-      extensions: { derivatives: true } as any,
     });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.mat);
     this.mesh.renderOrder = -1;

@@ -3,6 +3,8 @@
 // straight from the engine to the viewer; Svelte only sees lightweight metadata.
 import { untrack } from 'svelte';
 import type { Viewer, EntityRef } from '@parasocial/viewer';
+
+type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 import { mutators, captureInverse, captureInverseAll, type AnyMR, type ParasocialZero, type Script, type Configuration, type ParamOverride, type Version, type Note, type AgentSession, type Document as DocRow } from '@parasocial/sync';
 import type { PartResult, EngineInfo } from '@parasocial/runtime/protocol';
 import { packResult, unpackResult, derivedKey, type CachedPart } from '@parasocial/runtime/pack';
@@ -261,24 +263,64 @@ export class WorkspaceState {
 		if (!r.ok && prev && meta.name === r.part) meta.name = prev.name;
 		this.results = { ...this.results, [r.part]: { ...meta, names: r.names ?? (prev?.key === meta.key ? prev?.names : undefined), fromCache } };
 		if (this.viewer) {
-			const dark = document.documentElement.dataset.theme === 'dark';
 			if (mesh) {
 				// discrete changes (someone else's write, a restore) cross-fade; our own scrubbing/typing swaps instantly
 				const crossfade = !fromCache && !!prev && !this.scrubbing && !this.typing && prev.key !== meta.key && r.quality === 'fine' && prev.quality === 'fine';
-				this.viewer.setPart({
-					id: r.part,
-					mesh,
-					faceEdges: r.faceEdges,
-					hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))),
-					color: this.partColor(r.part, dark),
-					dim: !r.ok
-				}, { crossfade });
-				this.viewer.setVisible(r.part, !this.hidden.includes(r.part));
+				this.paint(r, mesh, crossfade);
 			} else this.viewer.removePart(r.part);
 			this.highlightErrors(r);
 		}
 		// selections on a part that changed shape keep their indices only if still valid (viewer prunes)
 		if (this.viewer) this.selection = this.viewer.getSelection();
+	}
+
+	private paint(r: PartResult, mesh: Mesh, crossfade = false) {
+		const dark = document.documentElement.dataset.theme === 'dark';
+		this.viewer!.setPart({
+			id: r.part,
+			mesh,
+			faceEdges: r.faceEdges,
+			hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))),
+			color: this.partColor(r.part, dark),
+			dim: !r.ok
+		}, { crossfade });
+		this.viewer!.setVisible(r.part, !this.hidden.includes(r.part));
+	}
+
+	/**
+	 * Meshes are transferred into the viewer, so a remounted viewport (HMR, re-entering the page)
+	 * can't be repainted from `results`: keep the old viewer's meshes and camera to hand over.
+	 */
+	private stash: { meshes: Map<string, Mesh>; camera: ReturnType<Viewer['cameraState']> } | null = null;
+
+	detachViewer() {
+		const v = this.viewer;
+		if (!v) return;
+		const meshes = new Map<string, Mesh>();
+		for (const p of Object.keys(this.results)) {
+			const m = v.meshOf(p);
+			if (m) meshes.set(p, m);
+		}
+		this.stash = { meshes, camera: v.cameraState() };
+		this.viewer = null;
+	}
+
+	/** Returns true when the view was restored from a previous viewer (no initial fit needed). */
+	attachViewer(v: Viewer): boolean {
+		this.viewer = v;
+		const stash = this.stash;
+		this.stash = null;
+		if (!stash) return false;
+		for (const [p, mesh] of stash.meshes) {
+			const r = this.results[p];
+			if (!r) continue;
+			this.paint(r, mesh);
+			this.highlightErrors(r);
+		}
+		if (this.isolated.length) v.isolate(this.isolated);
+		if (this.selection.length) v.setSelection(this.selection);
+		v.setCameraState(stash.camera, false);
+		return stash.meshes.size > 0;
 	}
 
 	private async highlightErrors(r: PartResult) {

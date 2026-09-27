@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { Crosshair, Copy, EyeOff, Focus, Code2, MessageCircle, Ruler, Layers, Plus, Bot, Box, X, FlipVertical2 } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
-	import { FloatingToolbar, SelectionLabel, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
+	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
 	import { ContextMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { Button, IconButton } from '$lib/components/ui/button';
@@ -18,6 +18,7 @@
 	import { newID } from '$lib/zero';
 	import * as THREE from 'three';
 	import Pins from './Pins.svelte';
+	import { pairReadouts, singleReadouts, type Readout } from './measure';
 	import NoteComposer from './NoteComposer.svelte';
 	import { rise, fadeOut } from '$lib/styles/motion';
 
@@ -25,8 +26,6 @@
 
 	let host: HTMLDivElement;
 	let viewer: Viewer | null = $state.raw(null);
-	let labelPos = $state<{ x: number; y: number } | null>(null);
-	let measured = $state<string | null>(null);
 	let pillOpen = $state(false);
 	let ctxTarget = $state.raw<EntityRef | null>(null);
 	let down: { x: number; y: number; button: number } | null = null;
@@ -35,6 +34,10 @@
 	/** Tab cycles through the faces stacked under the cursor (§8 Selection). */
 	let stack: { x: number; y: number; refs: EntityRef[]; i: number } | null = null;
 	let pointer: { x: number; y: number } | null = null;
+	let camMoving = false;
+	/** ms the pointer must rest on an entity before it preselects */
+	const HOVER_DELAY = 20;
+	let hoverTimer: ReturnType<typeof setTimeout> | undefined;
 	const dark = $derived(theme.resolved === 'dark');
 
 	// macOS fires contextmenu on right mouse-down, which would open the menu at the start of a
@@ -64,6 +67,7 @@
 		if (!stack || stack.x !== pointer.x || stack.y !== pointer.y) stack = { x: pointer.x, y: pointer.y, refs: viewer.facesUnder(pointer.x, pointer.y), i: -1 };
 		if (!stack.refs.length) return;
 		stack.i = (stack.i + (e.shiftKey ? -1 : 1) + stack.refs.length) % stack.refs.length;
+		clearTimeout(hoverTimer);
 		ws.hover = stack.refs[stack.i];
 		viewer.setPreselect(ws.hover);
 	}
@@ -72,18 +76,21 @@
 		window.addEventListener('keydown', onTab);
 		host.addEventListener('contextmenu', onContextCapture, { capture: true });
 		host.addEventListener('pointerup', onRightUp);
-		viewer = new Viewer(host, { theme: viewerTheme(dark) });
-		ws.viewer = viewer;
+		// the cube sits left of the view controls (top-right, 32px wide + 12px inset)
+		viewer = new Viewer(host, { theme: viewerTheme(dark), viewCubeInset: { top: 10, right: 50 } });
+		// a remount (HMR) takes over the previous viewer's meshes and camera
+		if (ws.attachViewer(viewer)) fitted = true;
 		(window as any).__viewer = viewer; // test hook
-		viewer.on('camera', updateLabel);
-		viewer.on('camera', () => updateDim());
+		// no hover preselect while the camera is moving (orbit, pan, zoom, view cube)
+		viewer.on('moving', (on: boolean) => ((camMoving = on), on && onLeave()));
 		// re-apply any results that arrived before the viewer existed
 		ws.sync();
 	});
 	onDestroy(() => {
+		clearTimeout(hoverTimer);
 		window.removeEventListener('keydown', onTab);
+		ws.detachViewer();
 		viewer?.dispose();
-		ws.viewer = null;
 	});
 
 	// theme
@@ -125,7 +132,6 @@
 	});
 	$effect(() => {
 		ws.selection;
-		updateLabel();
 		measureSelection();
 	});
 
@@ -179,6 +185,19 @@
 
 	function onMove(e: PointerEvent) {
 		if (stroke && e.buttons & 1) {
+			// the browser merges moves into one event per frame: take every sub-sample, so a slow
+			// frame doesn't flatten a stroke
+			const samples = (e.getCoalescedEvents?.() ?? []).length ? e.getCoalescedEvents() : [e];
+			for (const ev of samples) addPenSample(ev);
+			viewer!.setMarkup([...markupFor(), { id: 'live', points: stroke.points, color: nc.penColor, width: 3 }]);
+			return;
+		}
+		strokeless(e);
+	}
+
+	function addPenSample(e: PointerEvent) {
+		if (!stroke) return;
+		{
 			const pp = penPoint(e);
 			if (pp) {
 				const last = stroke.points[stroke.points.length - 1];
@@ -188,10 +207,11 @@
 					const k = `${pp.ref.part}:${pp.ref.kind}:${pp.ref.index}`;
 					if (!stroke.seen.has(k)) (stroke.seen.add(k), stroke.crossed.push({ ref: { part: pp.ref.part, kind: pp.ref.kind, index: pp.ref.index }, point: [pp.ref.point.x, pp.ref.point.y, pp.ref.point.z], normal: pp.ref.normal ? [pp.ref.normal.x, pp.ref.normal.y, pp.ref.normal.z] : undefined }));
 				}
-				viewer!.setMarkup([...markupFor(), { id: 'live', points: stroke.points, color: nc.penColor, width: 3 }]);
 			}
-			return;
 		}
+	}
+
+	function strokeless(e: PointerEvent) {
 		const rr = host.getBoundingClientRect();
 		pointer = { x: e.clientX - rr.left, y: e.clientY - rr.top };
 		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !e.altKey && !viewer?.controls.spaceHeld && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
@@ -201,15 +221,21 @@
 			box = { ...box, x1: pointer.x, y1: pointer.y };
 			return;
 		}
-		if (!viewer || e.buttons) return;
+		if (!viewer || e.buttons || camMoving) return;
 		stack = null;
 		if (ws.tool === 'pencil') return viewer.setPreselect(null);
 		const ref = pickAt(e);
-		ws.hover = ref;
-		viewer.setPreselect(ref);
+		const h = ws.hover;
+		if (ref && h && ref.part === h.part && ref.kind === h.kind && ref.index === h.index) return clearTimeout(hoverTimer);
+		// the preselect waits for the pointer to linger briefly, so sweeping across faces stays calm
+		ws.hover = null;
+		viewer.setPreselect(null);
+		clearTimeout(hoverTimer);
+		if (ref) hoverTimer = setTimeout(() => ((ws.hover = ref), viewer?.setPreselect(ref)), HOVER_DELAY);
 	}
 
 	function onLeave() {
+		clearTimeout(hoverTimer);
 		ws.hover = null;
 		viewer?.setPreselect(null);
 	}
@@ -225,11 +251,8 @@
 			if (pp) stroke.points.push([pp.p.x, pp.p.y, pp.p.z]);
 			return;
 		}
-		if (e.button === 2) {
-			ctxTarget = pickAt(e);
-			const t = ctxTarget;
-			if (t && !ws.selection.some((s) => s.part === t.part && s.kind === t.kind && s.index === t.index)) ws.select([t]);
-		}
+		// right-click only targets the context menu; it never changes the selection
+		if (e.button === 2) ctxTarget = pickAt(e);
 	}
 
 	async function onUp(e: PointerEvent) {
@@ -290,79 +313,40 @@
 		ws.select([part], e.shiftKey || e.metaKey || e.ctrlKey ? 'add' : 'replace');
 	}
 
-	function updateLabel() {
-		const sel = ws.selection;
-		if (!viewer || !sel.length) return (labelPos = null);
-		const c = viewer.entityCenter(sel[sel.length - 1]);
-		const p = c ? viewer.project(c) : null;
-		labelPos = p && p.x >= 0 && p.y >= 0 && p.x <= host.clientWidth && p.y <= host.clientHeight - 30 ? p : null;
-	}
-
-	/** The single most useful value for the selection (§8 Selection label). */
-	const label = $derived.by(() => {
-		const sel = ws.selection;
-		if (!sel.length) return null;
-		if (sel.length === 2 && measured) return { value: measured, unit: '' };
-		if (sel.length > 1) {
-			const kinds = new Set(sel.map((s) => s.kind));
-			return { value: `${sel.length} ${kinds.size === 1 ? [...kinds][0] + 's' : 'items'}`, unit: '' };
-		}
-		const s = sel[0];
-		const r = ws.results[s.part];
-		if (!r) return null;
-		if (s.kind === 'face') {
-			const f = r.faces[s.index];
-			return f ? { value: num(f.area, 2), unit: 'mm²' } : null;
-		}
-		if (s.kind === 'edge') {
-			const e = r.edges[s.index];
-			if (!e) return null;
-			if (e.curve === 'circle' && e.radius) return { value: `R ${num(e.radius, 2)}`, unit: 'mm' };
-			return { value: num(e.length, 2), unit: 'mm' };
-		}
-		return { value: r.name, unit: '' };
+	// ---- measurement card: fixed bottom right, every value named (§8 Selection label) ----
+	/** Readouts for a two-entity selection (async: the kernel measures the minimum distance). */
+	let pair = $state.raw<Readout[]>([]);
+	const readouts = $derived(ws.selection.length === 2 ? pair : singleReadouts(ws.selection, ws.results));
+	/** Which readout's dimension line is drawn: the pinned one, or the row under the pointer. */
+	let pinned = $state<string | null>(null);
+	let peek = $state<string | null>(null);
+	const shown = $derived(readouts.find((r) => r.key === peek && r.a) ?? readouts.find((r) => r.key === pinned && r.a) ?? readouts.find((r) => r.a) ?? null);
+	$effect(() => {
+		const r = shown;
+		viewer?.setDimension(r?.a ? new THREE.Vector3(...r.a) : null, r?.b ? new THREE.Vector3(...r.b) : undefined);
 	});
 
-	// ---- measure tool (M): a dimension between two entities, "Note this measurement" ----
-	let dim = $state.raw<{ a: THREE.Vector3; b: THREE.Vector3; distance: number; angle?: number } | null>(null);
-	let dimPos = $state<{ x: number; y: number } | null>(null);
-
 	async function measureSelection() {
-		measured = null;
-		dim = null;
-		viewer?.setDimension(null);
+		pair = [];
+		peek = null;
 		const sel = ws.selection;
 		if (sel.length !== 2 || !ws.engine || !ws.kernelReady) return;
 		try {
 			const m = await ws.engine.measure(sel[0] as any, sel[1] as any);
 			if (ws.selection !== sel) return;
-			measured = `${num(m.distance, 2)} mm`;
-			if (ws.tool !== 'measure') return;
-			let angle: number | undefined;
-			const dirOf = (r: any) => (r.kind === 'face' ? (ws.results[r.part]?.faces[r.index]?.surface === 'plane' ? ws.results[r.part]?.faces[r.index]?.normal : undefined) : ws.results[r.part]?.edges[r.index]?.direction);
-			const da = dirOf(sel[0]),
-				db = dirOf(sel[1]);
-			if (da && db) angle = (Math.acos(Math.min(1, Math.abs(da[0] * db[0] + da[1] * db[1] + da[2] * db[2]))) * 180) / Math.PI;
-			dim = { a: new THREE.Vector3(...m.a), b: new THREE.Vector3(...m.b), distance: m.distance, angle };
-			viewer?.setDimension(dim.a, dim.b);
-			updateDim();
+			pair = pairReadouts(sel, m, ws.results);
+			// when "distance" is ambiguous (two holes), lead with center to center
+			pinned = pair.some((r) => r.key === 'center') ? 'center' : 'min';
 		} catch {}
 	}
-	function updateDim() {
-		if (!dim || !viewer) return (dimPos = null);
-		dimPos = viewer.project(dim.a.clone().add(dim.b).multiplyScalar(0.5));
-	}
-	$effect(() => {
-		if (ws.tool !== 'measure') {
-			dim = null;
-			viewer?.setDimension(null);
-		}
-	});
 	function noteMeasurement() {
-		if (!dim || ws.selection.length !== 2) return;
-		const text = `${num(dim.distance, 2)} mm${dim.angle !== undefined ? `, ${num(dim.angle, 1)}°` : ''}: `;
-		const targets = ws.selection.map((ref, i) => ({ ref, point: (i ? dim!.b : dim!.a).toArray() as [number, number, number] }));
-		nc.startFromTargets(targets, dimPos ?? { x: 200, y: 200 }, text);
+		if (ws.selection.length !== 2 || !shown?.a || !shown.b) return;
+		const angle = readouts.find((r) => r.key === 'angle');
+		const text = `${shown.label} ${shown.value} ${shown.unit}${angle ? `, ${angle.value}°` : ''}: `;
+		const a = new THREE.Vector3(...shown.a),
+			b = new THREE.Vector3(...shown.b);
+		const targets = ws.selection.map((ref, i) => ({ ref, point: (i ? shown.b : shown.a) as [number, number, number] }));
+		nc.startFromTargets(targets, viewer?.project(a.add(b).multiplyScalar(0.5)) ?? { x: 200, y: 200 }, text);
 	}
 
 	// ---- section view (S) ----
@@ -556,7 +540,7 @@
 	</div>
 
 	{#if ws.mode === 'model'}
-		<div class="absolute top-[120px] right-[48px] z-10">
+		<div class="absolute top-3 right-3 z-10">
 			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:filters={() => ws.filters, (v) => (ws.filters = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
@@ -567,13 +551,6 @@
 			style="left:{Math.min(box.x0, box.x1)}px;top:{Math.min(box.y0, box.y1)}px;width:{Math.abs(box.x1 - box.x0)}px;height:{Math.abs(box.y1 - box.y0)}px"
 			data-testid="box-select"
 		></div>
-	{/if}
-	{#if dim && dimPos}
-		<div class="absolute z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-2.5 shadow-popover" style="left:{dimPos.x}px;top:{dimPos.y}px" data-testid="measure-card">
-			<span class="text-ui font-medium tabular-nums">{num(dim.distance, 2)} mm</span>
-			{#if dim.angle !== undefined}<span class="text-label text-fg-secondary tabular-nums">· {num(dim.angle, 1)}°</span>{/if}
-			<Button size="sm" variant="ghost" onclick={noteMeasurement}><MessageCircle size={14} /> Note</Button>
-		</div>
 	{/if}
 	{#if ws.section}
 		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-3 shadow-toolbar" data-testid="section-bar">
@@ -586,8 +563,37 @@
 		</div>
 	{/if}
 
-	{#if label && labelPos && !dim}
-		<SelectionLabel value={label.value} unit={label.unit} class="pointer-events-none absolute z-10 -translate-x-1/2" style="left:{labelPos.x}px;top:{labelPos.y + 14}px" />
+	{#if readouts.length}
+		<div class="absolute right-3 bottom-3 z-20 flex min-w-52 flex-col rounded-panel border border-line-subtle bg-elevated p-1 shadow-popover" data-testid="measure-card" in:rise={{ y: 4, scale: 0.98, origin: '100% 100%' }} out:fadeOut>
+			{#each readouts as r (r.key)}
+				{@const on = shown?.key === r.key}
+				{#if r.a}
+					<button
+						class="focus-ring flex h-7 items-center gap-2 rounded-[var(--toolbar-item-radius)] px-2 text-left transition-colors-fast {on ? 'bg-active' : 'hover:bg-hover'}"
+						onclick={() => (pinned = r.key)}
+						onpointerenter={() => (peek = r.key)}
+						onpointerleave={() => (peek = null)}
+						aria-pressed={pinned === r.key}
+						title="Show this dimension"
+					>
+						<span class="size-1.5 shrink-0 rounded-full {on ? 'bg-accent' : 'bg-fg-tertiary/40'}"></span>
+						<span class="flex-1 text-label {on ? 'text-fg' : 'text-fg-secondary'}">{r.label}</span>
+						<span class="text-ui font-medium tabular-nums">{r.value}<span class="ml-0.5 text-label font-normal text-fg-secondary">{r.unit}</span></span>
+					</button>
+				{:else}
+					<div class="flex h-7 items-center gap-2 px-2">
+						<span class="size-1.5 shrink-0"></span>
+						<span class="flex-1 text-label text-fg-secondary">{r.label}</span>
+						<span class="text-ui font-medium tabular-nums">{r.value}{#if r.unit}<span class="ml-0.5 text-label font-normal text-fg-secondary">{r.unit}</span>{/if}</span>
+					</div>
+				{/if}
+			{/each}
+			{#if ws.selection.length === 2 && shown}
+				<div class="mt-1 border-t border-line-subtle pt-1">
+					<Button size="sm" variant="ghost" class="w-full justify-start" onclick={noteMeasurement}><MessageCircle size={14} /> Note</Button>
+				</div>
+			{/if}
+		</div>
 	{/if}
 
 	{#if empty}
