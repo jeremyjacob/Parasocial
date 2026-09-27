@@ -53,7 +53,7 @@
 	</div>
 	{#if content}
 		{#each items as item (item.value)}
-			<Tabs.Content value={item.value} class="min-h-0 flex-1 focus-visible:outline-none">
+			<Tabs.Content value={item.value} class="animate-tab flex min-h-0 flex-1 flex-col focus-visible:outline-none">
 				{@render content(item.value)}
 			</Tabs.Content>
 		{/each}

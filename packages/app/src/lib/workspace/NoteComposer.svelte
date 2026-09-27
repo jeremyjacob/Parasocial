@@ -30,8 +30,8 @@
 	}
 </script>
 
-<div class="w-[280px] rounded-panel border border-line-subtle bg-elevated p-2 shadow-popover" data-testid="note-composer" role="dialog" aria-label="New note">
-	<div class="mb-1.5 flex items-center gap-1 px-1 text-label text-fg-secondary">
+<div class="w-[280px] rounded-dialog border border-line-subtle bg-elevated p-2 shadow-popover" data-testid="note-composer" role="dialog" aria-label="New note">
+	<div class="mb-1 flex h-6 items-center gap-1 pr-1 pl-2.5 text-label text-fg-secondary">
 		<span class="truncate">{label}</span>
 		<IconButton label="Discard (Esc)" size="sm" class="ml-auto" onclick={() => nc.discard()}><X /></IconButton>
 	</div>

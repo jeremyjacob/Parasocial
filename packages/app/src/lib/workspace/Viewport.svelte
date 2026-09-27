@@ -17,6 +17,7 @@
 	import * as THREE from 'three';
 	import Pins from './Pins.svelte';
 	import NoteComposer from './NoteComposer.svelte';
+	import { rise, fadeOut } from '$lib/styles/motion';
 
 	let { ws, nc, onAddPart, onConnect, onOpenNote }: { ws: WorkspaceState; nc: NotesController; onAddPart: () => void; onConnect: () => void; onOpenNote: (id: string) => void } = $props();
 
@@ -395,7 +396,7 @@
 	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading kernel' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
 	{#if pill}
-		<div class="absolute top-3 left-3 z-10 max-w-[min(520px,60%)]">
+		<div class="absolute top-3 left-3 z-10 max-w-[min(520px,60%)]" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
 			<StatusPill tone={pill.tone} title={pill.title} detail={pill.detail} message={pill.message} source={pill.source} bind:expanded={pillOpen} onSourceClick={() => revealSource(pill!.file, pill!.line)} />
 		</div>
 	{/if}
@@ -412,7 +413,7 @@
 
 	{#if empty}
 		<div class="absolute inset-0 z-10 grid place-items-center" data-testid="empty-document">
-			<EmptyState size="panel" title="This document has no parts yet" description="Parts are scripts in parts/. Start one yourself, or connect an agent and ask it to model something.">
+			<EmptyState size="panel" class="animate-enter" title="This document has no parts yet" description="Parts are scripts in parts/. Start one yourself, or connect an agent and ask it to model something.">
 				{#snippet action()}
 					<div class="flex gap-2">
 						<Button variant="primary" onclick={onAddPart} data-testid="add-part"><Plus size={14} /> Add a part</Button>
@@ -431,21 +432,22 @@
 		<Pins {viewer} {nc} onopen={onOpenNote} />
 	{/if}
 	{#if nc.draft}
-		<div class="absolute z-20" style="left:{Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292)}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
+		<div class="absolute z-20" in:rise={{ y: 4, scale: 0.96, origin: 'top left' }} out:fadeOut style="left:{Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292)}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
 			<NoteComposer {ws} {nc} />
 		</div>
 	{/if}
 
 	<div class="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
 		{#if ws.tool === 'pencil'}
-			<div class="flex items-center gap-1 rounded-panel border border-line-subtle bg-elevated p-1 shadow-toolbar" data-testid="pencil-options">
+			<div class="flex items-center gap-0.5 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] shadow-toolbar" data-testid="pencil-options" in:rise={{ y: 8, scale: 0.97, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, scale: 0.98, duration: 100 }}>
 				{#each STROKE_COLORS as c (c)}
-					<button class="focus-ring grid size-7 place-items-center rounded-md {nc.penColor === c && !nc.eraser ? 'bg-active' : 'hover:bg-hover'}" onclick={() => ((nc.penColor = c), (nc.eraser = false))} aria-label="Pen color {c}">
-						<span class="size-3.5 rounded-full" style="background:{c}"></span>
+					{@const on = nc.penColor === c && !nc.eraser}
+					<button class="focus-ring grid size-8 place-items-center rounded-[var(--toolbar-item-radius)] transition-colors-fast {on ? 'bg-active' : 'hover:bg-hover'}" onclick={() => ((nc.penColor = c), (nc.eraser = false))} aria-label="Pen color {c}" aria-pressed={on}>
+						<span class="size-3.5 rounded-full shadow-[inset_0_0_0_1px_var(--border-default)] transition-transform duration-[var(--duration-fast)] ease-out {on ? 'scale-[1.15]' : ''}" style="background:{c}"></span>
 					</button>
 				{/each}
-				<span class="mx-0.5 h-4 w-px bg-line"></span>
-				<button class="focus-ring h-7 rounded-md px-2 text-ui {nc.eraser ? 'bg-active' : 'hover:bg-hover'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
+				<span class="mx-1 h-5 w-px bg-line" aria-hidden="true"></span>
+				<button class="focus-ring h-8 rounded-[var(--toolbar-item-radius)] px-2.5 text-ui font-medium transition-colors-fast {nc.eraser ? 'bg-active text-fg' : 'text-fg-secondary hover:bg-hover hover:text-fg'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
 			</div>
 		{/if}
 		<FloatingToolbar bind:tool={ws.tool} disabled={ws.mode === 'code' ? { note: 'Save to add notes', pencil: 'Save to add notes' } : {}} />

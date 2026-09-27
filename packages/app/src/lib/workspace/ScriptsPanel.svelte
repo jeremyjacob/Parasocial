@@ -15,11 +15,11 @@
 
 <div class="flex min-h-0 flex-1 flex-col overflow-auto p-2" data-testid="scripts-panel">
 	{#each groups as g (g.dir)}
-		<div class="flex h-7 items-center gap-1.5 px-2 text-label text-fg-secondary"><Folder size={14} /> {g.dir}/</div>
+		<div class="flex h-8 items-center gap-1.5 px-2 text-label text-fg-secondary"><Folder size={14} /> {g.dir}/</div>
 		{#each g.items as s (s.id)}
 			{@const err = ws.results[s.path.slice(6, -3)]?.problems.some((p) => p.severity === 'error')}
 			<button
-				class="focus-ring flex h-7 w-full items-center gap-1.5 rounded-control pl-6 pr-2 text-left text-ui transition-colors-fast hover:bg-hover {ws.openScript === s.path && ws.mode === 'code' ? 'bg-active' : ''}"
+				class="focus-ring flex h-8 w-full shrink-0 items-center gap-1.5 rounded-control pr-2 pl-7 text-left text-ui transition-colors-fast hover:bg-hover {ws.openScript === s.path && ws.mode === 'code' ? 'bg-active' : ''}"
 				onclick={() => open(s.path)}
 			>
 				<FileCode2 size={14} class="text-fg-tertiary" />
@@ -31,7 +31,7 @@
 				</span>
 			</button>
 		{:else}
-			<p class="py-1 pl-6 text-label text-fg-tertiary">No scripts</p>
+			<p class="flex h-8 items-center pl-7 text-label text-fg-tertiary">No scripts</p>
 		{/each}
 	{/each}
 </div>

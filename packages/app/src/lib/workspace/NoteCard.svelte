@@ -4,6 +4,7 @@
 	import { IconButton, Button } from '$lib/components/ui/button';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { clockTime, relativeTime } from '$lib/format';
+	import { rise } from '$lib/styles/motion';
 	import type { Note, NoteMessage as Msg } from '@parasocial/sync';
 	import type { WorkspaceState } from './state.svelte';
 	import type { NotesController, Pin } from './notes.svelte';
@@ -72,7 +73,7 @@
 </script>
 
 <div
-	class="flex flex-col rounded-panel bg-panel shadow-[inset_0_0_0_1px_var(--border-default)] transition-shadow-fast {nc.active === note.id ? 'shadow-[inset_0_0_0_1px_var(--border-focus)]' : ''} {note.removedAt ? 'opacity-60' : ''}"
+	class="flex flex-col rounded-panel bg-panel transition-[box-shadow,opacity] duration-[var(--duration-fast)] ease-out {nc.active === note.id ? 'shadow-[inset_0_0_0_1px_var(--border-focus)]' : 'shadow-[inset_0_0_0_1px_var(--border-default)] hover:shadow-[inset_0_0_0_1px_var(--border-strong)]'} {note.removedAt ? 'opacity-60' : ''}"
 	onmouseenter={() => (nc.hovered = note.id)}
 	onmouseleave={() => nc.hovered === note.id && (nc.hovered = null)}
 	role="article"
@@ -97,7 +98,7 @@
 		</div>
 	{/if}
 	<div class="flex flex-col gap-4 px-3 py-3">
-		{#each messages as m, i (i)}<NoteMessage message={m} />{/each}
+		{#each messages as m, i (i)}<div in:rise><NoteMessage message={m} /></div>{/each}
 		{#if !messages.length}<p class="text-label text-fg-tertiary">No messages.</p>{/if}
 	</div>
 	{#if !note.removedAt}

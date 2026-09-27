@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ChevronDown, ArrowUpRight, LoaderCircle } from '@lucide/svelte';
 	import { cn } from '$lib/utils';
+	import { reveal } from '$lib/styles/motion';
 
 	type Props = {
 		tone: 'error' | 'warning' | 'pending' | 'preview';
@@ -72,7 +73,7 @@
 		{/if}
 	</button>
 	{#if expandable && expanded}
-		<div id="sp-{uid}" class="flex flex-col gap-2 border-t border-line-subtle px-3 pt-2 pb-3">
+		<div id="sp-{uid}" class="flex flex-col gap-2 border-t border-line-subtle px-3 pt-2 pb-3" transition:reveal>
 			<p class="text-ui text-fg-secondary">{message}</p>
 			{#if source}
 				<button

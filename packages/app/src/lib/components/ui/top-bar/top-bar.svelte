@@ -54,7 +54,7 @@
 			{#snippet trigger(props)}
 				<button
 					{...props}
-					class="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-control pr-1.5 pl-1.5 text-ui font-semibold text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
+					class="inline-flex h-7 min-w-0 items-center gap-2 rounded-control pr-1.5 pl-2 text-ui font-semibold text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
 				>
 					<Logo size={20} />
 					<span class="truncate">{docName}</span>

@@ -105,6 +105,12 @@
 	transition-timing-function: var(--ease-out);
 }
 
+@utility transition-shadow-fast {
+	transition-property: box-shadow, opacity, transform;
+	transition-duration: var(--duration-fast);
+	transition-timing-function: var(--ease-out);
+}
+
 /* Enter/exit animations for bits-ui floating content (data-state driven). */
 @keyframes ps-pop-in {
 	from {
@@ -192,5 +198,91 @@
 	}
 	&[data-state='closed'] {
 		animation: ps-fade-out var(--duration-fast) var(--ease-out);
+	}
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Workspace motion. All short, ease-out, opacity/transform only (compositor-friendly), and none
+ * of them hold back input: elements are clickable from their first frame. The global
+ * reduced-motion rule in tokens.css collapses every one of these.
+ * ------------------------------------------------------------------------------------------- */
+
+@keyframes ps-tab-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+}
+@keyframes ps-enter {
+	from {
+		opacity: 0;
+		transform: translateY(var(--ps-enter-y, 6px)) scale(var(--ps-enter-scale, 0.985));
+	}
+}
+@keyframes ps-label-in {
+	from {
+		opacity: 0;
+		transform: scale(0.88);
+	}
+}
+@keyframes ps-palette-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+
+/* Panel tab content: a quick fade-up each time a tab becomes active (display:none → shown restarts it). */
+@utility animate-tab {
+	&[data-state='active'] {
+		animation: ps-tab-in var(--duration-fast) var(--ease-out);
+	}
+}
+
+/* Entrance for page-level cards and empty states. Stagger with style="--ps-delay: 40ms". */
+@utility animate-enter {
+	animation: ps-enter var(--duration-slow) var(--ease-out) both;
+	animation-delay: var(--ps-delay, 0ms);
+}
+
+/* Small overlay pills (selection label): fade and scale in from their anchor. */
+@utility animate-label {
+	animation: ps-label-in var(--duration-fast) var(--ease-out);
+}
+
+/* Hover lift for clickable cards (documents, examples): 2px up with a softer, larger shadow. */
+@utility lift {
+	transition-property: transform, box-shadow, border-color, opacity;
+	transition-duration: var(--duration-fast);
+	transition-timing-function: var(--ease-out);
+	&:hover:not(:disabled) {
+		transform: translateY(-2px);
+		box-shadow: var(--shadow-popover);
+	}
+	&:active:not(:disabled) {
+		transform: translateY(0);
+		transition-duration: var(--duration-instant);
+	}
+}
+
+/* The override dot beside a param label. Always in the DOM so it scales in on override and out
+ * on reset; pair it with a colour transition on the label text. */
+@utility override-dot {
+	position: absolute;
+	top: 50%;
+	left: -10px;
+	width: 5px;
+	height: 5px;
+	margin-top: -2.5px;
+	border-radius: 9999px;
+	background: var(--override);
+	opacity: 0;
+	transform: scale(0);
+	transition:
+		opacity var(--duration-fast) var(--ease-out),
+		transform var(--duration-base) var(--ease-out);
+	&[data-on] {
+		opacity: 1;
+		transform: scale(1);
 	}
 }

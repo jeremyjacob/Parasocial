@@ -129,9 +129,9 @@
 					{@const changed = codeDefaultChanged(g.part, p)}
 					{#if p.options}
 						<div class="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2">
-							<span class="relative flex h-7 items-center truncate text-ui {p.overridden ? 'text-fg' : 'text-fg-secondary'}">
-								{#if p.overridden}<span class="absolute top-1/2 -left-2.5 size-[5px] -translate-y-1/2 rounded-full bg-override"></span>{/if}
-								{p.label ?? p.name}
+							<span class="relative flex h-7 min-w-0 items-center text-ui transition-colors duration-[var(--duration-fast)] {p.overridden ? 'text-fg' : 'text-fg-secondary'}">
+								<span aria-hidden="true" class="override-dot" data-on={p.overridden ? '' : undefined}></span>
+								<span class="truncate">{p.label ?? p.name}</span>
 							</span>
 							<Select
 								size="sm"

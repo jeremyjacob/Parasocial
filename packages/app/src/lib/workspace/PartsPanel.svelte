@@ -4,6 +4,7 @@
 	import { IconButton } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { theme } from '$lib/theme.svelte';
+	import { rise } from '$lib/styles/motion';
 	import type { WorkspaceState } from './state.svelte';
 
 	let { ws, onAddPart }: { ws: WorkspaceState; onAddPart: () => void } = $props();
@@ -33,13 +34,13 @@
 	<div class="px-2 pt-2">
 		<Input size="sm" placeholder="Filter parts" bind:value={filter} aria-label="Filter parts" />
 	</div>
-	<div class="flex h-8 items-center px-3 text-label text-fg-secondary">
+	<div class="flex h-8 items-center pr-3 pl-4 text-label text-fg-secondary">
 		<span class="tabular-nums">{ws.parts.length} part{ws.parts.length === 1 ? '' : 's'}</span>
 		<IconButton label="Add part" size="sm" class="ml-auto" onclick={onAddPart}><Plus /></IconButton>
 	</div>
 	<ul class="flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2">
 		{#each rows as r (r.id)}
-			<li>
+			<li in:rise={{ y: -4 }}>
 				<ListRow
 					name={r.name}
 					color={ws.partColor(r.id, dark)}
