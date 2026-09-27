@@ -113,7 +113,7 @@
 		{ label: 'Zoom to', icon: Scan, shortcut: ['shift', 'F'] },
 		{ type: 'separator' },
 		{ label: 'Reveal source', icon: Code, shortcut: ['mod', 'enter'] },
-		{ label: 'Copy stable name', icon: Copy },
+		{ label: 'Copy reference', icon: Copy },
 		{ type: 'sub', label: 'Select', items: [{ label: 'Tangent chain' }, { label: 'Loop' }] }
 	];
 
@@ -253,7 +253,7 @@
 				aria-label="Configuration"
 				bind:value={config}
 				items={[
-					{ value: 'default', label: 'Default', hint: 'no overrides' },
+					{ value: 'default', label: 'Default' },
 					{ value: 'm3', label: 'M3', hint: '2' },
 					{ value: 'm4', label: 'M4', hint: '3' },
 					{ value: 'draft', label: 'Print-draft', hint: '5' }
@@ -392,7 +392,7 @@
 				<div class="{menuStyles.menuItem} group/item"><Crosshair />Select all from this operation</div>
 				<div class={menuStyles.menuSeparator}></div>
 				<div class="{menuStyles.menuItem} group/item"><Code />Reveal source<span class={menuStyles.menuShortcut}>{keyGlyph('mod')}{keyGlyph('enter')}</span></div>
-				<div class="{menuStyles.menuItem} group/item" data-disabled><Copy />Copy stable name</div>
+				<div class="{menuStyles.menuItem} group/item" data-disabled><Copy />Copy reference</div>
 				<div class={cn(menuStyles.menuItem, menuStyles.menuItemDestructive, 'group/item')}><Trash2 />Delete note</div>
 			</div>
 		</Specimen>
@@ -410,7 +410,7 @@
 						{/each}
 					</div>
 				</Popover>
-				<Dialog bind:open={dialogOpen} title="Connect an agent" description="Point any MCP client at this document.">
+				<Dialog bind:open={dialogOpen} title="Connect an agent">
 					{#snippet trigger(props)}<Button {...props}>Dialog</Button>{/snippet}
 					<div class="flex flex-col gap-3">
 						<Input value="https://parasocial.local/mcp/doc_8f2a" readonly aria-label="MCP URL">
@@ -439,9 +439,9 @@
 
 		<Specimen title="Toast" note="dark pill in both themes, above the toolbar" class="col-span-2" surface="canvas">
 			<div class="flex flex-col items-center gap-2">
-				<ToastItem toast={{ message: 'Copied stable name', kind: 'default' }} />
+				<ToastItem toast={{ message: 'Copied', kind: 'default' }} />
 				<ToastItem toast={{ message: 'Exported bracket.step', kind: 'success', action: { label: 'Show', onClick: () => {} } }} />
-				<ToastItem toast={{ message: "Couldn't reach the engine", kind: 'error', action: { label: 'Retry', onClick: () => {} } }} />
+				<ToastItem toast={{ message: "Couldn't load the model", kind: 'error', action: { label: 'Retry', onClick: () => {} } }} />
 				<ToastItem toast={{ message: 'Regenerating Bracket…', kind: 'loading' }} />
 			</div>
 		</Specimen>
@@ -606,13 +606,13 @@
 <Section id="states" title="Loading and empty" description="Never barren: one line of guidance, one action, the shortcut. Empty-state art is grayscale clay, the same language as the example-part renders.">
 	<div class="grid grid-cols-2 gap-3">
 		<Specimen title="EmptyState" note="page">
-			<EmptyState title="Add a part" description="Parts are TypeScript scripts. Write one, or ask an agent." shortcut={{ keys: ['mod', 'K'], label: 'to search actions' }}>
+			<EmptyState title="No parts yet" shortcut={{ keys: ['mod', 'K'], label: 'Search actions' }}>
 				{#snippet action()}<Button variant="primary"><Plus />Add part</Button>{/snippet}
 			</EmptyState>
 		</Specimen>
 		<div class="flex flex-col gap-3">
 			<Specimen title="EmptyState" note="panel">
-				<EmptyState size="panel" title="No notes yet" description="Select geometry and press C to leave one." shortcut={{ keys: ['C'], label: 'Add note' }} image={undefined} class="py-2" />
+				<EmptyState size="panel" title="No notes yet" shortcut={{ keys: ['C'], label: 'Add note' }} image={undefined} class="py-2" />
 			</Specimen>
 			<Specimen title="Skeleton">
 				<div class="flex flex-col gap-2.5">

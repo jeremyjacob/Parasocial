@@ -189,7 +189,7 @@
 						aria-label="Configuration"
 						bind:value={config}
 						items={[
-							{ value: 'default', label: 'Default', hint: 'code' },
+							{ value: 'default', label: 'Default' },
 							{ value: 'm3', label: 'M3', hint: '2' },
 							{ value: 'm4', label: 'M4', hint: '3' },
 							{ value: 'draft', label: 'Print-draft', hint: '5' }
