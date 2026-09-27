@@ -172,7 +172,8 @@ const PERP = 1e-6;
 /** Evaluate a selector against `r`'s entities of `kind`, optionally within `domain`. Returns sorted indices. */
 export function select(r: OpRecord, kind: EntityKind, selector: string, domain?: number[]): number[] {
   const node = parseSelector(selector);
-  const all = domain ?? [...Array(entityCount(r, kind)).keys()];
+  // seam edges (a periodic face's parametrization boundary) are never what people mean
+  const all = domain ?? [...Array(entityCount(r, kind)).keys()].filter((i) => kind !== "edge" || !isSeamEdge(r, i) || /seam/.test(selector));
   const res = evalNode(r, kind, node, all);
   return [...res].sort((a, b) => a - b);
 }
@@ -242,4 +243,9 @@ export function matchesPattern(r: OpRecord, kind: EntityKind, i: number, tokens:
   const faces = new Set<number>();
   for (const e of r.topo.vertexEdges[i] ?? []) for (const f of r.topo.edgeFaces[e] ?? []) faces.add(f);
   return [...faces].some((f) => containsSeq(entityName(r, "face", f).head, tokens));
+}
+
+/** A seam edge borders a single face (the parametrization boundary of a periodic surface). */
+export function isSeamEdge(r: OpRecord, e: number): boolean {
+  return (r.topo.edgeFaces[e] ?? []).length === 1;
 }

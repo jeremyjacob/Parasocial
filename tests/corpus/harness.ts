@@ -1,24 +1,34 @@
+// Corpus harness: runs parts through the real engine (loader, sandbox, provenance), not a direct import.
 import { loadKernel, massProps, isValid } from "@parasocial/kernel";
-import { OpCache, names } from "@parasocial/naming";
-import { PartContext, runPart, type PartDef, type PartRun } from "@parasocial/api/internal";
+import { names, type OpRecord } from "@parasocial/naming";
+import { Engine, type PartResult } from "@parasocial/runtime";
+import { Glob } from "bun";
+import { join, dirname, basename } from "node:path";
+import { readFileSync } from "node:fs";
 
 export async function load() {
   await loadKernel();
 }
 
-export async function importPart(path: string): Promise<PartDef> {
-  return (await import(path)).default;
+/** An engine loaded with the document that contains `file` (a parts/*.ts path under examples/ or tests/corpus/). */
+export function engineFor(file: string): { engine: Engine; part: string } {
+  const docRoot = dirname(dirname(file));
+  const scripts: Record<string, string> = {};
+  for (const f of new Glob("{parts,lib}/**/*.ts").scanSync(docRoot)) scripts[f] = readFileSync(join(docRoot, f), "utf8");
+  const engine = new Engine();
+  engine.setDocument({ scripts });
+  return { engine, part: basename(file, ".ts") };
 }
 
-export function regen(def: PartDef, part: string, cache = new OpCache(), overrides: Record<string, string | number> = {}): PartRun {
-  cache.begin();
-  return runPart(def, new PartContext({ part, file: `parts/${part}.ts`, cache, overrides, isUserFile: (p) => /\/(examples|tests\/corpus)\//.test(p) }));
+export function regen(e: Engine, part: string, overrides: Record<string, string | number> = {}): PartResult & { record: OpRecord } {
+  e.setOverrides(part, overrides);
+  const r = e.regenerate(part);
+  return Object.assign(r, { record: e.shown(part)! });
 }
 
 export type Golden = { volume: number; area: number; faces: number; edges: number; vertices: number; valid: boolean; faceNames: string[] };
 
-export function summarize(r: PartRun): Golden {
-  const rec = r.record!;
+export function summarize(rec: OpRecord): Golden {
   const m = massProps(rec.shape);
   return {
     volume: round(m.volume),

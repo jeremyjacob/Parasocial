@@ -1,7 +1,7 @@
 // Entity sets: selectors, filters (.planar(), .parallelTo(), .largest()) and set operations.
 // A set belongs to one op result; used on a downstream solid it is re-resolved by stable name.
 import type { EntityKind, Vec3 } from "@parasocial/kernel";
-import { entityName, nameIndex, select, faceOf, edgeOf, vertexOf, centerOf, directionOf, dot, dist, SelectorError, type OpRecord } from "@parasocial/naming";
+import { entityName, nameIndex, select, isSeamEdge, faceOf, edgeOf, vertexOf, centerOf, directionOf, dot, dist, SelectorError, type OpRecord } from "@parasocial/naming";
 import { axisVec, type AxisLike } from "./plane";
 import { userError, warn } from "./op";
 
@@ -57,7 +57,7 @@ export class EntitySet {
   }
 
   static fromSelector(r: OpRecord, kind: EntityKind, selector?: string): EntitySet {
-    if (selector === undefined || selector === "*") return new EntitySet(r, kind, [...Array(countOf(r, kind)).keys()], selector);
+    if (selector === undefined || selector === "*") return new EntitySet(r, kind, [...Array(countOf(r, kind)).keys()].filter((i) => kind !== "edge" || !isSeamEdge(r, i)), selector);
     let idx: number[];
     try {
       idx = select(r, kind, selector);

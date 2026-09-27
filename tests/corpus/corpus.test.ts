@@ -2,10 +2,10 @@
 // Run `UPDATE_GOLDEN=1 bun test tests/corpus` to accept intentional changes.
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Glob } from "bun";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { OpCache, names, nameIndex, resolveTarget, disambiguate, select, faceOf } from "@parasocial/naming";
-import { load, importPart, regen, summarize, type Golden } from "./harness";
+import { names, nameIndex, resolveTarget, disambiguate, select, faceOf } from "@parasocial/naming";
+import { load, engineFor, regen, summarize, type Golden } from "./harness";
 
 const root = join(import.meta.dir, "../..");
 const update = !!process.env.UPDATE_GOLDEN;
@@ -15,10 +15,10 @@ describe("golden: examples + corpus parts", () => {
   const files = [...new Glob("examples/*/parts/*.ts").scanSync(root), ...new Glob("tests/corpus/parts/*.ts").scanSync(root)].sort();
   for (const f of files) {
     test(f, async () => {
-      const part = basename(f, ".ts");
-      const r = regen(await importPart(join(root, f)), part);
+      const { engine, part } = engineFor(join(root, f));
+      const r = regen(engine, part);
       expect(r.problems.filter((p) => p.severity === "error")).toEqual([]);
-      const g = summarize(r);
+      const g = summarize(r.record);
       const gp = join(import.meta.dir, "golden", f.replace(/\//g, "__") + ".json");
       if (update || !existsSync(gp)) writeFileSync(gp, JSON.stringify(g, null, 2) + "\n");
       const want: Golden = JSON.parse(readFileSync(gp, "utf8"));
@@ -35,25 +35,23 @@ describe("golden: examples + corpus parts", () => {
 
 describe("fillets survive upstream dimension changes", () => {
   test("filletchain across a parameter sweep", async () => {
-    const def = await importPart(join(root, "tests/corpus/parts/filletchain.ts"));
-    const cache = new OpCache();
-    const base = regen(def, "filletchain", cache);
+    const { engine } = engineFor(join(root, "tests/corpus/parts/filletchain.ts"));
+    const base = regen(engine, "filletchain");
     const want = names(base.record!, "face").map((n) => n.str).sort();
     const verticals = want.filter((n) => n.startsWith("filletchain/verticals · fillet"));
     expect(verticals.length).toBe(4);
     for (const ov of [{ width: 30 }, { width: 110, depth: 70 }, { height: 5 }, { radius: 6 }, { width: 80, height: 30, radius: 1 }]) {
-      const r = regen(def, "filletchain", cache, ov);
+      const r = regen(engine, "filletchain", ov);
       expect(r.ok).toBe(true);
       expect(names(r.record!, "face").map((n) => n.str).sort()).toEqual(want);
     }
   });
 
   test("bracket fillet + chamfer names across width/thickness", async () => {
-    const def = await importPart(join(root, "examples/bracket/parts/bracket.ts"));
-    const cache = new OpCache();
-    const want = names(regen(def, "bracket", cache).record!, "face").map((n) => n.str).sort();
+    const { engine } = engineFor(join(root, "examples/bracket/parts/bracket.ts"));
+    const want = names(regen(engine, "bracket").record, "face").map((n) => n.str).sort();
     for (const width of [30, 45, 80]) for (const thickness of [1.5, 3, 8]) {
-      const r = regen(def, "bracket", cache, { width, thickness });
+      const r = regen(engine, "bracket", { width, thickness });
       expect(names(r.record!, "face").map((n) => n.str).sort()).toEqual(want);
     }
   });
@@ -61,9 +59,8 @@ describe("fillets survive upstream dimension changes", () => {
 
 describe("split faces", () => {
   test("a split face resolves to all descendants and disambiguates by point", async () => {
-    const def = await importPart(join(root, "tests/corpus/parts/split.ts"));
-    const cache = new OpCache();
-    const r = regen(def, "split", cache);
+    const { engine } = engineFor(join(root, "tests/corpus/parts/split.ts"));
+    const r = regen(engine, "split");
     const rec = r.record!;
     const top = nameIndex(rec, "face").get("split/block · cap.end")!;
     expect(top.length).toBe(2); // the slot split the top face in two
@@ -74,7 +71,7 @@ describe("split faces", () => {
     const one = disambiguate(rec, "face", res.indices, rightPoint);
     expect(faceOf(rec, one).center[0]).toBeGreaterThan(0);
     // move the slot: still two descendants, still the right one by point
-    const r2 = regen(def, "split", cache, { slotX: -10 });
+    const r2 = regen(engine, "split", { slotX: -10 });
     const res2 = resolveTarget(r2.record!, { kind: "face", name: "split/block · cap.end", point: rightPoint });
     expect(res2.indices.length).toBe(2);
     expect(faceOf(r2.record!, disambiguate(r2.record!, "face", res2.indices, rightPoint)).center[0]).toBeGreaterThan(0);
@@ -87,8 +84,8 @@ describe("split faces", () => {
 
 describe("anchors: name, nearest, orphaned", () => {
   test("a note on a fillet face orphans when the fillet goes away; a nearby face falls back to nearest", async () => {
-    const def = await importPart(join(root, "tests/corpus/parts/filletchain.ts"));
-    const r = regen(def, "filletchain");
+    const { engine } = engineFor(join(root, "tests/corpus/parts/filletchain.ts"));
+    const r = regen(engine, "filletchain");
     const rec = r.record!;
     const fname = names(rec, "face").find((n) => n.str.startsWith("filletchain/verticals · fillet"))!.str;
     const idx = nameIndex(rec, "face").get(fname)![0];

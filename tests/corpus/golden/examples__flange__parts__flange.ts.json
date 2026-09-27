@@ -13,11 +13,11 @@
     "flange/body · side · shoulder",
     "flange/body · side · top",
     "flange/bolt · side",
-    "flange/copy1 · #1 · (flange/bolt · side)",
-    "flange/copy2 · #2 · (flange/bolt · side)",
-    "flange/copy3 · #3 · (flange/bolt · side)",
-    "flange/copy4 · #4 · (flange/bolt · side)",
-    "flange/copy5 · #5 · (flange/bolt · side)",
+    "flange/boltCircle/copy1 · #1 · (flange/bolt · side)",
+    "flange/boltCircle/copy2 · #2 · (flange/bolt · side)",
+    "flange/boltCircle/copy3 · #3 · (flange/bolt · side)",
+    "flange/boltCircle/copy4 · #4 · (flange/bolt · side)",
+    "flange/boltCircle/copy5 · #5 · (flange/bolt · side)",
     "flange/edgeBreak · chamfer · ((flange/body · side · bottom) & (flange/body · side · rim))",
     "flange/hubFillet · fillet · ((flange/body · side · hub) & (flange/body · side · shoulder))"
   ]

@@ -615,3 +615,11 @@ M0 and M1 carry the risk. M2 doesn't depend on naming and can run alongside them
 ---
 
 *Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/*
+
+## 14. Deviations
+
+Recorded as they happen, with the reason. The sections above stay the target; these explain where the build differs.
+
+- **Script transpiler: Sucrase instead of esbuild-wasm (§5, §12).** Sucrase is ~0.2 MB versus esbuild-wasm's ~11 MB of WASM, which matters for the "kernel ready < 1.5 s" budget, and it preserves line numbers, so provenance maps stack frames straight back to `parts/*.ts` lines without source maps. Modules are transformed individually and loaded by our own tiny CommonJS loader (fresh cache per regeneration). Sucrase reports some syntax errors at the enclosing arrow function; the loader re-parses the block to find the real line.
+- **Scripts are evaluated in sloppy mode.** JavaScriptCore (Bun) performs proper tail calls in strict mode, which drops helper frames from stack traces. Provenance and auto op ids (`part/helper/type<n>`) depend on those frames, so modules are evaluated without `"use strict"` to get identical results under Bun and Chromium. Writes to the frozen API are then ignored rather than throwing; the API is still frozen.
+- **Seam edges are excluded from edge selections** unless the selector mentions `seam`. A periodic face's seam is a parametrization artifact, not a feature edge; `base.edges("base.side")` shouldn't pick up a bore's seam.
