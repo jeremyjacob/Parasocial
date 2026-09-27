@@ -33,7 +33,7 @@
 		{#if kind === 'fill'}
 			<div class="absolute inset-0" style="background: var({name})"></div>
 		{:else if kind === 'text'}
-			<div class="absolute inset-0 grid place-items-center text-title font-semibold" style="color: var({name})">
+			<div class="absolute inset-0 grid place-items-center text-title font-heading font-medium" style="color: var({name})">
 				Aa
 			</div>
 		{:else}

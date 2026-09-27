@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title">
+  <title id="title">Parasocial — light theme</title>
+  <defs>
+    <path id="cloud" d="M30 94C17.8 94 8 84.6 8 73C8 61.4 17.8 52 30 52C31.7 52 33.3 52.2 35 52.6C38 39.5 49.5 30 63 30C79 30 92 43 92 59C94.8 57.7 97.8 57 101 57C111.5 57 120 65.3 120 75.5C120 85.7 111.5 94 101 94H30Z"/>
+    <linearGradient id="surface" x1="30" y1="83" x2="101" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171717"/>
+      <stop offset=".32" stop-color="#404040"/>
+      <stop offset=".72" stop-color="#E8E8E8"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <linearGradient id="reveal" x1="48" y1="0" x2="76" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0"/>
+      <stop offset="1" stop-color="white"/>
+    </linearGradient>
+    <mask id="wire-reveal" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <path fill="url(#reveal)" d="M0 0H128V128H0Z"/>
+    </mask>
+    <clipPath id="bounds"><use href="#cloud"/></clipPath>
+  </defs>
+  <use href="#cloud" fill="url(#surface)"/>
+  <g clip-path="url(#bounds)" mask="url(#wire-reveal)" stroke="#171717" stroke-width="2.4" stroke-linecap="round">
+    <path d="M61 29C72 44 75 73 66 95M80 34C88 52 91 77 82 95M101 56C111 66 112 83 101 95"/>
+    <path d="M37 53C53 42 74 42 91 54M33 71C53 62 75 61 89 67C94 70 98 65 106 67C113 68 118 71 121 74M34 86C55 82 76 82 94 85C105 85 115 82 121 78"/>
+  </g>
+  <use href="#cloud" stroke="#171717" stroke-width="2.4" stroke-linejoin="round"/>
+</svg>

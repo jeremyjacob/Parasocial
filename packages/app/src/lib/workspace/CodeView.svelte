@@ -8,7 +8,7 @@
 
 	let { ws, viewScripts = null }: { ws: WorkspaceState; viewScripts?: Record<string, string> | null } = $props();
 	let scroller: HTMLDivElement;
-	const path = $derived(ws.openScript ?? ws.scripts.find((s) => s.path.startsWith('parts/'))?.path ?? null);
+	const path = $derived(ws.openScript ?? ws.scripts.find((s) => s.path.startsWith('studios/'))?.path ?? null);
 	const script = $derived(ws.scripts.find((s) => s.path === path));
 	const content = $derived(viewScripts ? (path ? viewScripts[path] : undefined) : script?.content);
 	const lines = $derived(content?.split('\n') ?? []);

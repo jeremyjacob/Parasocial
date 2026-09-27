@@ -43,6 +43,15 @@ export type ParamDecl = {
 };
 
 export type ColorSpec = { kind: "auto" } | { kind: "rgb"; hex: string };
+/** How a part looks beyond its color. Every field is optional; unset means the viewer default. */
+export type Appearance = {
+  /** 1 = opaque (default) … 0 = invisible. Below 1 the part is see-through: parts and edges behind it show. */
+  opacity?: number;
+  /** 0 = mirror-smooth … 1 = fully matte. Default 0.42 (satin plastic). */
+  roughness?: number;
+  /** 0 = non-metal (default) … 1 = bare metal. */
+  metalness?: number;
+};
 export type Material = { name?: string; density?: number /* g/cm³ */ };
 
 export type EntityRef = { part: string; kind: EntityKind; name: string };

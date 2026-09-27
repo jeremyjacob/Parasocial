@@ -8,9 +8,20 @@
 		-webkit-font-smoothing: antialiased;
 		-moz-osx-font-smoothing: grayscale;
 		text-rendering: optimizeLegibility;
-		font-feature-settings: 'cv11' 0;
 		background: var(--bg-app);
 		color: var(--fg-primary);
+	}
+
+	/* Headings use Montserrat at medium weight. */
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6,
+	[role='heading'] {
+		font-family: var(--font-heading);
+		font-weight: 500;
 	}
 
 	/* Every themed scope repaints its own text colour so nested data-theme panes work. */

@@ -1,5 +1,5 @@
 /**
- * Content-addressed blob store for authored binaries (note snapshots).
+ * Content-addressed blob store for authored binaries (note snapshots, document thumbnails).
  *
  *   upload first → get the sha256 → run the mutation that references it.
  *   note.create checks the blobs row exists and bumps its refcount, so a row
@@ -193,10 +193,33 @@ export function createBlobHandlers(deps: {
       SELECT b.hash FROM blobs b
       WHERE b.hash = ANY(${valid})
         AND (EXISTS (SELECT 1 FROM notes n WHERE n.document_id = ${documentID} AND n.snapshot_hash = b.hash)
+             OR EXISTS (SELECT 1 FROM documents d WHERE d.id = ${documentID} AND b.hash IN (d.thumb_light, d.thumb_dark))
              OR (b.uploaded_by = ${user.userID} AND b.refcount = 0))`;
     const urls: Record<string, string> = {};
     for (const r of rows) urls[r.hash] = signBlobURL(config, { hash: r.hash, documentID, basePath });
     return json({ urls });
+  }
+
+  /** Signed thumbnail URLs for the documents list: { [documentID]: { light, dark } }, members only. */
+  async function thumbnailURLs(userID: string, documentIDs: readonly string[]) {
+    const rows = await db.sql`
+      SELECT d.id, d.thumb_light, d.thumb_dark FROM documents d
+      JOIN document_members m ON m.document_id = d.id AND m.user_id = ${userID}
+      WHERE d.id = ANY(${documentIDs as string[]}) AND d.thumb_light IS NOT NULL AND d.thumb_dark IS NOT NULL`;
+    // expiry snapped to the hour (valid 1–2 h), so the URLs, and the browser's cached images, stay stable
+    const now = Math.floor(Date.now() / 3600_000) * 3600_000;
+    const at = (hash: string, documentID: string) => signBlobURL(config, { hash, documentID, basePath, now, ttlSeconds: 7200 });
+    const urls: Record<string, { light: string; dark: string }> = {};
+    for (const r of rows) urls[r.id] = { light: at(r.thumb_light, r.id), dark: at(r.thumb_dark, r.id) };
+    return urls;
+  }
+
+  async function thumbsRoute(req: Request) {
+    const user = await deps.resolveUser(req);
+    if (!user) throw new HttpError(401, "Not signed in");
+    const { documentIDs } = await readJSON<{ documentIDs: string[] }>(req);
+    if (!Array.isArray(documentIDs) || documentIDs.length > 500) throw new HttpError(400, "documentIDs[] required");
+    return json({ urls: await thumbnailURLs(user.userID, documentIDs) });
   }
 
   async function read(req: Request, hash: string) {
@@ -231,11 +254,12 @@ export function createBlobHandlers(deps: {
     const sub = path.slice(basePath.length).replace(/^\/+|\/+$/g, "");
     if (req.method === "POST" && sub === "") return upload(req);
     if (req.method === "POST" && sub === "sign") return signRoute(req);
+    if (req.method === "POST" && sub === "thumbs") return thumbsRoute(req);
     if ((req.method === "GET" || req.method === "HEAD") && SHA256_RE.test(sub)) return read(req, sub);
     return error(404, "Not found");
   });
 
-  return { handle: handleReq };
+  return { handle: handleReq, thumbnailURLs };
 }
 
 /**
@@ -248,7 +272,8 @@ export async function sweepBlobs(db: Db, store: BlobStore, opts: { graceMs?: num
   const grace = opts.graceMs ?? 24 * 3600_000;
   await db.sql`
     UPDATE blobs b SET refcount = coalesce(r.n, 0)
-    FROM (SELECT b2.hash, (SELECT count(*) FROM notes n WHERE n.snapshot_hash = b2.hash)::int AS n FROM blobs b2) r
+    FROM (SELECT b2.hash, ((SELECT count(*) FROM notes n WHERE n.snapshot_hash = b2.hash)
+      + (SELECT count(*) FROM documents d WHERE b2.hash IN (d.thumb_light, d.thumb_dark)))::int AS n FROM blobs b2) r
     WHERE r.hash = b.hash AND b.refcount IS DISTINCT FROM coalesce(r.n, 0)`;
   const doomed = await db.sql`
     SELECT hash FROM blobs WHERE refcount = 0 AND created_at < ${new Date(Date.now() - grace)}`;
@@ -256,7 +281,8 @@ export async function sweepBlobs(db: Db, store: BlobStore, opts: { graceMs?: num
   for (const { hash } of doomed) {
     // Delete the row first (guarded against a concurrent reference), then the bytes.
     const gone = await db.sql`DELETE FROM blobs WHERE hash = ${hash} AND refcount = 0
-                              AND NOT EXISTS (SELECT 1 FROM notes WHERE snapshot_hash = ${hash}) RETURNING hash`;
+                              AND NOT EXISTS (SELECT 1 FROM notes WHERE snapshot_hash = ${hash})
+                              AND NOT EXISTS (SELECT 1 FROM documents WHERE ${hash} IN (thumb_light, thumb_dark)) RETURNING hash`;
     if (gone.length) {
       await store.delete(hash);
       deleted.push(hash);

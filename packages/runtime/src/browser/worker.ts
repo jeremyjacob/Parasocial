@@ -1,7 +1,7 @@
 // Engine worker: loads OCCT, runs the Engine, answers requests from the engine page.
 // Meshes are transferred, never copied (§9).
 import { loadKernel, meshTransferables } from "@parasocial/kernel";
-import { Engine, type PartResult } from "../engine";
+import { Engine, type PartResult, type Interference, type PartPose } from "../engine";
 import { LatestWins } from "../scheduler";
 import type { EngineRequest, EngineInfo } from "../protocol";
 
@@ -34,6 +34,11 @@ async function boot(cfg: WorkerInit): Promise<EngineInfo> {
 }
 
 const regen = new LatestWins<{ part: string; quality: "coarse" | "fine" }, PartResult>(({ part, quality }) => engine.regenerate(part, quality));
+// interference follows drags: only the newest layout is worth computing
+const overlaps = new LatestWins<{ parts: string[]; ignore?: [string, string][]; poses?: Record<string, PartPose> }, Interference[]>((r) => {
+  if (r.poses) engine.setPoses(r.poses);
+  return engine.interferences(r.parts, r.ignore);
+});
 
 async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: Transferable[] }> {
   switch (req.op) {
@@ -41,10 +46,18 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
       return { value: { pong: true, ...stats } };
     case "setDocument":
       engine.setDocument(req.doc);
-      return { value: engine.parts() };
+      return { value: engine.partInfos() };
     case "setScript":
       engine.setScript(req.path, req.content);
-      return { value: engine.parts() };
+      return { value: engine.partInfos() };
+    case "parts":
+      return { value: engine.partInfos() };
+    case "snapshotParts":
+      if (snapshot.key !== req.key) {
+        snapshot.engine.setDocument(req.doc);
+        snapshot.key = req.key;
+      }
+      return { value: snapshot.engine.partInfos() };
     case "setOverrides":
       engine.setOverrides(req.part, req.overrides);
       return { value: true };
@@ -82,11 +95,21 @@ async function handle(req: EngineRequest): Promise<{ value: unknown; transfer?: 
     case "interference":
       return { value: engine.interference(req.a, req.b) };
     case "export": {
-      const bytes = engine.exportPart(req.part, req.format);
+      const bytes = engine.exportParts(req.parts ?? (req.part ? [req.part] : []), req.format);
       // base64 so it survives JSON (pool) and structured clone alike
       let bin = "";
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       return { value: { base64: btoa(bin), bytes: bytes.length } };
+    }
+    case "assemblies":
+      return { value: engine.assemblies() };
+    case "setPoses":
+      engine.setPoses(req.poses);
+      return { value: true };
+    case "interferences": {
+      const r = await overlaps.request("all", { parts: req.parts, ignore: req.ignore, poses: req.poses });
+      if (!r) return { value: null };
+      return { value: r, transfer: r.flatMap((x) => (x.mesh ? meshTransferables(x.mesh) : [])) };
     }
     case "closestPoint":
       return { value: engine.closestPoint(req.part, req.kind, req.index, req.point) };

@@ -10,14 +10,15 @@ export async function load() {
   await loadKernel();
 }
 
-/** An engine loaded with the document that contains `file` (a parts/*.ts path under examples/ or tests/corpus/). */
-export function engineFor(file: string): { engine: Engine; part: string } {
+/** An engine loaded with the document that contains `file` (a studios/*.ts path under examples/ or tests/corpus/), and the parts that file exports. */
+export function engineFor(file: string): { engine: Engine; part: string; parts: { id: string; export: string }[] } {
   const docRoot = dirname(dirname(file));
   const scripts: Record<string, string> = {};
-  for (const f of new Glob("{parts,lib}/**/*.ts").scanSync(docRoot)) scripts[f] = readFileSync(join(docRoot, f), "utf8");
+  for (const f of new Glob("{studios,lib}/**/*.ts").scanSync(docRoot)) scripts[f] = readFileSync(join(docRoot, f), "utf8");
   const engine = new Engine();
   engine.setDocument({ scripts });
-  return { engine, part: basename(file, ".ts") };
+  const parts = engine.partInfos().filter((p) => p.file === `studios/${basename(file)}`);
+  return { engine, part: basename(file, ".ts"), parts };
 }
 
 export function regen(e: Engine, part: string, overrides: Record<string, string | number> = {}): PartResult & { record: OpRecord } {

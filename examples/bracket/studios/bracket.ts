@@ -1,5 +1,7 @@
 import { part, param, sketch, plane, mm } from "parasocial";
 
+export const name = "Bracket";
+
 export default part("Bracket", ({ color }) => {
   const t = param("thickness", 3, { min: 1, max: 10, unit: mm, step: 0.5 });
   const w = param("width", 40, { unit: mm });

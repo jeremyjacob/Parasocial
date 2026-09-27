@@ -105,13 +105,13 @@ describe.skipIf(!enabled)("real zero-cache", () => {
     expect(docs.map((d) => d.name)).toContain("Renamed upstream");
 
     // 3. versions created server-side sync back
-    const w = ada.z.mutate(mutators.script.write({ documentID: docID, path: "parts/bracket.ts", content: "export default 1;\n", baseVersion: null }));
+    const w = ada.z.mutate(mutators.script.write({ documentID: docID, path: "studios/bracket.ts", content: "export default 1;\n", baseVersion: null }));
     expect((await w.server).type).toBe("success");
     const vs = await waitFor<{ number: number; message: string }[]>(ada.z, queries.versions({ documentID: docID }), (d) => d.length === 1);
-    expect(vs[0]).toMatchObject({ number: 1, message: "Create parts/bracket.ts" });
+    expect(vs[0]).toMatchObject({ number: 1, message: "Create studios/bracket.ts" });
 
     // 4. stale write is rejected by the server with the current content
-    const stale = ada.z.mutate(mutators.script.write({ documentID: docID, path: "parts/bracket.ts", content: "x", baseVersion: 0 }));
+    const stale = ada.z.mutate(mutators.script.write({ documentID: docID, path: "studios/bracket.ts", content: "x", baseVersion: 0 }));
     const res = await stale.server;
     expect(res.type).toBe("error");
     if (res.type === "error" && res.error.type === "app") expect(res.error.details).toMatchObject({ code: "stale", current: { version: 1 } });

@@ -7,7 +7,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mutators, newID } from "@parasocial/sync";
 import { runMutator, readVersion, exportDocument, importDocument, buildDocumentZip, parseDocumentZip, signBlobURL, type Db, type BlobStore } from "@parasocial/sync/server";
 import type { PoolClient } from "@parasocial/engine-pool/client";
-import { loadDoc, partsOf, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
+import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
+import { NoteCursor, type NoteEvents } from "./note-events";
 
 export type Session = {
   id: string;
@@ -21,12 +22,17 @@ export type Session = {
   /** latest version this session created, per document (linked by replies) */
   lastVersion: Map<string, string>;
   calls: number[];
+  /** wait_for_notes position per document; starts at connect (list_notes covers what came before) */
+  noteCursors: Map<string, NoteCursor>;
+  startedAt: number;
 };
 
-export type ToolDeps = { db: Db; pool: PoolClient; store: BlobStore; config: { appOrigin: string; secret: string } };
+export type ToolDeps = { db: Db; pool: PoolClient; store: BlobStore; noteEvents: NoteEvents; config: { appOrigin: string; secret: string } };
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type ToolResult = { content: Content[]; isError?: boolean };
+/** What the SDK hands a tool besides its arguments (cancellation, progress). */
+type Extra = { signal: AbortSignal; _meta?: { progressToken?: string | number }; sendNotification: (n: any) => Promise<void> };
 
 class ToolError extends Error {
   constructor(
@@ -82,8 +88,18 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     });
   }
 
+  /**
+   * Part ids, discovered by the engine: a studio exports one part (`export default`, id `<file>`)
+   * or several (named exports, ids `<file>:<export>`).
+   */
+  async function partsOf(d: DocState): Promise<string[]> {
+    const [infos] = await engine(d, [{ op: "parts" }]);
+    return (infos as { id: string }[]).map((p) => p.id);
+  }
+
   /** Regenerate parts; compact results in the shape the UI shows (§8 Errors). */
-  async function regen(d: DocState, parts = partsOf(d)) {
+  async function regen(d: DocState, parts?: string[]) {
+    parts ??= await partsOf(d);
     const out = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
     return out.map((r: any) => summarize(r));
   }
@@ -143,7 +159,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   async function describeTargets(d: DocState, targets: any[]) {
     const out = [];
     for (const t of targets) {
-      const part = t.part ?? partsOf(d)[0];
+      const part = t.part ?? (await partsOf(d))[0];
       if (t.kind === "part" || t.kind === "point") {
         out.push({ kind: t.kind, part, point: vec(t.point) });
         continue;
@@ -198,14 +214,14 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }
 
   /** Wrap a tool: rate limit, error shaping, last-seen. */
-  function tool<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.infer<z.ZodObject<S>>) => Promise<ToolResult>, annotations?: Record<string, boolean>) {
-    server.registerTool(name, { description, inputSchema: shape as any, annotations }, (async (args: any) => {
+  function tool<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.infer<z.ZodObject<S>>, extra: Extra) => Promise<ToolResult>, annotations?: Record<string, boolean>) {
+    server.registerTool(name, { description, inputSchema: shape as any, annotations }, (async (args: any, extra: Extra) => {
       const now = Date.now();
       s.calls = s.calls.filter((t) => now - t < 60_000);
       if (s.calls.length >= LIMIT_PER_MIN) return { isError: true, content: [{ type: "text", text: "Rate limit: too many calls this minute. Slow down and batch work." }] };
       s.calls.push(now);
       try {
-        return await fn(args);
+        return await fn(args, extra);
       } catch (e) {
         const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
@@ -222,7 +238,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ default: s.defaultDocument, documents: rows.map((r: any) => ({ id: r.id, name: r.name, role: r.role, version: Number(r.head_version), updated: new Date(Number(r.updated_at)).toISOString() })) });
   });
 
-  tool("create_document", "Create an empty document (then write parts/<name>.ts).", { name: z.string().min(1).max(200) }, async ({ name }) => {
+  tool("create_document", "Create an empty document (then write studios/<name>.ts).", { name: z.string().min(1).max(200) }, async ({ name }) => {
     const id = newID();
     await mutate(mutators.document.create({ id, name }));
     s.defaultDocument ??= id;
@@ -253,6 +269,37 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     if (!n) throw new ToolError(`No note ${id} in this document.`);
     return text(await noteView(documentID, n, d));
   });
+
+  tool(
+    "wait_for_notes",
+    "Block until a human adds a note or replies on one (notes held by other agents are skipped), then return those notes described like list_notes, each with a `reason` (created, and/or the new replies). Returns { notes: [] } at the timeout; call it again to keep waiting. Each call continues where the previous one stopped, starting from when this session connected, so call list_notes first for what was already there.",
+    { document, timeoutSeconds: z.number().int().min(1).max(600).optional().describe("default 50; some clients time out tool calls after 60 s") },
+    async ({ document: dd, timeoutSeconds }, extra) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID);
+      let cursor = s.noteCursors.get(documentID);
+      if (!cursor) s.noteCursors.set(documentID, (cursor = new NoteCursor(s.startedAt)));
+      // progress keeps clients that reset their timeout on progress from giving up on a long wait
+      const token = extra._meta?.progressToken;
+      let tick = 0;
+      const beat = token === undefined ? undefined : setInterval(() => extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++tick, message: "waiting for notes" } }).catch(() => {}), 15_000);
+      try {
+        const found = await deps.noteEvents.wait([documentID], cursor, s.id, { timeoutMs: (timeoutSeconds ?? 50) * 1000, signal: extra.signal });
+        if (!found.length) return text({ notes: [], hint: "Nothing new. Call wait_for_notes again to keep waiting." });
+        const d = await loadDoc(db, s.userID, documentID);
+        const notes = [];
+        for (const a of found) {
+          const [n] = await db.sql`SELECT * FROM notes WHERE id = ${a.noteID}`;
+          if (!n) continue;
+          notes.push({ reason: { created: a.created || undefined, replies: a.replies.length ? a.replies.map((r) => ({ author: r.author, text: r.text })) : undefined }, ...(await noteView(documentID, n, d)) });
+        }
+        return text({ notes });
+      } finally {
+        clearInterval(beat);
+      }
+    },
+    { readOnlyHint: true },
+  );
 
   tool(
     "reply_to_note",
@@ -338,7 +385,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_script",
-    "Create or replace a script (parts/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version and returns the regeneration result.",
+    "Create or replace a script (studios/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version and returns the regeneration result.",
     { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional().describe("note id this change answers") },
     async ({ document: dd, path, content, baseVersion, message, note }) => {
       const documentID = docID(dd);
@@ -387,7 +434,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     async ({ document: dd, view, camera, highlight, parts, style, width, height }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      await regen(d, parts ?? partsOf(d));
+      await regen(d, parts);
       let cam = camera as any;
       let v: string | undefined = view ?? "iso";
       if (view?.startsWith("note:")) {
@@ -418,11 +465,11 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     async ({ document: dd, part, entities }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const parts = part ? [part] : partsOf(d);
+      const parts = part ? [part] : await partsOf(d);
       const results = await engine(d, parts.map((p) => ({ op: "regenerate", part: p })));
       const out: any[] = [];
       for (const r of results as any[]) {
-        const entry: any = { ...summarize(r), material: r.material, mass: r.mass && { volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), massGrams: round(r.mass.mass, 2), centroid: vec(r.mass.centroid) }, params: r.params.map((p: any) => ({ name: p.name, value: p.value, unit: p.unit, overridden: p.overridden })) };
+        const entry: any = { ...summarize(r), color: r.color, appearance: r.appearance, material: r.material, mass: r.mass && { volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), massGrams: round(r.mass.mass, 2), centroid: vec(r.mass.centroid) }, params: r.params.map((p: any) => ({ name: p.name, value: p.value, unit: p.unit, overridden: p.overridden })) };
         if ((entities ?? !!part) && !r.empty) {
           const [all] = await engine(d, [{ op: "describeAll", part: r.part }]);
           entry.faces = (all as any).faces.map(describeEntity);
@@ -443,7 +490,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     async ({ document: dd, expr, part, kind }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const p = part ?? partsOf(d)[0];
+      const p = part ?? (await partsOf(d))[0];
       if (!p) throw new ToolError("This document has no parts.");
       await regen(d, [p]);
       const k = kind ?? "face";
@@ -493,7 +540,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
-    const results = await engine(d, partsOf(d).map((part) => ({ op: "regenerate", part })));
+    const results = await engine(d, (await partsOf(d)).map((part) => ({ op: "regenerate", part })));
     return text({
       configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default",
       parts: (results as any[]).map((r) => ({ part: r.part, params: r.params.map((p: any) => ({ name: p.name, codeDefault: p.default, override: p.overridden ? p.expression : undefined, effective: p.value, unit: p.unit, min: p.min, max: p.max, step: p.step, options: p.options, source: p.source && `${p.source.file}:${p.source.line}`, error: p.error })) })),
@@ -593,11 +640,11 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   tool("check", "Validity (BRepCheck) of each part, and interference between parts.", { document, part: z.string().optional() }, async ({ document: dd, part }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    const parts = part ? [part] : partsOf(d);
+    const parts = part ? [part] : await partsOf(d);
     await regen(d);
     const checks = await engine(d, parts.map((p) => ({ op: "check", part: p })));
     const out: any = { validity: parts.map((p, i) => ({ part: p, valid: !(checks[i] as any[]).length, problems: checks[i] })) };
-    const all = partsOf(d);
+    const all = await partsOf(d);
     const pairs: any[] = [];
     for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
     const vols = await engine(d, pairs.map(([a, b]) => ({ op: "interference", a, b })));

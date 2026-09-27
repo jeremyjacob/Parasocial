@@ -1,5 +1,7 @@
 import { part, param, sketch, plane, cylinder, mm } from "parasocial";
 
+export const name = "Knob";
+
 export default part("Knob", ({ color }) => {
   const d = param("diameter", 30, { min: 12, max: 80, unit: mm });
   const h = param("height", 16, { min: 6, max: 40, unit: mm });

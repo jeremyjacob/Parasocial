@@ -52,6 +52,10 @@ const documents = table("documents")
     units: string(),
     settings: json<JSONObject>(),
     headVersion: number().from("head_version"),
+    /** Blob hashes of the documents-list thumbnail (iso render per theme), and the version it shows. */
+    thumbLight: string().from("thumb_light").optional(),
+    thumbDark: string().from("thumb_dark").optional(),
+    thumbVersion: number().from("thumb_version").optional(),
     createdAt: number().from("created_at"),
     updatedAt: number().from("updated_at"),
   })

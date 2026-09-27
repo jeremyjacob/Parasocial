@@ -40,9 +40,10 @@
 	const short = (n: string) => n.replace(/^--(bg|fg|border|status|selection)-/, '').replace(/^--/, '');
 
 	const typeScale = [
-		{ cls: 'text-display', name: 'display', spec: '28/34 · −2.2%', sample: 'Bracket', weight: 'font-semibold' },
-		{ cls: 'text-heading', name: 'heading', spec: '20/28 · −1.7%', sample: 'Create your first document', weight: 'font-semibold' },
-		{ cls: 'text-title', name: 'title', spec: '15/20 · −1%', sample: 'Connect an agent', weight: 'font-semibold' },
+		{ cls: 'text-display', name: 'display', spec: '30/38 · −1.5%', sample: 'Bracket', weight: 'font-heading font-medium' },
+		{ cls: 'text-heading', name: 'heading', spec: '22/30 · −1%', sample: 'Create your first document', weight: 'font-heading font-medium' },
+		{ cls: 'text-title', name: 'title', spec: '17/24', sample: 'Connect an agent', weight: 'font-heading font-medium' },
+		{ cls: 'text-section', name: 'section', spec: '14/20', sample: 'Properties', weight: 'font-heading font-medium' },
 		{ cls: 'text-body', name: 'body', spec: '13/20', sample: 'Wall too thin here, needs 2 mm.', weight: '' },
 		{ cls: 'text-ui', name: 'ui', spec: '12/16 · default', sample: 'Shaded with edges', weight: 'font-medium' },
 		{ cls: 'text-label', name: 'label', spec: '11/16 · +1%', sample: 'Corner radius', weight: 'text-fg-secondary' },
@@ -115,7 +116,7 @@
 	</Specimen>
 </Section>
 
-<Section id="type" title="Typography" description="Inter Variable, self-hosted. A compact UI scale: 12px is the default control text, 11px labels sit in secondary grey. Numbers are always tabular.">
+<Section id="type" title="Typography" description="Inter for body text and controls, Montserrat for headings; both self-hosted. A compact UI scale: 12px is the default control text, 11px labels sit in secondary grey.">
 	<Specimen title="Scale">
 		<div class="flex flex-col">
 			{#each typeScale as t (t.name)}
@@ -144,7 +145,7 @@
 			<div class="flex flex-col gap-1 text-ui">
 				<span class="font-normal">400 · Body and values</span>
 				<span class="font-medium">500 · Controls, tabs, menu</span>
-				<span class="font-semibold">600 · Section titles</span>
+				<span class="font-heading font-medium text-section">500 · Montserrat headings</span>
 			</div>
 		</Specimen>
 	</div>

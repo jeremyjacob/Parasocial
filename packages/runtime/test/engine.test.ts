@@ -10,7 +10,7 @@ beforeAll(async () => { await loadKernel(); });
 function docFrom(dir: string) {
   const root = join(import.meta.dir, "../../../examples", dir);
   const scripts: Record<string, string> = {};
-  for (const f of new Glob("{parts,lib}/**/*.ts").scanSync(root)) scripts[f] = readFileSync(join(root, f), "utf8");
+  for (const f of new Glob("{studios,lib}/**/*.ts").scanSync(root)) scripts[f] = readFileSync(join(root, f), "utf8");
   return scripts;
 }
 
@@ -37,7 +37,7 @@ test("provenance maps to script lines, including helper chains", () => {
   const d = e.describe("flange", "face", bolt);
   expect(d.createdBy?.source?.file).toBe("lib/holes.ts");
   expect(d.createdBy?.source?.line).toBe(5);
-  expect(d.createdBy?.chain?.map((c) => c.file)).toEqual(["parts/flange.ts", "lib/holes.ts"]);
+  expect(d.createdBy?.chain?.map((c) => c.file)).toEqual(["studios/flange.ts", "lib/holes.ts"]);
 });
 
 test("syntax and runtime errors carry file:line; last good geometry stays", () => {
@@ -45,22 +45,22 @@ test("syntax and runtime errors carry file:line; last good geometry stays", () =
   const scripts = docFrom("bracket");
   e.setDocument({ scripts });
   expect(e.regenerate("bracket").ok).toBe(true);
-  e.setScript("parts/bracket.ts", scripts["parts/bracket.ts"].replace("const w =", "const w = ="));
+  e.setScript("studios/bracket.ts", scripts["studios/bracket.ts"].replace("const w =", "const w = ="));
   const r = e.regenerate("bracket");
   expect(r.ok).toBe(false);
   expect(r.problems[0].kind).toBe("syntax");
-  expect(r.problems[0].source?.line).toBe(5);
+  expect(r.problems[0].source?.line).toBe(7);
   expect(r.partial).toBe(true);
   expect(r.mesh).toBeDefined(); // last good geometry
-  e.setScript("parts/bracket.ts", scripts["parts/bracket.ts"].replace(".chamfer(", ".nope("));
+  e.setScript("studios/bracket.ts", scripts["studios/bracket.ts"].replace(".chamfer(", ".nope("));
   const r2 = e.regenerate("bracket");
   expect(r2.problems[0].kind).toBe("runtime");
-  expect(r2.problems[0].message).toContain("bracket.ts:14");
+  expect(r2.problems[0].message).toContain("bracket.ts:16");
   // op failure: huge fillet -> actionable message + highlighted edges + partial result
-  e.setScript("parts/bracket.ts", scripts["parts/bracket.ts"].replace(', 2, { tag: "corners" }', ', 30, { tag: "corners" }'));
+  e.setScript("studios/bracket.ts", scripts["studios/bracket.ts"].replace(', 2, { tag: "corners" }', ', 30, { tag: "corners" }'));
   const r3 = e.regenerate("bracket");
   expect(r3.problems[0].kind).toBe("operation");
-  expect(r3.problems[0].message).toMatch(/fillet radius 30 exceeds adjacent face width \d+.*\(bracket\.ts:13\)/);
+  expect(r3.problems[0].message).toMatch(/fillet radius 30 exceeds adjacent face width \d+.*\(bracket\.ts:15\)/);
   expect(r3.problems[0].highlight?.names.length).toBe(4);
   expect(r3.partial).toBe(true);
   expect(r3.mesh).toBeDefined();
@@ -70,15 +70,15 @@ test("sandbox hygiene: shadowed globals, seeded random, no foreign imports", asy
   const e = new Engine();
   e.setDocument({
     scripts: {
-      "parts/a.ts": `import { part, box } from "parasocial";
+      "studios/a.ts": `import { part, box } from "parasocial";
 export default part("A", () => {
   if (typeof fetch !== "undefined" || typeof globalThis !== "undefined" || typeof self !== "undefined") throw new Error("leak");
   const w = 10 + Math.floor(Math.random() * 10);
   if (Date.now() !== ${Date.UTC(2024, 0, 1)}) throw new Error("date");
   return box(w, 5, 5);
 });`,
-      "parts/b.ts": `import x from "lodash"; export default x;`,
-      "parts/c.ts": `import { part, box, Solid } from "parasocial";
+      "studios/b.ts": `import x from "lodash"; export default x;`,
+      "studios/c.ts": `import { part, box, Solid } from "parasocial";
 export default part("C", () => { (Solid.prototype as any).evil = 1; return box(1,1,1); });`,
     },
   });
@@ -131,21 +131,23 @@ test("pack/unpack round-trips a regeneration result", async () => {
   expect([...back.mesh!.indices]).toEqual([...r.mesh!.indices]);
   expect([...back.mesh!.edgeRanges]).toEqual([...r.mesh!.edgeRanges]);
   expect(back.names!.face.length).toBe(r.faces.length);
-  const k1 = await derivedKey({ part: "bracket", scripts: { "parts/a.ts": "x" }, overrides: { w: 1 }, build: "b" });
-  const k2 = await derivedKey({ part: "bracket", scripts: { "parts/a.ts": "x" }, overrides: { w: 2 }, build: "b" });
+  const k1 = await derivedKey({ part: "bracket", scripts: { "studios/a.ts": "x" }, overrides: { w: 1 }, build: "b" });
+  const k2 = await derivedKey({ part: "bracket", scripts: { "studios/a.ts": "x" }, overrides: { w: 2 }, build: "b" });
   expect(k1).not.toBe(k2);
 });
 
 test("describeAll, interference, exports", () => {
   const e = new Engine();
   e.setDocument({ scripts: docFrom("enclosure") });
-  e.regenerate("body");
-  e.regenerate("lid");
-  const d = e.describeAll("body");
+  expect(e.parts()).toEqual(["enclosure", "enclosure:lid", "mount"]);
+  for (const p of e.parts()) e.regenerate(p);
+  const d = e.describeAll("enclosure");
   expect(d.faces.length).toBeGreaterThan(10);
-  expect(d.faces[0].createdBy?.source?.file).toBe("parts/body.ts");
-  expect(e.interference("body", "lid")).toBeGreaterThanOrEqual(0);
-  for (const f of ["step", "stl", "3mf"] as const) expect(e.exportPart("body", f).byteLength).toBeGreaterThan(100);
+  expect(d.faces[0].createdBy?.source?.file).toBe("studios/enclosure.ts");
+  expect(e.describeAll("enclosure:lid").faces[0].createdBy?.source?.file).toBe("studios/enclosure.ts");
+  expect(e.interference("enclosure", "enclosure:lid")).toBeGreaterThanOrEqual(0);
+  expect(e.interference("enclosure", "mount")).toBeGreaterThanOrEqual(0);
+  for (const f of ["step", "stl", "3mf"] as const) expect(e.exportPart("enclosure", f).byteLength).toBeGreaterThan(100);
 });
 
 test("tangent chain and loop", () => {
@@ -159,4 +161,56 @@ test("tangent chain and loop", () => {
   expect(chain.length).toBe(8);
   const loop = e.loopOf("bracket", i);
   expect(loop.length).toBe(8);
+});
+
+test("a studio exports several parts: default is <stem>, named exports are <stem>:<name>", () => {
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "studios/case.ts": `import { part, box } from "parasocial";
+export const name = "Case";
+export default part("Base", () => box(20, 20, 5));
+export const lid = part("Lid", () => box(20, 20, 2));
+export const clip = part("Clip", () => box(4, 2, 2));`,
+      // builds on a part from another studio and re-exports it: listed once, under case.ts
+      "studios/stack.ts": `import { part, box } from "parasocial";
+import { lid } from "./case";
+export { lid };
+export const shim = part("Shim", () => box(20, 20, 1));`,
+      "studios/lone.ts": `import { part, box } from "parasocial";
+export const only = part("Only", () => box(1, 1, 1));`,
+    },
+  });
+  // `export const name` is the studio's display name (not a part); without one, the file stem
+  expect(e.partInfos().map((p) => [p.id, p.file, p.name, p.studio])).toEqual([
+    ["case", "studios/case.ts", "Base", "Case"],
+    ["case:lid", "studios/case.ts", "Lid", "Case"],
+    ["case:clip", "studios/case.ts", "Clip", "Case"],
+    ["lone:only", "studios/lone.ts", "Only", "lone"],
+    ["stack:shim", "studios/stack.ts", "Shim", "stack"],
+  ]);
+  for (const id of e.parts()) expect(e.regenerate(id).ok).toBe(true);
+  const lid = e.regenerate("case:lid");
+  expect(lid.name).toBe("Lid");
+  expect(lid.bbox!.max[2] - lid.bbox!.min[2]).toBeCloseTo(2);
+  expect(e.names("case:lid").face[0]).toStartWith("case:lid/");
+  // exported together: one STEP/STL compound, one 3MF object per part
+  for (const f of ["step", "stl"] as const) expect(e.exportParts(["case", "case:lid", "case:clip"], f).byteLength).toBeGreaterThan(e.exportPart("case:clip", f).byteLength);
+  const { unzipSync, strFromU8 } = require("fflate");
+  const model = strFromU8(unzipSync(e.exportParts(["case", "case:lid"], "3mf"))["3D/3dmodel.model"]);
+  expect(model.match(/<object /g)?.length).toBe(2);
+
+  // a studio that fails to load keeps its parts (and its name), each showing the error over its last good geometry
+  e.setScript("studios/case.ts", "export const = ;");
+  expect(e.parts().filter((p) => p.startsWith("case"))).toEqual(["case", "case:lid", "case:clip"]);
+  expect(e.partInfos().find((p) => p.id === "case")?.studio).toBe("Case");
+  const broken = e.regenerate("case:lid");
+  expect(broken.ok).toBe(false);
+  expect(broken.problems[0].kind).toBe("syntax");
+  expect(broken.mesh).toBeDefined();
+
+  // a studio with no parts gets one placeholder carrying an actionable error
+  e.setScript("studios/case.ts", `export const n = 1;`);
+  expect(e.parts().filter((p) => p.startsWith("case"))).toEqual(["case"]);
+  expect(e.regenerate("case").problems[0].message).toContain("must export a part");
 });

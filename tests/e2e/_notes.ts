@@ -7,7 +7,7 @@ page.on("pageerror", (e) => console.log("[pageerror]", e.message));
 page.on("console", (m) => m.type() === "error" && !m.text().includes("404") && console.log("[console]", m.text().slice(0, 300)));
 await virtualAuthenticator(page);
 await signUp(page, "Katherine Johnson");
-await page.getByTestId("example-bracket").click();
+await page.getByTestId("example-bracket").dblclick();
 await page.waitForURL(/\/d\//);
 await page.waitForFunction(() => (globalThis as any).__ws?.results?.bracket && (globalThis as any).__ws.kernelReady, null, { timeout: 30000 });
 await page.waitForTimeout(800);

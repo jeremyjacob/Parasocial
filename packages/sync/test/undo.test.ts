@@ -34,12 +34,12 @@ async function roundTrip(mr: AnyMR, snapshot: () => Promise<unknown>) {
 test("param set / reset / resetAll round-trip", async () => {
   const doc = await newDoc(db, ada);
   const cfg = crypto.randomUUID();
-  await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "A", overrides: [{ part: "parts/a.ts", name: "w", expression: "40", value: 40 }] }), { userID: ada });
+  await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "A", overrides: [{ part: "studios/a.ts", name: "w", expression: "40", value: 40 }] }), { userID: ada });
   const overrides = async () =>
     (await db.zql.run(zql.paramOverrides.where("configurationID", cfg))).map((o) => [o.part, o.name, o.expression, o.value]).sort();
-  await roundTrip(mutators.param.set({ documentID: doc, configurationID: cfg, part: "parts/a.ts", name: "t", expression: "3", value: 3 }), overrides);
-  await roundTrip(mutators.param.set({ documentID: doc, configurationID: cfg, part: "parts/a.ts", name: "w", expression: "=t*10", value: 30 }), overrides);
-  await roundTrip(mutators.param.reset({ documentID: doc, configurationID: cfg, part: "parts/a.ts", name: "w" }), overrides);
+  await roundTrip(mutators.param.set({ documentID: doc, configurationID: cfg, part: "studios/a.ts", name: "t", expression: "3", value: 3 }), overrides);
+  await roundTrip(mutators.param.set({ documentID: doc, configurationID: cfg, part: "studios/a.ts", name: "w", expression: "=t*10", value: 30 }), overrides);
+  await roundTrip(mutators.param.reset({ documentID: doc, configurationID: cfg, part: "studios/a.ts", name: "w" }), overrides);
   await roundTrip(mutators.param.resetAll({ documentID: doc, configurationID: cfg }), overrides);
 });
 
@@ -79,7 +79,15 @@ test("note actions and markup round-trip", async () => {
 });
 
 test("script writes and presence are not undoable (they go through Restore)", async () => {
-  expect(isUndoable(mutators.script.write({ documentID: "d", path: "parts/a.ts", content: "", baseVersion: null }))).toBe(false);
+  expect(isUndoable(mutators.script.write({ documentID: "d", path: "studios/a.ts", content: "", baseVersion: null }))).toBe(false);
   expect(isUndoable(mutators.presence.set({ id: "p", documentID: "d" }))).toBe(false);
   expect(await captureInverse(read, mutators.version.restore({ documentID: "d", versionID: "v" }))).toBeNull();
+});
+
+test("assembly pose set / clear round-trip", async () => {
+  const doc = await newDoc(db, ada);
+  const poses = async () => ((await db.zql.run(zql.documents.where("id", doc).one()))?.settings as any)?.poses ?? {};
+  await roundTrip(mutators.document.setPose({ id: doc, assembly: "box", joints: { hinge: [-40] } }), poses);
+  await roundTrip(mutators.document.setPose({ id: doc, assembly: "box", joints: { hinge: [-90] } }), poses);
+  await roundTrip(mutators.document.setPose({ id: doc, assembly: "box", joints: null }), poses);
 });

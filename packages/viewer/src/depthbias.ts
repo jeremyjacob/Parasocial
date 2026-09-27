@@ -1,5 +1,5 @@
-// Pull a line material slightly toward the camera, so highlight strokes, markup and the origin
-// axes never z-fight with the faces and edges they sit on.
+// Pull a line material slightly toward the camera, so highlight strokes and markup
+// never z-fight with the faces and edges they sit on.
 //
 // Reversed-Z: NDC depth is ~near/distance, so a fixed offset is enormous for far geometry (0.0004
 // is most of the range at 200 units, and lines then win over everything). Scale depth instead:

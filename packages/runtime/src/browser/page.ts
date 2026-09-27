@@ -24,6 +24,8 @@ function spawn(): Slot {
       } else if (ev.data?.type === "fatal") reject(new Error(ev.data.error));
     };
     worker.addEventListener("message", onMsg);
+    // a worker whose module fails to load or evaluate never posts anything: surface it instead of hanging
+    worker.addEventListener("error", (ev) => reject(new Error(ev.message || "the engine worker failed to load")), { once: true });
   });
   worker.postMessage({ type: "init", threads: new URLSearchParams(location.search).get("threads") === "1", ...cfg.assets });
   return { worker, ready };

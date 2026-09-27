@@ -1,0 +1,33 @@
+{
+  "volume": 21065.3683,
+  "area": 22099.4095,
+  "faces": 23,
+  "edges": 52,
+  "vertices": 32,
+  "valid": true,
+  "faceNames": [
+    "enclosure/block · cap.end",
+    "enclosure/block · cap.start",
+    "enclosure/block · side · outer/bottom",
+    "enclosure/block · side · outer/left",
+    "enclosure/block · side · outer/right",
+    "enclosure/block · side · outer/top",
+    "enclosure/cavity · cap.start",
+    "enclosure/cavity · side · inner/bottom",
+    "enclosure/cavity · side · inner/left",
+    "enclosure/cavity · side · inner/right",
+    "enclosure/cavity · side · inner/top",
+    "enclosure/corners · fillet · ((enclosure/block · side · outer/bottom) & (enclosure/block · side · outer/left))",
+    "enclosure/corners · fillet · ((enclosure/block · side · outer/bottom) & (enclosure/block · side · outer/right))",
+    "enclosure/corners · fillet · ((enclosure/block · side · outer/left) & (enclosure/block · side · outer/top))",
+    "enclosure/corners · fillet · ((enclosure/block · side · outer/right) & (enclosure/block · side · outer/top))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/block · side · outer/bottom))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/block · side · outer/left))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/block · side · outer/right))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/block · side · outer/top))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/corners · fillet · ((enclosure/block · side · outer/bottom) & (enclosure/block · side · outer/left))))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/corners · fillet · ((enclosure/block · side · outer/bottom) & (enclosure/block · side · outer/right))))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/corners · fillet · ((enclosure/block · side · outer/left) & (enclosure/block · side · outer/top))))",
+    "enclosure/footRound · fillet · ((enclosure/block · cap.start) & (enclosure/corners · fillet · ((enclosure/block · side · outer/right) & (enclosure/block · side · outer/top))))"
+  ]
+}

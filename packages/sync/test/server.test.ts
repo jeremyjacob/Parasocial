@@ -94,10 +94,10 @@ describe("Zero push endpoint", () => {
     const doc = await db.zql.run(zql.documents.where("id", "doc-1").one());
     expect(doc?.ownerID).toBe(ada.userID);
 
-    const w = (await (await push(ada.cookie, "script.write", { documentID: "doc-1", path: "parts/a.ts", content: "x", baseVersion: null })).json()) as any;
+    const w = (await (await push(ada.cookie, "script.write", { documentID: "doc-1", path: "studios/a.ts", content: "x", baseVersion: null })).json()) as any;
     expect(w.mutations[0].result).toEqual({});
     // stale write: the app error (with current content) is returned to the client
-    const stale = (await (await push(ada.cookie, "script.write", { documentID: "doc-1", path: "parts/a.ts", content: "y", baseVersion: 0 })).json()) as any;
+    const stale = (await (await push(ada.cookie, "script.write", { documentID: "doc-1", path: "studios/a.ts", content: "y", baseVersion: 0 })).json()) as any;
     expect(stale.mutations[0].result).toMatchObject({ error: "app", details: { code: "stale", current: { content: "x", version: 1 } } });
     // the failed mutation still advanced lastMutationID (it won't be retried)
     const [c] = await db.sql`SELECT "lastMutationID" FROM zero_0.clients WHERE "clientID" = 'c1'`;
@@ -130,9 +130,9 @@ describe("synced queries (permissions)", () => {
     const ada = await createUser(db, "A");
     const bob = await createUser(db, "B");
     const doc = await newDoc(db, ada);
-    await run(db, mutators.script.write({ documentID: doc, path: "parts/a.ts", content: "a", baseVersion: null }), { userID: ada });
+    await run(db, mutators.script.write({ documentID: doc, path: "studios/a.ts", content: "a", baseVersion: null }), { userID: ada });
     const cfg = crypto.randomUUID();
-    await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "M3", overrides: [{ part: "parts/a.ts", name: "t", expression: "1", value: 1 }] }), { userID: ada });
+    await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "M3", overrides: [{ part: "studios/a.ts", name: "t", expression: "1", value: 1 }] }), { userID: ada });
     await run(db, mutators.presence.set({ id: crypto.randomUUID(), documentID: doc, selection: [] }), { userID: ada });
 
     const as = (userID: string | undefined) => ({
@@ -190,13 +190,13 @@ describe("version contents", () => {
     const ada = await signUp("V");
     const bob = await signUp("W");
     await push(ada.cookie, "document.create", { id: "doc-v", name: "V" }, { clientID: "v" });
-    await push(ada.cookie, "script.write", { documentID: "doc-v", path: "parts/a.ts", content: "one", baseVersion: null, versionID: "v1" }, { clientID: "v" });
-    await push(ada.cookie, "script.write", { documentID: "doc-v", path: "parts/a.ts", content: "two", baseVersion: 1, versionID: "v2" }, { clientID: "v" });
+    await push(ada.cookie, "script.write", { documentID: "doc-v", path: "studios/a.ts", content: "one", baseVersion: null, versionID: "v1" }, { clientID: "v" });
+    await push(ada.cookie, "script.write", { documentID: "doc-v", path: "studios/a.ts", content: "two", baseVersion: 1, versionID: "v2" }, { clientID: "v" });
     const get = (cookie: string, path: string) => platform.versions(new Request(`${ORIGIN}/api/versions/${path}`, { headers: { cookie } }));
     const r = await get(ada.cookie, "v1");
     expect(r.status).toBe(200);
-    expect(((await r.json()) as any).scripts).toEqual({ "parts/a.ts": "one" });
-    expect(((await (await get(ada.cookie, "v2?path=parts/a.ts")).json()) as any).scripts).toEqual({ "parts/a.ts": "two" });
+    expect(((await r.json()) as any).scripts).toEqual({ "studios/a.ts": "one" });
+    expect(((await (await get(ada.cookie, "v2?path=studios/a.ts")).json()) as any).scripts).toEqual({ "studios/a.ts": "two" });
     expect((await get(bob.cookie, "v1")).status).toBe(404);
   });
 });

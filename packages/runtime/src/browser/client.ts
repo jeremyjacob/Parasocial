@@ -1,7 +1,8 @@
 // App-side engine client: creates the cross-origin engine iframe, connects a MessageChannel,
 // validates everything that comes back, and exposes a typed RPC.
-import type { EngineRequest, EngineInfo, PartResult, EntityDescription, DocumentState, MeasureRef } from "../protocol";
-import { validateEngineMessage, validatePartResult } from "../protocol";
+import type { EngineRequest, EngineInfo, PartResult, PartInfo, EntityDescription, DocumentState, MeasureRef } from "../protocol";
+import { validateEngineMessage, validatePartResult, validatePartInfos, validateAssemblies, validateInterferences } from "../protocol";
+import type { AssemblyInfo, Interference, PartPose } from "../protocol";
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef, Resolution } from "@parasocial/naming";
 
@@ -33,8 +34,14 @@ export class EngineClient {
     iframe.style.cssText = "position:absolute;width:0;height:0;border:0;visibility:hidden";
     this.iframe = iframe;
     this.ready = new Promise((resolve, reject) => {
+      // an engine origin that's down (or a page that fails to boot) never says hello: fail instead of loading forever
+      const timer = setTimeout(() => {
+        window.removeEventListener("message", onLoaded);
+        reject(new Error(`the engine at ${origin} didn't load`));
+      }, 30_000);
       const onLoaded = (ev: MessageEvent) => {
         if (ev.origin !== origin || ev.source !== iframe.contentWindow || ev.data?.type !== "engine-loaded") return;
+        clearTimeout(timer);
         window.removeEventListener("message", onLoaded);
         const ch = new MessageChannel();
         this.port = ch.port1;
@@ -43,6 +50,7 @@ export class EngineClient {
       };
       window.addEventListener("message", onLoaded);
     });
+    this.ready.catch(() => {}); // a warmed engine nobody attached to yet: not an unhandled rejection
     (o.container ?? document.body).appendChild(iframe);
   }
 
@@ -64,6 +72,21 @@ export class EngineClient {
         if (!r) return p.reject(new Error("engine returned a malformed regeneration result"));
         return p.resolve(r);
       }
+      if (p.op === "setDocument" || p.op === "setScript" || p.op === "parts" || p.op === "snapshotParts") {
+        const parts = validatePartInfos(m.value);
+        if (!parts) return p.reject(new Error("engine returned a malformed part list"));
+        return p.resolve(parts);
+      }
+      if (p.op === "assemblies") {
+        const a = validateAssemblies(m.value);
+        if (!a) return p.reject(new Error("engine returned a malformed assembly list"));
+        return p.resolve(a);
+      }
+      if (p.op === "interferences" && m.value !== null) {
+        const a = validateInterferences(m.value);
+        if (!a) return p.reject(new Error("engine returned malformed interference results"));
+        return p.resolve(a);
+      }
       p.resolve(m.value);
     }
   }
@@ -79,11 +102,17 @@ export class EngineClient {
     );
   }
 
+  /** Returns the parts the scripts export. */
   setDocument(doc: DocumentState) {
-    return this.call<string[]>({ op: "setDocument", doc });
+    return this.call<PartInfo[]>({ op: "setDocument", doc });
   }
+  /** Returns the parts the scripts export. */
   setScript(path: string, content: string | null) {
-    return this.call<string[]>({ op: "setScript", path, content });
+    return this.call<PartInfo[]>({ op: "setScript", path, content });
+  }
+  /** The parts of a snapshot (another version), discovered in the snapshot engine. */
+  snapshotParts(key: string, doc: DocumentState) {
+    return this.call<PartInfo[]>({ op: "snapshotParts", key, doc });
   }
   setOverrides(part: string, overrides: Record<string, string | number>) {
     return this.call<boolean>({ op: "setOverrides", part, overrides });
@@ -121,8 +150,8 @@ export class EngineClient {
     return this.call<PartResult>({ op: "regenerateSnapshot", key, doc, part });
   }
   /** Export a part as STEP / STL / 3MF bytes. */
-  async exportPart(part: string, format: "step" | "stl" | "3mf"): Promise<Uint8Array> {
-    const r = await this.call<{ base64: string }>({ op: "export", part, format });
+  async exportParts(parts: string[], format: "step" | "stl" | "3mf"): Promise<Uint8Array> {
+    const r = await this.call<{ base64: string }>({ op: "export", parts, format });
     const bin = atob(r.base64);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -139,6 +168,18 @@ export class EngineClient {
   }
   closestPoint(part: string, kind: EntityKind, index: number, point: Vec3) {
     return this.call<Vec3>({ op: "closestPoint", part, kind, index, point });
+  }
+  /** The assemblies the studios export. */
+  assemblies() {
+    return this.call<AssemblyInfo[]>({ op: "assemblies" });
+  }
+  /** Dragged positions: measure and export use them. */
+  setPoses(poses: Record<string, PartPose>) {
+    return this.call<boolean>({ op: "setPoses", poses });
+  }
+  /** Where these parts overlap, at `poses`. Latest-wins: resolves `null` when a newer request superseded it. */
+  interferences(parts: string[], ignore: [string, string][], poses: Record<string, PartPose>) {
+    return this.call<Interference[] | null>({ op: "interferences", parts, ignore, poses });
   }
   check(part: string) {
     return this.call<unknown[]>({ op: "check", part });

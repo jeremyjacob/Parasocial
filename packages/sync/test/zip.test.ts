@@ -29,10 +29,10 @@ const BRACKET = `import { part, param, sketch, plane, mm } from "parasocial";\ne
 async function seedDoc() {
   const doc = await newDoc(db, ada, "Bracket");
   await run(db, mutators.document.updateSettings({ id: doc, units: "in", settings: { grid: 5 } }), { userID: ada });
-  await run(db, mutators.script.write({ documentID: doc, path: "parts/bracket.ts", content: BRACKET, baseVersion: null }), { userID: ada });
+  await run(db, mutators.script.write({ documentID: doc, path: "studios/bracket.ts", content: BRACKET, baseVersion: null }), { userID: ada });
   await run(db, mutators.script.write({ documentID: doc, path: "lib/holes/counterbore.ts", content: "export const cb = 1;\n", baseVersion: null }), { userID: ada });
   const cfg = crypto.randomUUID();
-  await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "M3", overrides: [{ part: "parts/bracket.ts", name: "thickness", expression: "=width/10", value: 4 }] }), { userID: ada });
+  await run(db, mutators.configuration.create({ id: cfg, documentID: doc, name: "M3", overrides: [{ part: "studios/bracket.ts", name: "thickness", expression: "=width/10", value: 4 }] }), { userID: ada });
   const hash = await sha256Hex("snap");
   await db.sql`INSERT INTO blobs (hash, size, content_type) VALUES (${hash}, 4, 'image/png') ON CONFLICT DO NOTHING`;
   const noteID = crypto.randomUUID();
@@ -47,7 +47,7 @@ async function seedDoc() {
       configuration: "M3",
       snapshot: hash,
     },
-    strokes: [{ id: crypto.randomUUID(), part: "parts/bracket.ts", points: [[0, 0, 0], [1, 1, 1]], color: "#e5484d" }],
+    strokes: [{ id: crypto.randomUUID(), part: "studios/bracket.ts", points: [[0, 0, 0], [1, 1, 1]], color: "#e5484d" }],
   }), { userID: ada });
   await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "agreed" }), { userID: ada });
   const removed = crypto.randomUUID();
@@ -65,9 +65,9 @@ describe("zip round-trip", () => {
       name: "Bracket",
       units: "in",
       settings: { grid: 5 },
-      configurations: [{ name: "M3", overrides: [{ part: "parts/bracket.ts", name: "thickness", expression: "=width/10", value: 4 }] }],
+      configurations: [{ name: "M3", overrides: [{ part: "studios/bracket.ts", name: "thickness", expression: "=width/10", value: 4 }] }],
     });
-    expect(exported.scripts.map((s) => s.path)).toEqual(["lib/holes/counterbore.ts", "parts/bracket.ts"]);
+    expect(exported.scripts.map((s) => s.path)).toEqual(["lib/holes/counterbore.ts", "studios/bracket.ts"]);
     expect(exported.notes).toHaveLength(1); // removed notes are not exported
     expect(exported.notes![0]!.messages.map((m) => [m.author, m.text])).toEqual([["Ada", "wall too thin"], ["Ada", "agreed"]]);
 
@@ -96,28 +96,31 @@ describe("zip round-trip", () => {
     expect(members).toMatchObject([{ userID: ada, role: "owner" }]);
   });
 
-  test("rejects paths outside parts/ and lib/, zip-slip and junk", () => {
+  test("rejects paths outside studios/ and lib/, zip-slip and junk", () => {
     const mk = (files: Record<string, string>) => zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)])));
     const manifest = JSON.stringify({ name: "x", units: "mm", configurations: [] });
-    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "evil.sh": "rm -rf" }))).toThrow(/outside parts/);
-    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "parts/../../etc.ts": "x" }))).toThrow();
-    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "parts/a/b.ts": "x" }))).toThrow(/flat/);
-    expect(() => parseDocumentZip(mk({ "parts/a.ts": "x" }))).toThrow(/parasocial.json is missing/);
+    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "evil.sh": "rm -rf" }))).toThrow(/outside studios/);
+    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "studios/../../etc.ts": "x" }))).toThrow();
+    expect(() => parseDocumentZip(mk({ "parasocial.json": manifest, "studios/a/b.ts": "x" }))).toThrow(/flat/);
+    expect(() => parseDocumentZip(mk({ "studios/a.ts": "x" }))).toThrow(/parasocial.json is missing/);
     expect(() => parseDocumentZip(new Uint8Array([1, 2, 3]))).toThrow(/valid zip/);
     // a single wrapping folder is fine (zipping a directory)
-    const wrapped = parseDocumentZip(mk({ "bracket/parasocial.json": manifest, "bracket/parts/a.ts": "x", "__MACOSX/._a": "" }));
-    expect(wrapped.scripts.map((s) => s.path)).toEqual(["parts/a.ts"]);
+    const wrapped = parseDocumentZip(mk({ "bracket/parasocial.json": manifest, "bracket/studios/a.ts": "x", "__MACOSX/._a": "" }));
+    expect(wrapped.scripts.map((s) => s.path)).toEqual(["studios/a.ts"]);
+    // exports from before studios/ (parts/) still import
+    const legacy = parseDocumentZip(mk({ "parasocial.json": manifest, "parts/a.ts": "x", "lib/b.ts": "y" }));
+    expect(legacy.scripts.map((s) => s.path)).toEqual(["lib/b.ts", "studios/a.ts"]);
   });
 
   test("reads the same layout from a directory (examples/ seeding)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ps-example-"));
-    await mkdir(join(dir, "parts"));
+    await mkdir(join(dir, "studios"));
     await mkdir(join(dir, "lib"));
     await writeFile(join(dir, "parasocial.json"), JSON.stringify({ name: "Lid", units: "mm", configurations: [] }));
-    await writeFile(join(dir, "parts", "lid.ts"), "export default 1;\n");
+    await writeFile(join(dir, "studios", "lid.ts"), "export default 1;\n");
     await writeFile(join(dir, ".DS_Store"), "junk");
     const p = await readDocumentDir(dir);
-    expect(p.scripts).toEqual([{ path: "parts/lid.ts", content: "export default 1;\n" }]);
+    expect(p.scripts).toEqual([{ path: "studios/lid.ts", content: "export default 1;\n" }]);
     const { documentID } = await importDocument(db, p, { userID: ada });
     expect((await db.zql.run(zql.documents.where("id", documentID).one()))?.name).toBe("Lid");
     await rm(dir, { recursive: true, force: true });

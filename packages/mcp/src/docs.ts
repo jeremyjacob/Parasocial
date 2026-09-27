@@ -34,12 +34,6 @@ export async function loadDoc(db: Db, userID: string, documentID: string): Promi
   };
 }
 
-export const partsOf = (d: DocState) =>
-  d.scripts
-    .map((s) => s.path)
-    .filter((p) => /^parts\/[^/]+\.ts$/.test(p))
-    .map((p) => p.slice(6, -3));
-
 export function overridesFor(d: DocState, configurationID: string | null) {
   const cfg = d.configurations.find((c) => c.id === configurationID);
   const out: Record<string, Record<string, string | number>> = {};

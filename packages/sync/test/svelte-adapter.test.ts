@@ -125,10 +125,10 @@ test("works against a real (offline, in-memory) Zero client with optimistic muta
   expect((docs.data as { name: string }[]).map((d) => d.name)).toEqual(["Bracket"]);
 
   // Client-side (optimistic) script write creates a version locally too.
-  const w = zero.mutate(mutators.script.write({ documentID: "d1", path: "parts/a.ts", content: "x", baseVersion: null }));
+  const w = zero.mutate(mutators.script.write({ documentID: "d1", path: "studios/a.ts", content: "x", baseVersion: null }));
   expect((await w.client).type).toBe("success");
   const vs = await zero.run(queries.versions({ documentID: "d1" }));
-  expect(vs.map((v) => v.message)).toEqual(["Create parts/a.ts"]);
+  expect(vs.map((v) => v.message)).toEqual(["Create studios/a.ts"]);
 
   // Client-side path validation rejects before anything is pushed.
   const bad = zero.mutate(mutators.script.write({ documentID: "d1", path: "x.ts", content: "x", baseVersion: null }));

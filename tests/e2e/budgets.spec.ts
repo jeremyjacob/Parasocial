@@ -91,7 +91,7 @@ test.describe("§9 budgets", () => {
     // warm write: a parameter default change reruns only downstream ops
     const warm = await page.evaluate(`(async () => {
       const ws = globalThis.__ws;
-      const path = "parts/bracket.ts";
+      const path = "studios/bracket.ts";
       const b = ws.openBuffer(path);
       const t0 = performance.now();
       ws.editBuffer(path, b.content.replace('param("width", 40', 'param("width", 44'));
@@ -103,7 +103,7 @@ test.describe("§9 budgets", () => {
     // cold: a structural edit (new thickness default) invalidates the base sketch and everything after it
     const cold = await page.evaluate(`(async () => {
       const ws = globalThis.__ws;
-      const path = "parts/bracket.ts";
+      const path = "studios/bracket.ts";
       const b = ws.openBuffer(path);
       const t0 = performance.now();
       ws.editBuffer(path, b.content.replace('param("thickness", 3', 'param("thickness", 4.25'));
@@ -118,12 +118,12 @@ test.describe("§9 budgets", () => {
 
 test("param scrub step, cached upstream < 100 ms to the new mesh on screen", async ({ page, user }) => {
   void user;
-  await openExample(page, "enclosure", ["body", "lid"]);
+  await openExample(page, "enclosure", ["enclosure", "enclosure:lid", "mount"]);
   // the wall thickness only feeds the shell: box and fillets upstream stay cached
-  const step = (v: number) => `(async () => { const prev = ws.results.body; ws.scrub("body", "wall", ${v}); await new Promise((res) => { const tick = () => (ws.results.body !== prev && ws.regen.body !== "running" ? requestAnimationFrame(() => res()) : requestAnimationFrame(tick)); tick(); }); })()`;
+  const step = (v: number) => `(async () => { const prev = ws.results.enclosure; ws.scrub("enclosure", "wall", ${v}); await new Promise((res) => { const tick = () => (ws.results.enclosure !== prev && ws.regen.enclosure !== "running" ? requestAnimationFrame(() => res()) : requestAnimationFrame(tick)); tick(); }); })()`;
   for (const v of [2.2, 2.4]) await page.evaluate(`(async () => { const ws = globalThis.__ws; await ${step(v)}; })()`);
   const ms = await median(page, 5, (i) => step(2.6 + i * 0.2));
-  const t = await wsEval<{ cacheHits: number; total: number }>(page, "ws.results.body.timings");
+  const t = await wsEval<{ cacheHits: number; total: number }>(page, "ws.results.enclosure.timings");
   await wsEval(page, "ws.endScrub()");
   report("scrub step", ms, 100);
   console.log(`  engine ${t.total.toFixed(1)} ms, cache hits ${t.cacheHits}`);

@@ -41,7 +41,7 @@
 	>
 		<div class="flex items-center gap-2">
 			<span class="grid size-6 place-items-center rounded-md bg-fg text-panel"><Hexagon size={14} strokeWidth={2.25} /></span>
-			<span class="text-ui font-semibold">Parasocial</span>
+			<span class="text-ui font-heading font-medium">Parasocial</span>
 			<span class="text-ui text-fg-tertiary">Design system</span>
 		</div>
 		<nav class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto" aria-label="Sections">
@@ -88,7 +88,7 @@
 
 	<section id="workspace" data-section="workspace" class="flex scroll-mt-16 flex-col gap-6 border-t border-line bg-app px-8 py-10">
 		<header class="flex flex-col gap-1">
-			<h2 class="text-heading font-semibold">Workspace preview</h2>
+			<h2 class="text-heading">Workspace preview</h2>
 			<p class="max-w-[640px] text-body text-fg-secondary">
 				A composition check, not the workspace: top bar, Parts, canvas with floating chrome, and the Params panel with
 				overridden values. The model is a static SVG stand-in for the viewer.

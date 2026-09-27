@@ -27,7 +27,7 @@ Zero is pinned at **@rocicorp/zero 1.9.0**. The compose `zero-cache` image (`roc
 | `src/server/zero.ts` | `/api/zero/mutate` and `/api/zero/query` handlers. `runMutator(db, mr, ctx)` runs a mutator directly (for MCP and import). |
 | `src/server/auth.ts` | Passkeys (SimpleWebAuthn 14): sign-up with a name only, discoverable sign-in (autofill), add or remove passkeys, HttpOnly session cookie, first account is admin, open vs. invite sign-up. |
 | `src/server/blobs.ts` | Content-addressed blobs: filesystem and S3 (`Bun.S3Client`) adapters, upload-then-reference, HMAC-signed expiring read URLs scoped to a document, refcount sweep. |
-| `src/server/zip.ts` | Plain-file import/export (`parasocial.json`, `parts/`, `lib/`, `notes.json`) with fflate. Zips are deterministic. `readDocumentDir` reads the same layout from a folder, for seeding `examples/`. |
+| `src/server/zip.ts` | Plain-file import/export (`parasocial.json`, `studios/`, `lib/`, `notes.json`) with fflate. Zips are deterministic. `readDocumentDir` reads the same layout from a folder, for seeding `examples/`. |
 | `src/server/versions.ts` | Version contents on demand (History tab, MCP `read_version`). |
 | `src/server/http.ts` | Origin policy: requests from the **engine origin are always rejected**, and unsafe cross-origin methods are rejected. Also cookie helpers. |
 | `src/server/index.ts` | `createPlatform()` wires everything from env and runs migrations. |
@@ -61,7 +61,7 @@ import { setZero, useQuery } from "@parasocial/sync/svelte";
 const zero = createZero({ userID: data.user.userID, cacheURL: `${location.origin}/zero` });
 setZero(zero); // in the root layout
 const scripts = useQuery(() => queries.scripts({ documentID })); // scripts.data, scripts.status
-zero.mutate(mutators.script.write({ documentID, path: "parts/bracket.ts", content, baseVersion: s.version }));
+zero.mutate(mutators.script.write({ documentID, path: "studios/bracket.ts", content, baseVersion: s.version }));
 ```
 
 The session cookie reaches zero-cache on the websocket because `/zero` is same-origin. zero-cache then forwards it to `/api/zero/*` (`ZERO_*_FORWARD_COOKIES=true`), so the browser never handles a token.
@@ -73,7 +73,7 @@ All ids are client-generated and passed in args, so optimistic and authoritative
 | Group | Mutators | Notes |
 |---|---|---|
 | `document` | `create`, `rename`, `updateSettings`, `delete` (owner), `import` | |
-| `script` | `write`, `edit` (search/replace, each match must be unique unless `all`), `delete` | `baseVersion` is the script's `version` (`null` means create). A stale base is rejected with `details.current = { content, version, contentHash }`. Every change creates a version; a write with identical content is a no-op. Paths must be `parts/*.ts` or `lib/**/*.ts`. |
+| `script` | `write`, `edit` (search/replace, each match must be unique unless `all`), `delete` | `baseVersion` is the script's `version` (`null` means create). A stale base is rejected with `details.current = { content, version, contentHash }`. Every change creates a version; a write with identical content is a no-op. Paths must be `studios/*.ts` or `lib/**/*.ts`. |
 | `version` | `restore` | Copies scripts and param state to the tip as a new version, "Restored from v12". |
 | `param` | `set`, `reset`, `resetAll`, `apply` | Coalesced: the same author's changes within 10 s, with nothing committed in between, fold into one version ("Params: thickness 3 → 5"). The expression is stored as typed, alongside the evaluated value. **`Default` holds no overrides**: overrides need a named configuration (PLAN §8). |
 | `configuration` | `create`, `duplicate`, `rename`, `delete` | Coalesced into the same params versions (`+M3`, `M3 → M4`, `−M3`). |

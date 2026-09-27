@@ -52,7 +52,7 @@
 			key: 'current',
 			name: 'Current',
 			file: 'logo.svelte',
-			idea: 'For comparison: the isometric cube outline in a dark tile.',
+			idea: 'The Parasocial cloud: a pearl surface transitioning into a luminous wire grid.',
 			mark: LogoCurrent
 		}
 	];
@@ -67,7 +67,7 @@
 
 <div class="min-h-dvh bg-app text-fg">
 	<header data-design-header class="flex h-12 items-center gap-3 border-b border-line-subtle bg-panel px-6">
-		<span class="text-ui font-semibold">Parasocial</span>
+		<span class="text-ui font-heading font-medium">Parasocial</span>
 		<span class="text-ui text-fg-tertiary">Logo concepts</span>
 		<a href="/design" class="ml-auto text-ui text-fg-secondary hover:text-fg">Design system</a>
 	</header>
@@ -98,7 +98,7 @@
 		<section data-concept={c.key} class="border-t border-line">
 			<header class="flex items-baseline gap-3 px-6 pt-6 pb-4">
 				<span class="text-label text-fg-tertiary tabular">{String(i + 1).padStart(2, '0')}</span>
-				<h2 class="text-title font-semibold">{c.name}</h2>
+				<h2 class="text-title">{c.name}</h2>
 				<p class="text-body text-fg-secondary">{c.idea}</p>
 				<code class="ml-auto text-label text-fg-tertiary">{c.file}</code>
 			</header>
@@ -124,7 +124,7 @@
 							<div class="flex h-12 items-center gap-3 border-b border-line-subtle px-4">
 								<span class="flex items-center gap-2">
 									<c.mark size={28} />
-									<span class="text-body font-semibold">Parasocial</span>
+									<span class="text-body font-heading font-medium">Parasocial</span>
 								</span>
 								<span class="text-fg-tertiary">/</span>
 								<span class="text-body text-fg-secondary">Hinge bracket</span>

@@ -10,7 +10,7 @@ const scenes: Record<string, { w: number; h: number; items: any[]; view?: number
     w: 1800, h: 1100, zoom: 0.62,
     items: [
       { doc: "flange", part: "flange", at: [0, 0, 0] },
-      { doc: "enclosure", part: "body", at: [-105, 45, 0], rotZ: 0.2 },
+      { doc: "enclosure", part: "enclosure", at: [-105, 45, 0], rotZ: 0.2 },
       { doc: "knob", part: "knob", at: [80, 50, 0] },
       { doc: "bracket", part: "bracket", at: [72, -58, 0], rotZ: 0.55 },
       { doc: "gasket", part: "gasket", at: [-62, -70, 0], rotZ: -0.3 },
@@ -19,8 +19,9 @@ const scenes: Record<string, { w: number; h: number; items: any[]; view?: number
   thumb: { w: 640, h: 380, items: [{ doc: "flange", part: "flange" }], zoom: 0.62 },
   bracket: { w: 480, h: 260, zoom: 0.62, items: [{ doc: "bracket", part: "bracket", rotZ: 0.3 }] },
   flange: { w: 480, h: 260, zoom: 0.62, items: [{ doc: "flange", part: "flange" }] },
-  enclosure: { w: 480, h: 260, zoom: 0.62, items: [{ doc: "enclosure", part: "body", rotZ: 0.2 }] },
-  knob: { w: 480, h: 260, zoom: 0.62, items: [{ doc: "knob", part: "knob" }] },
+  // Taller parts need more camera distance to fit the shallow preview frame.
+  enclosure: { w: 480, h: 260, zoom: 0.85, items: [{ doc: "enclosure", part: "enclosure", rotZ: 0.2 }] },
+  knob: { w: 480, h: 260, zoom: 0.85, items: [{ doc: "knob", part: "knob" }] },
   gasket: { w: 480, h: 260, zoom: 0.62, items: [{ doc: "gasket", part: "gasket", rotZ: 0.2 }] },
 };
 

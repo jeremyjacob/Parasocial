@@ -98,7 +98,7 @@ There is **one engine build**, hosted in two places.
 
 ### Data model (sketch)
 
-`users`, `passkeys`, `oauth_clients`, `oauth_tokens`, `documents`, `document_members` (document, user, role), `scripts` (document, path under `parts/` or `lib/`, content, head version), `versions` (document, number, author, message, note, snapshot of script hashes and params), `configurations`, `param_overrides`, `notes`, `note_messages`, `markup_strokes`, `agent_sessions`, `presence`.
+`users`, `passkeys`, `oauth_clients`, `oauth_tokens`, `documents`, `document_members` (document, user, role), `scripts` (document, path under `studios/` or `lib/`, content, head version), `versions` (document, number, author, message, note, snapshot of script hashes and params), `configurations`, `param_overrides`, `notes`, `note_messages`, `markup_strokes`, `agent_sessions`, `presence`.
 
 **Permissions go through `document_members` from day one**, even though v1 documents have a single owner. Zero permission rules, signed blob URLs and MCP access all check membership. Share links and multiplayer later become a new role or token, not a migration.
 
@@ -109,7 +109,7 @@ A document exports as a zip of plain files and imports back the same way:
 ```
 bracket.zip
 ├─ parasocial.json        settings, units, configurations and overrides
-├─ parts/
+├─ studios/
 │  ├─ bracket.ts
 │  └─ lid.ts
 ├─ lib/
@@ -148,7 +148,7 @@ Versions and blobs are not exported. This is how `examples/` gets seeded and how
 
 TypeScript, transpiled in the worker with esbuild-wasm. Scripts run off the main thread and inside a sandbox.
 
-- **One file per part.** Each `parts/*.ts` has a default export of `part(...)`, so the file, the part in the parts list, `#lid` mentions and source links all line up. Multi-part files (named exports) can come later.
+- **Studios.** Each `studios/*.ts` is a studio: it exports one or more parts (`export default part(...)` is part id `<file>`, `export const lid = part(...)` is `<file>:lid`) and names itself with `export const name = "..."`, which the Parts tab shows instead of the file name. A studio is not an assembly; assemblies (placing and mating parts from studios) are a separate, later concept.
 - **Imports:** only `parasocial` and relative imports within the document (`../lib/gears`), resolved by an esbuild plugin that reads the synced scripts. No npm packages in v1: they would break determinism and the no-network sandbox.
 
 ### Sandboxing
@@ -166,7 +166,7 @@ A blob or same-origin worker is **not** a sandbox: it shares the app's origin, s
    - Evaluate each module in a `new Function` wrapper that shadows ambient globals (`self`, `globalThis`, `fetch`, `importScripts`, `Worker`, `WebSocket`, `setTimeout`, …) as `undefined`. This is leaky by design and acceptable because of the iframe.
    - **Determinism:** replace `Math.random` with a PRNG seeded per regeneration, and stub `Date` inside the worker. Stable names, the derived-data cache and browser/server parity all depend on identical output from identical input.
    - Clear the module cache before each regeneration so no state carries over between runs.
-   - Tag each module with `//# sourceURL` so stack traces map back to `parts/*.ts` for provenance.
+   - Tag each module with `//# sourceURL` so stack traces map back to `studios/*.ts` for provenance.
    - **Revisit SES** (`lockdown()` + a fresh `Compartment` per regeneration) if scripts turn out to interfere with each other or the kernel in practice.
 
 Killing and respawning the worker is **only for timeouts** (runaway scripts). A spare, pre-loaded worker takes over so recovery is instant. Normal changes never cancel a run (see §9, latest-wins).
@@ -278,6 +278,7 @@ Every tool takes a `document`. A session connected from a document's **Connect a
 | `list_documents()` / `create_document(name)` | documents the user can access |
 | `list_notes(status?, part?)` | threads with markup and snapshot. Each target is described fully: entity type, stable name, the operation that made it (tag, operation type, source line), the helper call chain (`mountingHoles()` at `bracket.ts:30` → `lib/holes.ts:12`), key measurements (area/length, normal/radius), and the named neighbors it touches |
 | `get_note(id)` / `reply_to_note(id, text, version?)` | thread operations |
+| `wait_for_notes(timeoutSeconds?)` | long-poll: returns as soon as a human adds a note or replies on one the agent may work on (free, or held by this session), described like `list_notes` with the reason; `{ notes: [] }` at the timeout. The note mutators `pg_notify` on commit and the MCP server `LISTEN`s, so any app replica wakes the waiting session |
 | `claim_note(id)` / `release_note(id)` | claim a note for this session; fails with the holder's name if another session has it |
 | `set_note_status(id, status)` / `delete_note(id)` | status changes; `delete_note` removes a finished note (soft delete) |
 | `get_selection()` | the human's current selection, described the same way as note targets |
@@ -306,7 +307,7 @@ API type definitions, API docs and examples, agent instructions, and document se
 
 - Regeneration has a timeout. A runaway script's worker is killed and replaced by a warm spare, so it can't hang a session.
 - Scripts run in the isolated engine pool (see §3). Agent writes go through mutators, never through the engine.
-- Script paths stay inside `parts/` and `lib/`.
+- Script paths stay inside `studios/` and `lib/`.
 - Every write creates a version, so an agent's change can always be inspected and restored.
 - Rate limits per session.
 
@@ -350,7 +351,7 @@ Polished but restrained. Empty states get depth from **grayscale geometric art**
 
 - **Left panel, with tabs:**
   - **Parts** (default): visibility, isolate, color swatch, and a status badge (ok / warning / error). There is no feature tree in v1: people review the model, not the code, and agents fix their own errors. Operation structure shows up where it's useful instead, in the face/edge Properties and in note targets.
-  - **Scripts:** the document's scripts under `parts/` and `lib/`.
+  - **Scripts:** the document's scripts under `studios/` and `lib/`.
   - **History:** versions (see Versions).
 - **Viewport:**
   - view cube, standard views
@@ -627,7 +628,7 @@ Places where the implementation departs from, or has to interpret, the plan abov
 
 ### M0/M1 kernel, naming, runtime
 
-- **Script transpiler: Sucrase instead of esbuild-wasm (§5, §12).** Sucrase is ~0.2 MB versus esbuild-wasm's ~11 MB of WASM, which matters for the "kernel ready < 1.5 s" budget, and it preserves line numbers, so provenance maps stack frames straight back to `parts/*.ts` lines without source maps. Modules are transformed individually and loaded by our own tiny CommonJS loader (fresh cache per regeneration). Sucrase reports some syntax errors at the enclosing arrow function; the loader re-parses the block to find the real line.
+- **Script transpiler: Sucrase instead of esbuild-wasm (§5, §12).** Sucrase is ~0.2 MB versus esbuild-wasm's ~11 MB of WASM, which matters for the "kernel ready < 1.5 s" budget, and it preserves line numbers, so provenance maps stack frames straight back to `studios/*.ts` lines without source maps. Modules are transformed individually and loaded by our own tiny CommonJS loader (fresh cache per regeneration). Sucrase reports some syntax errors at the enclosing arrow function; the loader re-parses the block to find the real line.
 - **Scripts are evaluated in sloppy mode.** JavaScriptCore (Bun) performs proper tail calls in strict mode, which drops helper frames from stack traces. Provenance and auto op ids (`part/helper/type<n>`) depend on those frames, so modules are evaluated without `"use strict"` to get identical results under Bun and Chromium. Writes to the frozen API are then ignored rather than throwing; the API is still frozen.
 - **Seam edges are excluded from edge selections** unless the selector mentions `seam`. A periodic face's seam is a parametrization artifact, not a feature edge; `base.edges("base.side")` shouldn't pick up a bore's seam.
 - **Sign-in is one button, no name field or autofill.** §3 lists passkey autofill on sign-in; conditional-UI autofill needs a visible username input, which reads as a username/password form. The browser's passkey sheet already lists the accounts, so sign-in is a single "Sign in with passkey" button and the name field lives only on sign-up.

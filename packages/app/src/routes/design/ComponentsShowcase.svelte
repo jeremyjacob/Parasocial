@@ -124,7 +124,7 @@
 				{ id: 'note', label: 'Add note', icon: MessageCircle, shortcut: ['C'] },
 				{ id: 'measure', label: 'Measure', icon: Ruler, shortcut: ['M'] },
 				{ id: 'code', label: 'Toggle Code mode', icon: Code, shortcut: ['mod', '\\'] },
-				{ id: 'export', label: 'Export…', icon: Box, shortcut: ['mod', 'shift', 'E'] }
+				{ id: 'export', label: 'Export…', icon: Box, shortcut: ['mod', 'E'] }
 			]
 		},
 		{
@@ -452,7 +452,7 @@
 	<div class="grid grid-cols-2 gap-3">
 		<Specimen title="Kbd · Badge · StatusBadge">
 			<div class="flex flex-wrap items-center gap-2">
-				<Kbd keys={['mod', 'K']} /><Kbd keys={['shift', 'P']} /><Kbd keys={['V']} /><Kbd keys={['mod', 'shift', 'E']} /><Kbd keys={['esc']} />
+				<Kbd keys={['mod', 'K']} /><Kbd keys={['shift', 'P']} /><Kbd keys={['V']} /><Kbd keys={['mod', 'E']} /><Kbd keys={['esc']} />
 			</div>
 			<div class="flex flex-wrap items-center gap-1.5">
 				<Badge>Draft</Badge><Badge tone="accent">3 overrides</Badge><Badge tone="ok">Valid</Badge><Badge tone="warning">Slow</Badge><Badge tone="error">2 errors</Badge><Badge tone="outline">v14</Badge>
@@ -532,7 +532,7 @@
 					</PropertyRow>
 				</FieldGrid>
 			</PropertySection>
-			<PropertySection title="Mass properties" collapsible open={false} meta="PLA · 1.24 g/cm³" />
+			<PropertySection title="Mass properties" meta="PLA · 1.24 g/cm³" />
 		</Specimen>
 
 		<Specimen title="ListRow" note="parts list" bodyClass="p-1.5 gap-0.5">
@@ -648,15 +648,10 @@
 	/>
 </Section>
 
-<Section id="topbar" title="Top bar" description="Document · configuration on the left, mode in the centre, presence and actions on the right.">
+<Section id="topbar" title="Top bar" description="Document on the left, mode in the centre, presence and actions on the right.">
 	<div class="overflow-hidden rounded-panel shadow-[0_0_0_1px_var(--border-subtle)]">
 		<TopBar
 			document="Bracket"
-			configurations={[
-				{ value: 'default', label: 'Default' },
-				{ value: 'm3', label: 'M3' },
-				{ value: 'm4', label: 'M4' }
-			]}
 			agents={people.filter((p) => p.kind === 'agent').slice(0, 2)}
 			user={{ name: 'Jeremy Jacob', kind: 'human' }}
 		/>

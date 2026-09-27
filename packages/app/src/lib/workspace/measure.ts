@@ -28,7 +28,19 @@ const onLine = (q: V, p: V, d: V): V => add(p, scale(d, dot(sub(q, p), d) / dot(
 /** Where an entity's "center" is: a circle's center point, or a cylinder's axis. */
 type Anchor = { kind: 'point'; p: V; circle?: { r: number; n: V } } | { kind: 'axis'; p: V; d: V };
 
-function anchorOf(ref: EntityRef, results: Results): Anchor | null {
+/** Part coordinates -> world (assembly poses); `dir` for directions. */
+export type Place = (part: string, v: V, dir?: boolean) => V;
+const unplaced: Place = (_p, v) => v;
+
+function anchorOf(ref: EntityRef, results: Results, place: Place): Anchor | null {
+	const a = anchorLocal(ref, results);
+	if (!a) return null;
+	const at = (v: V) => place(ref.part, v);
+	const d = (v: V) => place(ref.part, v, true);
+	return a.kind === 'axis' ? { kind: 'axis', p: at(a.p), d: d(a.d) } : { kind: 'point', p: at(a.p), circle: a.circle && { r: a.circle.r, n: d(a.circle.n) } };
+}
+
+function anchorLocal(ref: EntityRef, results: Results): Anchor | null {
 	const r = results[ref.part];
 	if (!r) return null;
 	if (ref.kind === 'edge') {
@@ -60,10 +72,10 @@ const isCenter = (a: Anchor) => a.kind === 'axis' || !!a.circle;
 const centerWord = (a: Anchor) => (a.kind === 'axis' ? 'axis' : a.circle ? 'center' : 'point');
 
 /** Readouts for a pair, given the kernel's minimum distance and its closest points. */
-export function pairReadouts(sel: EntityRef[], min: { distance: number; a: V; b: V }, results: Results): Readout[] {
+export function pairReadouts(sel: EntityRef[], min: { distance: number; a: V; b: V }, results: Results, place: Place = unplaced): Readout[] {
 	const out: Readout[] = [{ key: 'min', label: 'Minimum distance', value: num(min.distance, 2), unit: 'mm', a: min.a, b: min.b }];
-	const A = anchorOf(sel[0], results),
-		B = anchorOf(sel[1], results);
+	const A = anchorOf(sel[0], results, place),
+		B = anchorOf(sel[1], results, place);
 	if (A && B && (isCenter(A) || isCenter(B))) {
 		let a: V | null = null,
 			b: V | null = null;
@@ -87,8 +99,10 @@ export function pairReadouts(sel: EntityRef[], min: { distance: number; a: V; b:
 			}
 		}
 	}
-	const da = directionOf(sel[0], results),
-		db = directionOf(sel[1], results);
+	const d0 = directionOf(sel[0], results),
+		d1 = directionOf(sel[1], results);
+	const da = d0 && place(sel[0].part, d0, true),
+		db = d1 && place(sel[1].part, d1, true);
 	if (da && db) {
 		const c = Math.min(1, Math.abs(dot(da, db)) / (len(da) * len(db)));
 		out.push({ key: 'angle', label: 'Angle', value: num((Math.acos(c) * 180) / Math.PI, 1), unit: '°' });

@@ -10,7 +10,7 @@ export type OpRecord = {
   id: string;
   type: string;
   tag?: string;
-  /** Innermost user call site, source-mapped (`parts/bracket.ts:18:5`). */
+  /** Innermost user call site, source-mapped (`studios/bracket.ts:18:5`). */
   callSite?: SourceLoc;
   /** Helper call chain, outermost first (`mountingHoles()` at bracket.ts:30 -> lib/holes.ts:12). */
   callChain?: SourceLoc[];

@@ -95,6 +95,13 @@ const inverters: Record<string, Inverter> = {
     ];
   },
 
+  "document.setPose": async (read, a) => {
+    const doc = await read(zql.documents.where("id", a.id).one());
+    if (!doc) return null;
+    const prev = (doc.settings as any)?.poses?.[a.assembly] ?? null;
+    return [mutators.document.setPose({ id: a.id, assembly: a.assembly, joints: prev })];
+  },
+
   "note.create": async (_read, a) => [mutators.note.remove({ noteID: a.id })],
   "note.remove": async (read, a) => {
     const n = await read(zql.notes.where("id", a.noteID).one());

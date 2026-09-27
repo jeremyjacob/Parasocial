@@ -24,7 +24,7 @@ for (const [i, p] of parts.entries()) {
   const r = (await engine.regenerate(p))!;
   const rtt = performance.now() - t;
   m0.regen.push({ part: p, ok: r.ok, engineMs: r.timings.total, rttMs: rtt, faces: r.faces.length, problems: r.problems });
-  viewer.setPart({ id: p, mesh: r.mesh!, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e, j) => (e.seam ? [j] : []))), color: palette[i % palette.length], dim: !r.ok });
+  viewer.setPart({ id: p, mesh: r.mesh!, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e, j) => (e.seam ? [j] : []))), color: palette[i % palette.length], appearance: r.appearance, dim: !r.ok });
 }
 viewer.setView("iso", false);
 m0.stats = await (engine as any).call({ op: "ping" });

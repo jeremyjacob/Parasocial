@@ -62,13 +62,6 @@
 <div class="flex h-[760px] flex-col overflow-hidden rounded-panel bg-app shadow-[0_0_0_1px_var(--border-default),0_24px_64px_-24px_rgb(0_0_0/0.25)]">
 	<TopBar
 		document="Bracket"
-		configurations={[
-			{ value: 'default', label: 'Default' },
-			{ value: 'm3', label: 'M3' },
-			{ value: 'm4', label: 'M4' },
-			{ value: 'draft', label: 'Print-draft' }
-		]}
-		bind:configuration={config}
 		agents={[
 			{ name: 'Claude Code', kind: 'agent', status: 'working' },
 			{ name: 'Codex', kind: 'agent' }
@@ -197,7 +190,7 @@
 						icon={SlidersHorizontal}
 					/>
 				</PropertySection>
-				<PropertySection title="Bracket" collapsible meta="3 overrides">
+				<PropertySection title="Bracket" meta="3 overrides">
 					{#snippet actions()}<IconButton label="Reset all" size="sm"><RotateCcw size={14} /></IconButton>{/snippet}
 					<PropertyRow label="thickness" layout="inline" overridden hint="Default 3 mm · bracket.ts:12">
 						<NumberField bind:value={thickness} defaultValue={3} source="bracket.ts:12" unit="mm" min={1} max={10} step={0.5} {evaluate} aria-label="thickness" />
@@ -215,12 +208,12 @@
 						<NumberField bind:value={holes} defaultValue={2} min={1} max={8} step={1} precision={0} aria-label="hole_count" />
 					</PropertyRow>
 				</PropertySection>
-				<PropertySection title="Lid" collapsible>
+				<PropertySection title="Lid">
 					<PropertyRow label="wall" layout="inline">
 						<NumberField bind:value={lidWall} defaultValue={1.6} unit="mm" min={0.8} max={4} step={0.1} aria-label="wall" />
 					</PropertyRow>
 				</PropertySection>
-				<PropertySection title="Gasket" collapsible open={false} meta="2 params" />
+				<PropertySection title="Gasket" meta="2 params" />
 			</div>
 			<div class="flex h-11 shrink-0 items-center gap-2 border-t border-line-subtle pr-2 pl-4 text-label text-fg-tertiary">
 				<span class="size-[5px] rounded-full bg-override"></span>

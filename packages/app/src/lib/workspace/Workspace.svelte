@@ -8,9 +8,10 @@
 	import { TopBar } from '$lib/components/ui/top-bar';
 	import { Tabs } from '$lib/components/ui/tabs';
 	import { CommandPalette, type CommandGroup } from '$lib/components/ui/command';
-	import { Dialog } from '$lib/components/ui/dialog';
+	import { Dialog, ConfirmDialog } from '$lib/components/ui/dialog';
 	import { Kbd } from '$lib/components/ui/kbd';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import { Avatar, AvatarStack, type Person } from '$lib/components/ui/avatar';
 	import { Tooltip } from '$lib/components/ui/tooltip';
 	import { toast } from '$lib/components/ui/toast';
@@ -92,6 +93,12 @@
 		ws.untracked(() => ws.sync());
 	});
 
+	// saved assembly positions changed (a drag here, in another tab, an undo): follow them
+	$effect(() => {
+		ws.doc?.settings;
+		ws.untracked(() => ws.asm.onSaved());
+	});
+
 	// re-resolve note anchors whenever geometry or notes change (§6 Resolution)
 	let resolveTimer: any;
 	$effect(() => {
@@ -126,8 +133,24 @@
 
 	let paletteOpen = $state(false);
 	let cheatsOpen = $state(false);
+	let renameOpen = $state(false);
+	let renameName = $state('');
+	function rename(e?: Event) {
+		e?.preventDefault();
+		const name = renameName.trim();
+		if (name && name !== ws.doc?.name) ws.zero.mutate(mutators.document.rename({ id: documentID, name }));
+		renameOpen = false;
+	}
 	let connectOpen = $state(false);
 	let exportOpen = $state(false);
+	/** Parts the export dialog opens with (empty: all). */
+	let exportTarget = $state<string[]>([]);
+	function openExport(parts: string[] = []) {
+		exportTarget = parts;
+		exportOpen = true;
+	}
+	/** ⌘E: the selected parts, or the whole model when nothing is selected. */
+	const exportSelection = () => openExport([...new Set(ws.selection.map((s) => s.part))]);
 	let prefsOpen = $state(false);
 	let navPreset = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem('parasocial:nav') ?? 'onshape') : 'onshape');
 	$effect(() => {
@@ -140,14 +163,13 @@
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
 	// ---- actions ----
-	async function addPart() {
-		const existing = new Set(ws.parts);
+	async function addStudio() {
+		const existing = new Set(ws.scripts.map((s) => s.path));
 		let n = 1;
-		while (existing.has(`part${n}`)) n++;
-		const name = `part${n}`;
-		const content = `import { part, param, sketch, plane, mm } from "parasocial";\n\nexport default part("Part ${n}", ({ color }) => {\n  const size = param("size", 20, { min: 1, max: 200, unit: mm });\n  return sketch(plane.XY)\n    .rect(size, size, { tag: "outline" })\n    .extrude(size / 2, { tag: "body" })\n    .color(color.auto());\n});\n`;
-		await ws.zero.mutate(mutators.script.write({ documentID, path: `parts/${name}.ts`, content, baseVersion: null, message: `Add ${name}` })).client;
-		toast(`Added Part ${n}`);
+		while (existing.has(`studios/studio${n}.ts`)) n++;
+		const content = `import { part, param, sketch, plane, mm } from "parasocial";\n\nexport const name = "Studio ${n}";\n\nexport default part("Part 1", ({ color }) => {\n  const size = param("size", 20, { min: 1, max: 200, unit: mm });\n  return sketch(plane.XY)\n    .rect(size, size, { tag: "outline" })\n    .extrude(size / 2, { tag: "body" })\n    .color(color.auto());\n});\n`;
+		await ws.zero.mutate(mutators.script.write({ documentID, path: `studios/studio${n}.ts`, content, baseVersion: null, message: `Add Studio ${n}` })).client;
+		toast(`Added Studio ${n}`);
 	}
 
 	async function exportZip() {
@@ -186,6 +208,7 @@
 		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.dirty.length ? toast('Save to add notes') : (ws.tool = 'pencil')) },
 		{ id: 'tool.measure', label: 'Measure', group: 'Tools', keys: ['M'], icon: Ruler, run: () => (ws.tool = 'measure') },
 		{ id: 'view.fit', label: 'Zoom to fit', group: 'View', keys: ['F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection() : ws.viewer?.fitOrHome()) },
+		{ id: 'view.fitNormal', label: 'Zoom to, facing selected faces', group: 'View', keys: ['shift', 'F'], icon: Maximize, run: () => (ws.selection.length ? ws.viewer?.fitSelection(true, true) : ws.viewer?.fitOrHome()) },
 		{ id: 'view.iso', label: 'Isometric view', group: 'View', keys: ['0'], run: () => ws.viewer?.setView('iso') },
 		{ id: 'view.front', label: 'Front view', group: 'View', keys: ['alt', 'F'], run: () => ws.viewer?.setView('front') },
 		{ id: 'view.top', label: 'Top view', group: 'View', keys: ['alt', 'T'], run: () => ws.viewer?.setView('top') },
@@ -193,6 +216,8 @@
 		{ id: 'view.ortho', label: 'Toggle orthographic', group: 'View', keys: ['O'], run: () => (ws.ortho = !ws.ortho) },
 		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => ws.toggleSection(centerZ()) },
 		{ id: 'view.grid', label: 'Toggle ground grid', group: 'View', keys: ['G'], run: () => ws.setHelpers({ grid: !ws.showGrid }) },
+		{ id: 'view.interference', label: 'Toggle interference (red where assembly parts overlap)', group: 'View', keys: ['I'], run: () => ws.asm.setShowInterference(!ws.asm.showInterference) },
+		{ id: 'asm.reset', label: 'Reset assembly positions', group: 'View', keywords: ['assembly', 'joints', 'pose', 'home'], run: () => ws.asm.resetPoses() },
 		{ id: 'view.origin', label: 'Toggle origin', group: 'View', keys: ['shift', 'G'], run: () => ws.setHelpers({ origin: !ws.showOrigin }) },
 		{ id: 'display.shaded', label: 'Display: shaded', group: 'View', keys: ['alt', '1'], icon: Box, run: () => (ws.display = 'shaded') },
 		{ id: 'display.edges', label: 'Display: shaded with edges', group: 'View', keys: ['alt', '2'], icon: Boxes, run: () => (ws.display = 'shaded-edges') },
@@ -204,8 +229,8 @@
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
 		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', keys: ['mod', '\\'], icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
 		{ id: 'doc.save', label: 'Save script', group: 'Document', keys: ['mod', 'S'], run: async () => { for (const p of ws.dirty) { const err = await ws.saveBuffer(p); if (err) toast.error(err); } } },
-		{ id: 'doc.export', label: 'Export…', group: 'Document', keys: ['mod', 'shift', 'E'], icon: Download, run: () => (exportOpen = true) },
-		{ id: 'doc.addPart', label: 'Add a part', group: 'Document', icon: Plus, run: addPart },
+		{ id: 'doc.export', label: 'Export…', group: 'Document', keys: ['mod', 'E'], icon: Download, run: exportSelection },
+		{ id: 'doc.addStudio', label: 'Add a studio', group: 'Document', icon: Plus, run: addStudio },
 		{ id: 'agent.connect', label: 'Connect an agent', group: 'Document', icon: Bot, run: () => (connectOpen = true) },
 		{ id: 'app.palette', label: 'Command palette', group: 'Help', keys: ['mod', 'K'], run: () => (paletteOpen = true) },
 		{ id: 'app.cheatsheet', label: 'Keyboard shortcuts', group: 'Help', keys: ['?'], icon: Keyboard, run: () => (cheatsOpen = true) },
@@ -252,7 +277,7 @@
 		})),
 		{
 			heading: 'Parts',
-			items: ws.parts.map((p) => ({ id: `part.${p}`, label: ws.results[p]?.name ?? p, hint: `parts/${p}.ts`, onSelect: () => ((paletteOpen = false), ws.select([{ part: p, kind: 'part' as any, index: 0 }]), ws.viewer?.fitSelection()) }))
+			items: ws.parts.map((p) => ({ id: `part.${p}`, label: ws.results[p]?.name ?? p, hint: ws.scriptOf(p), onSelect: () => ((paletteOpen = false), ws.select([{ part: p, kind: 'part' as any, index: 0 }]), ws.viewer?.fitSelection()) }))
 		},
 		{
 			heading: 'Params',
@@ -279,29 +304,20 @@
 		return [...byKey.values()];
 	});
 	const agentPeople = $derived<Person[]>(liveAgents.map((a) => ({ name: `${a.clientName}${a.label ? ` (${a.label})` : ''}`, kind: 'agent', status: a.status as any })));
-	const configItems = $derived([{ value: 'default', label: 'Default' }, ...ws.configurations.map((c) => ({ value: c.id, label: c.name }))]);
-	let configValue = $state('default');
-	$effect(() => {
-		configValue = ws.activeConfigID ?? 'default';
-	});
-	$effect(() => {
-		const v = configValue;
-		ws.untracked(() => {
-			if ((ws.activeConfigID ?? 'default') !== v) ws.setActiveConfig(v === 'default' ? null : v);
-		});
-	});
 
+	let deleteOpen = $state(false);
+	async function deleteDocument() {
+		await ws.zero.mutate(mutators.document.delete({ id: documentID })).client;
+		location.href = '/';
+	}
 	const docMenu = $derived<MenuEntry[]>([
-		{ label: 'Export…', icon: Download, shortcut: ['mod', 'shift', 'E'], onSelect: () => (exportOpen = true) },
+		{ label: 'Rename…', icon: Pencil, onSelect: () => ((renameName = ws.doc?.name ?? ''), (renameOpen = true)) },
+		{ label: 'Export…', icon: Download, shortcut: ['mod', 'E'], onSelect: exportSelection },
 		{ type: 'separator' },
 		{
 			label: 'Delete document',
 			destructive: true,
-			onSelect: async () => {
-				if (!confirm(`Delete “${ws.doc?.name}”? This can't be undone.`)) return;
-				await ws.zero.mutate(mutators.document.delete({ id: documentID })).client;
-				location.href = '/';
-			}
+			onSelect: () => (deleteOpen = true)
 		}
 	]);
 	const accountMenu: MenuEntry[] = [
@@ -328,14 +344,14 @@
 {#if notFound}
 	<div class="grid h-dvh place-items-center bg-canvas">
 		<div class="animate-enter flex flex-col items-center gap-3 text-center">
-			<p class="text-title font-semibold">Document not found</p>
+			<p class="text-title font-heading font-medium">Document not found</p>
 			<p class="text-ui text-fg-secondary">It may have been deleted, or you don't have access.</p>
 			<Button href="/" onclick={() => (location.href = '/')}>All documents</Button>
 		</div>
 	</div>
 {:else}
 	<div class="grid h-dvh grid-rows-[auto_minmax(0,1fr)] bg-app text-fg" data-testid="workspace">
-		<TopBar document={ws.doc?.name ?? ''} configurations={configItems} bind:configuration={configValue} bind:mode={ws.mode} agents={agentPeople} user={{ name: user.name, kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
+		<TopBar document={ws.doc?.name ?? ''} bind:mode={ws.mode} agents={agentPeople} user={{ name: user.name, kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
 			{#snippet presence()}
 				{#if agentPeople.length}
 					<Tooltip label={liveAgents.map((a) => `${a.clientName}${a.label ? ` (${a.label})` : ''}: ${a.status}`).join('\n')}>
@@ -363,7 +379,7 @@
 			<aside class="flex min-h-0 flex-col border-r border-line-subtle bg-panel" aria-label="Document">
 				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
-						{#if tab === 'parts'}<PartsPanel {ws} onAddPart={addPart} />
+						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} />
 						{:else if tab === 'scripts'}<ScriptsPanel {ws} />
 						{:else}<HistoryPanel {ws} onOpen={(id) => cmp.view(id)} onCompare={(id) => cmp.open(id)} viewing={cmp.viewing} />{/if}
 					{/snippet}
@@ -386,7 +402,7 @@
 					{#if cmp.against}
 						<div class="pointer-events-none absolute bottom-20 left-1/2 z-20 -translate-x-1/2 *:pointer-events-auto" in:rise={{ y: 8, scale: 0.98, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, duration: 100 }}><CompareBar {ws} {cmp} /></div>
 					{/if}
-					<Viewport {ws} {nc} onAddPart={addPart} onConnect={() => (connectOpen = true)} onOpenNote={(id) => openNote(id)} />
+					<Viewport {ws} {nc} onAddStudio={addStudio} onConnect={() => (connectOpen = true)} onOpenNote={(id) => openNote(id)} />
 				</div>
 			</main>
 
@@ -406,7 +422,18 @@
 <CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} />
 <PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} />
-<ExportDialog {ws} bind:open={exportOpen} onZip={async () => void (await exportZip())} />
+<ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={async () => void (await exportZip())} />
+<ConfirmDialog bind:open={deleteOpen} title={`Delete “${ws.doc?.name}”?`} description="This can't be undone." onconfirm={deleteDocument} />
+<Dialog bind:open={renameOpen} title="Rename document">
+	<form id="rename-doc" onsubmit={rename} class="flex flex-col gap-1.5">
+		<span class="text-label text-fg-secondary">Name</span>
+		<Input bind:value={renameName} data-testid="rename-document-name" />
+	</form>
+	{#snippet footer()}
+		<Button variant="ghost" onclick={() => (renameOpen = false)}>Cancel</Button>
+		<Button variant="primary" type="submit" form="rename-doc" disabled={!renameName.trim()} data-testid="rename-document">Rename</Button>
+	{/snippet}
+</Dialog>
 <Dialog bind:open={cheatsOpen} title="Keyboard shortcuts" class="max-w-[640px]">
 	<div class="grid grid-cols-2 gap-x-8 gap-y-1" data-testid="cheatsheet">
 		{#each ['Tools', 'View', 'Selection', 'Edit', 'Document', 'Help'] as g (g)}

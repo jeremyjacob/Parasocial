@@ -6,9 +6,9 @@ import { SI_DEFAULT, type DocUnits } from "./units";
 export type Frame = { file: string; line: number; col: number; fn?: string };
 
 export type ContextOptions = {
-  /** Part id (file stem), e.g. `bracket`. */
+  /** Part id (studio file stem, plus `:export` for named parts), e.g. `bracket`. */
   part: string;
-  /** Script path, e.g. `parts/bracket.ts`. */
+  /** Script path, e.g. `studios/bracket.ts`. */
   file: string;
   cache: OpCache;
   /** Param overrides for the active configuration: name -> expression or value. */
@@ -16,7 +16,7 @@ export type ContextOptions = {
   units?: DocUnits;
   /** Map a raw stack frame to source (sourceURL / source maps). Return null to drop it. */
   mapFrame?: (f: Frame) => Frame | null;
-  /** Is this (mapped) file user code? Default: under parts/ or lib/. */
+  /** Is this (mapped) file user code? Default: under studios/ or lib/. */
   isUserFile?: (file: string) => boolean;
   /** Color index for `color.auto()` (round-robin by part order). */
   partIndex?: number;
@@ -52,7 +52,7 @@ export class PartContext {
     this.units = o.units ?? SI_DEFAULT;
     this.partIndex = o.partIndex ?? 0;
     this.mapFrame = o.mapFrame ?? ((f) => f);
-    this.isUserFile = o.isUserFile ?? ((f) => /(^|\/)(parts|lib)\/[^/]+/.test(f));
+    this.isUserFile = o.isUserFile ?? ((f) => /(^|\/)(studios|lib)\/[^/]+/.test(f));
   }
 
   /** User frames, innermost first. */

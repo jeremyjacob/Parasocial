@@ -4,6 +4,7 @@ import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
+import { withScreenShading } from "./shading";
 
 export type EntityKind = "face" | "edge" | "vertex";
 export type EntityRef = { part: string; kind: EntityKind; index: number };
@@ -25,9 +26,14 @@ export type PartData = {
   /** edges to leave out of the drawn edge set (seams) */
   hiddenEdges?: Set<number>;
   color: string;
+  /** Script-set finish (all 0..1): opacity below 1 draws the part see-through. */
+  appearance?: { opacity?: number; roughness?: number; metalness?: number };
   /** last-good geometry after an error: drawn dimmed */
   dim?: boolean;
 };
+
+/** Face roughness when the script doesn't set one: satin plastic. */
+const DEFAULT_ROUGHNESS = 0.42;
 
 export const KIND_CODE: Record<EntityKind, number> = { face: 1, edge: 2, vertex: 3 };
 
@@ -123,21 +129,27 @@ export class PartObject {
   private overlayMaterial: LineMaterial;
   private pickFaceMaterial: THREE.ShaderMaterial;
   private pickEdgeMaterial: LineMaterial;
+  /** Opacity the script asked for; display fades multiply into it. */
+  readonly baseOpacity: number;
 
   constructor(data: PartData, slot: number, private resolution: THREE.Vector2) {
     this.id = data.id;
     this.slot = slot;
     this.data = data;
     this.group.name = data.id;
-    this.faceMaterial = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.42,
-      metalness: 0.0,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
-      side: THREE.DoubleSide,
-    });
+    const a = data.appearance ?? {};
+    this.baseOpacity = clamp01(a.opacity ?? 1);
+    this.faceMaterial = withScreenShading(
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: clamp01(a.roughness ?? DEFAULT_ROUGHNESS),
+        metalness: clamp01(a.metalness ?? 0),
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+        side: THREE.DoubleSide,
+      }),
+    );
     this.edgeMaterial = new LineMaterial({ color: 0x1f2023, linewidth: 1.15, resolution, worldUnits: false });
     this.overlayMaterial = withDepthBias(new LineMaterial({ vertexColors: true, linewidth: 2.4, resolution, worldUnits: false, depthTest: true })) as LineMaterial;
     this.pickFaceMaterial = new THREE.ShaderMaterial({
@@ -187,7 +199,9 @@ export class PartObject {
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
     this.faceMesh = new THREE.Mesh(geo, this.faceMaterial);
-    this.faceMesh.layers.enable(2); // viewer FACE_LAYER: depth prepass for helpers drawn after AO
+    // viewer FACE_LAYER: the opaque faces AO and the halo are computed from, and the depth the
+    // helpers drawn after them test against. A translucent part stays out and blends in last.
+    if (!this.translucent) this.faceMesh.layers.enable(2);
     this.faceMesh.name = "faces";
     this.silMaterial = new THREE.ShaderMaterial({
       vertexShader: SIL_VERT,
@@ -279,6 +293,8 @@ export class PartObject {
     this.baseColor.copy(base);
     const c = new THREE.Color();
     const b = base.clone().lerp(dimTo, dim);
+    this.capColor.copy(b);
+    this.syncCapColor();
     for (let i = 0; i < this.colors.length; i += 3) (this.colors[i] = b.r), (this.colors[i + 1] = b.g), (this.colors[i + 2] = b.b);
     for (const [f, t] of tints) {
       const lo = this.faceVerts[f * 2],
@@ -336,9 +352,14 @@ export class PartObject {
     this.edgeMaterial.transparent = opacity < 1;
   }
 
+  /** The script made this part see-through (not a passing fade). */
+  get translucent() {
+    return this.baseOpacity < 1;
+  }
+
   setFaceStyle(o: { visible: boolean; opacity?: number; flat?: THREE.Color | null }) {
     this.faceMesh.visible = o.visible;
-    const op = o.opacity ?? 1;
+    const op = (o.opacity ?? 1) * this.baseOpacity;
     this.faceMaterial.opacity = op;
     this.faceMaterial.transparent = op < 1;
     this.faceMaterial.depthWrite = op >= 1;
@@ -358,6 +379,7 @@ export class PartObject {
   /** Swap to pick materials for the ID pass. */
   pickMode(on: boolean, edgesPickable: boolean, facesPickable: boolean) {
     if (this.cap) this.cap.visible = !on && !!this.faceMaterial.clippingPlanes;
+    if (this.capBorder) this.capBorder.visible = !on && !!this.faceMaterial.clippingPlanes && this.capBorder.geometry.attributes.instanceStart !== undefined;
     this.faceMesh.visible = !on && this.faceMesh.userData.shown !== false;
     this.silhouette.visible = !on && this.silhouette.userData.shown === true;
     this.outlineMask.visible = this.outline.visible = !on && this.outlineMask.userData.shown === true;
@@ -377,12 +399,17 @@ export class PartObject {
   }
 
   private cap: THREE.Mesh | null = null;
+  private capColor = new THREE.Color();
+  /** Outline of the cut: where the section plane crosses the part's surface. */
+  private capBorder: LineSegments2 | null = null;
 
   /**
    * Section view: clip everything of this part. Inside (back) faces seen through the cut render as
-   * a flat cap with a screen-space 45° hatch, reading as cut material.
+   * a flat cap in the part's colour, hatched with thin dark lines. The hatch is laid out on the
+   * section plane in world space (each back-face fragment is projected along its view ray onto the
+   * plane), so it stays attached to the model while orbiting; angle and spacing vary per part.
    */
-  setClip(planes: THREE.Plane[], capColor: THREE.Color, hatchColor = capColor, pixelRatio = 1) {
+  setClip(planes: THREE.Plane[], hatch?: { angle: number; spacing: number; pixelRatio: number }) {
     const mats = [this.faceMaterial, this.edgeMaterial, this.overlayMaterial, this.pickFaceMaterial, this.pickEdgeMaterial, this.silMaterial, this.outlineMask.material, this.outline.material] as THREE.Material[];
     for (const m of mats) {
       m.clippingPlanes = planes.length ? planes : null;
@@ -395,36 +422,123 @@ export class PartObject {
     this.silMaterial.visible = !planes.length;
     if (planes.length) {
       if (!this.cap) {
-        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, color: capColor, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
-        mat.userData.hatch = { hatchColor: { value: new THREE.Color() }, hatchPx: { value: 1 } };
+        const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+        mat.userData.hatch = {
+          hatchColor: { value: new THREE.Color() },
+          hatchPx: { value: 1 },
+          hatchPlane: { value: new THREE.Vector4() },
+          hatchDir: { value: new THREE.Vector3() },
+          hatchSpacing: { value: 1 },
+        };
         mat.onBeforeCompile = (sh) => {
           Object.assign(sh.uniforms, mat.userData.hatch);
-          sh.fragmentShader = sh.fragmentShader.replace("void main() {", "uniform vec3 hatchColor;\nuniform float hatchPx;\nvoid main() {").replace(
-            "#include <color_fragment>",
-            `#include <color_fragment>
-            float period = 11.0 * hatchPx;
-            float t = mod(gl_FragCoord.x + gl_FragCoord.y, period);
-            float dist = min(t, period - t) / 1.4142;
-            float a = 1.0 - smoothstep(0.45 * hatchPx, 1.15 * hatchPx, dist);
-            diffuseColor.rgb = mix(diffuseColor.rgb, hatchColor, a);`,
-          );
+          sh.vertexShader = sh.vertexShader
+            .replace("void main() {", "varying vec3 vHatchWorld;\nvoid main() {")
+            .replace("#include <project_vertex>", "#include <project_vertex>\nvHatchWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+          sh.fragmentShader = sh.fragmentShader
+            .replace(
+              "void main() {",
+              "uniform vec3 hatchColor;\nuniform float hatchPx;\nuniform vec4 hatchPlane;\nuniform vec3 hatchDir;\nuniform float hatchSpacing;\nvarying vec3 vHatchWorld;\nvoid main() {",
+            )
+            .replace(
+              "#include <color_fragment>",
+              `#include <color_fragment>
+            // project this back-face fragment along its view ray onto the section plane
+            vec3 rd = isOrthographic ? vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]) : vHatchWorld - cameraPosition;
+            float den = dot(hatchPlane.xyz, rd);
+            float tHit = abs(den) > 1e-8 ? -(dot(hatchPlane.xyz, vHatchWorld) + hatchPlane.w) / den : 0.0;
+            vec3 onPlane = vHatchWorld + rd * tHit;
+            float s = dot(onPlane, hatchDir) / hatchSpacing;
+            float fw = max(fwidth(s), 1e-6);
+            float px = abs(fract(s + 0.5) - 0.5) / fw;
+            float line = 1.0 - smoothstep(0.3 * hatchPx - 0.5, 0.3 * hatchPx + 0.5, px);
+            // lines closer than a few pixels would alias into a grey wash: fade them out
+            line *= smoothstep(2.5, 4.5, 1.0 / fw);
+            diffuseColor.rgb = mix(diffuseColor.rgb, hatchColor, line * 0.85);`,
+            );
         };
         this.cap = new THREE.Mesh(this.faceMesh.geometry, mat);
         this.cap.renderOrder = -0.5;
         this.group.add(this.cap);
       }
       const cm = this.cap.material as THREE.MeshBasicMaterial;
-      cm.color.copy(capColor);
-      cm.userData.hatch.hatchColor.value.copy(hatchColor);
-      cm.userData.hatch.hatchPx.value = pixelRatio;
+      const u = cm.userData.hatch;
+      this.syncCapColor();
+      const pl = planes[0];
+      u.hatchPlane.value.set(pl.normal.x, pl.normal.y, pl.normal.z, pl.constant);
+      if (hatch) {
+        // in-plane basis from a stable world reference, then rotate by the part's hatch angle
+        const n = pl.normal;
+        const ref = Math.abs(n.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+        const a = new THREE.Vector3().crossVectors(ref, n).normalize();
+        const b = new THREE.Vector3().crossVectors(n, a);
+        u.hatchDir.value.copy(a.multiplyScalar(Math.cos(hatch.angle)).addScaledVector(b, Math.sin(hatch.angle)));
+        u.hatchSpacing.value = hatch.spacing;
+        u.hatchPx.value = hatch.pixelRatio;
+      }
       cm.clippingPlanes = planes;
       cm.needsUpdate = true;
       this.cap.visible = true;
-    } else if (this.cap) this.cap.visible = false;
+      this.updateCapBorder(pl);
+    } else {
+      if (this.cap) this.cap.visible = false;
+      if (this.capBorder) this.capBorder.visible = false;
+    }
+  }
+
+  /** Intersect every triangle with the plane; the crossing segments outline the cut face. */
+  private updateCapBorder(world: THREE.Plane) {
+    // the mesh is in part coordinates; the plane is in world coordinates
+    const pl = world.clone().applyMatrix4(this.group.matrix.clone().invert());
+    const m = this.data.mesh;
+    const P = m.positions,
+      I = m.indices;
+    const out: number[] = [];
+    const d = [0, 0, 0];
+    const n = pl.normal,
+      c = pl.constant;
+    for (let t = 0; t < I.length; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const v = I[t + k] * 3;
+        d[k] = n.x * P[v] + n.y * P[v + 1] + n.z * P[v + 2] + c;
+      }
+      // vertices exactly on the plane count as the positive side, so each crossing is found once
+      const s0 = d[0] >= 0,
+        s1 = d[1] >= 0,
+        s2 = d[2] >= 0;
+      if (s0 === s1 && s1 === s2) continue;
+      for (let k = 0; k < 3; k++) {
+        const k2 = (k + 1) % 3;
+        if (d[k] >= 0 === d[k2] >= 0) continue;
+        const a = I[t + k] * 3,
+          b = I[t + k2] * 3;
+        const f = d[k] / (d[k] - d[k2]);
+        out.push(P[a] + (P[b] - P[a]) * f, P[a + 1] + (P[b + 1] - P[a + 1]) * f, P[a + 2] + (P[b + 2] - P[a + 2]) * f);
+      }
+    }
+    if (!this.capBorder) {
+      // not clipped: it lies on the plane itself; drawn like the silhouette, in every display mode
+      this.capBorder = new LineSegments2(new LineSegmentsGeometry(), withDepthBias(new LineMaterial({ color: 0x1f2023, linewidth: 1.3, resolution: this.resolution, worldUnits: false })) as LineMaterial);
+      this.capBorder.renderOrder = 1;
+      this.group.add(this.capBorder);
+    }
+    this.capBorder.geometry.dispose();
+    this.capBorder.geometry = new LineSegmentsGeometry();
+    if (out.length) this.capBorder.geometry.setPositions(out);
+    this.capBorder.visible = out.length > 0;
+  }
+
+  /** Cap shows the part's own (possibly dimmed) colour; hatch lines are a dark shade of it. */
+  private syncCapColor() {
+    if (!this.cap) return;
+    const cm = this.cap.material as THREE.MeshBasicMaterial;
+    cm.color.copy(this.capColor);
+    cm.userData.hatch.hatchColor.value.copy(this.capColor).multiplyScalar(0.28);
   }
 
   dispose() {
     if (this.cap) (this.cap.material as THREE.Material).dispose();
+    if (this.capBorder) this.capBorder.geometry.dispose(), (this.capBorder.material as THREE.Material).dispose();
     this.faceMesh.geometry.dispose();
     this.edgeLines.geometry.dispose();
     this.pickEdges.geometry.dispose();
@@ -439,3 +553,5 @@ export class PartObject {
     this.pickEdgeMaterial.dispose();
   }
 }
+
+const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 1);

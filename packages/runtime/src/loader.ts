@@ -1,13 +1,13 @@
 // Script loading inside the engine (PLAN §5 Sandboxing, "script hygiene"):
 // - transpile TS with Sucrase (line-preserving, so stack lines map 1:1 to the source)
-// - resolve only `parasocial` and relative imports within the document (parts/, lib/)
+// - resolve only `parasocial` and relative imports within the document (studios/, lib/)
 // - evaluate each module in a `new Function` wrapper that shadows ambient globals
 // - seeded Math.random and a frozen Date per regeneration (determinism)
 // - a fresh module cache per regeneration
 // The cross-origin engine iframe is the security boundary; this is correctness, not security.
 import { transform } from "sucrase";
 
-export type Scripts = ReadonlyMap<string, string>; // path (parts/x.ts, lib/y.ts) -> source
+export type Scripts = ReadonlyMap<string, string>; // path (studios/x.ts, lib/y.ts) -> source
 
 export class ScriptError extends Error {
   constructor(
@@ -188,6 +188,10 @@ export type LoadOptions = {
   api: Record<string, unknown>;
   /** Seed for Math.random (per regeneration). */
   seed?: number;
+  /** Module cache to share across several entries (default: fresh per call). */
+  cache?: Map<string, { exports: any }>;
+  /** Called when a module finishes evaluating (dependencies finish before their importers). */
+  onLoaded?: (path: string, exports: Record<string, any>) => void;
 };
 
 /** Where frames from evaluated modules point, for mapping stack traces back to scripts. */
@@ -202,7 +206,7 @@ export function mapScriptFrame(f: { file: string; line: number; col: number; fn?
 /** Load `entry` and its relative imports; returns its exports. Fresh module cache each call. */
 export function loadModule(entry: string, o: LoadOptions): Record<string, any> {
   measureHeader();
-  const cache = new Map<string, { exports: any }>();
+  const cache = o.cache ?? new Map<string, { exports: any }>();
   const math = sandboxMath(o.seed ?? 1);
   const date = sandboxDate();
   const api = o.api;
@@ -227,7 +231,7 @@ export function loadModule(entry: string, o: LoadOptions): Record<string, any> {
     if (path === "parasocial") return api;
     const hit = cache.get(path);
     if (hit) return hit.exports;
-    if (!/^(parts|lib)\//.test(path)) throw new ScriptError(`scripts must live under parts/ or lib/ (got ${path})`, path);
+    if (!/^(studios|lib)\//.test(path)) throw new ScriptError(`scripts must live under studios/ or lib/ (got ${path})`, path);
     const src = o.scripts.get(path);
     if (src === undefined) throw new ScriptError(`no script at ${path}`, path);
     const code = transpile(path, src);
@@ -241,6 +245,7 @@ export function loadModule(entry: string, o: LoadOptions): Record<string, any> {
     }
     const req = (spec: string) => load(resolve(path, spec));
     fn(module, module.exports, req, math, date, ...SHADOWED.filter((n) => n !== "require").map(() => undefined));
+    o.onLoaded?.(path, module.exports);
     return module.exports;
   };
   return load(entry);

@@ -1,10 +1,10 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, edgeTangent, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, edgeTangent, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Material, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, parseStack, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { zipSync, strToU8 } from "fflate";
 
@@ -14,6 +14,45 @@ export type DocumentState = {
   overrides?: Record<string, Record<string, string | number>>;
   units?: { length: string; angle: string };
 };
+
+/**
+ * A part a studio exports: `export default part(...)` is `<stem>`, `export const lid = part(...)` is `<stem>:lid`.
+ * `studio` is the studio's display name: its `export const name = "..."`, else the file stem.
+ */
+export type PartInfo = { id: string; file: string; export: string; name: string; studio: string };
+
+/** An assembly a studio exports (`export default assembly(...)`), with its joints resolved to part ids. */
+export type AssemblyInfo = {
+  id: string;
+  file: string;
+  export: string;
+  name: string;
+  studio: string;
+  /** Parts that never move (explicit `fix`; the solver also keeps each group's first part still). */
+  fixed: string[];
+  joints: AssemblyJoint[];
+  problems: Problem[];
+};
+
+export type AssemblyJoint = {
+  /** Stable key: dragged positions are saved under it. */
+  name: string;
+  type: JointType;
+  a: string;
+  b: string;
+  /** A connector declared in a part (resolved from that part's regeneration), or a frame in home coordinates. */
+  at: { part: string; connector: string } | { frame: ConnectorFrame };
+  limits: ({ min?: number; max?: number } | null)[];
+  value: number[];
+  overlap: boolean;
+  source?: SourceRef;
+};
+
+/** Where two parts overlap: the shared volume, meshed in part `a`'s own coordinates. */
+export type Interference = { a: string; b: string; volume: number; mesh?: MeshData };
+
+/** A rigid transform from a part's modeled pose: rotation (row-major 3×3) and translation. */
+export type PartPose = { r: number[]; t: Vec3 };
 
 export type FaceMeta = { surface: string; area: number; center: Vec3; normal: Vec3; radius?: number; axis?: Vec3; origin?: Vec3 };
 export type EdgeMeta = { curve: string; length: number; mid: Vec3; radius?: number; direction?: Vec3; center?: Vec3; axis?: Vec3; seam?: boolean };
@@ -30,7 +69,10 @@ export type PartResult = {
   problems: Problem[];
   params: ParamDecl[];
   color?: ColorSpec;
+  appearance?: Appearance;
   material?: Material;
+  /** Named frames for assembly joints (part coordinates). */
+  connectors?: Record<string, ConnectorFrame>;
   quality: MeshQuality;
   mesh?: MeshData;
   faces: FaceMeta[];
@@ -91,15 +133,28 @@ export class Engine {
   /** last good record per part: the viewport never goes blank */
   private lastGood = new Map<string, OpRecord>();
   private seed = 1;
+  /** Discovered parts (evaluating every studio's top level); null = stale. */
+  private discovered: PartInfo[] | null = null;
+  /** Last discovered parts per studio: a studio that fails to load keeps its parts (with the error). */
+  private lastByFile = new Map<string, PartInfo[]>();
+  /** Assemblies found by the last discovery, and which part id each discovered PartDef is. */
+  private assemblyDefs: { info: Omit<AssemblyInfo, "fixed" | "joints" | "problems">; def: AssemblyDef }[] = [];
+  private partIdOf = new Map<PartDef, string>();
+  private assemblyCache: AssemblyInfo[] | null = null;
+  /** Dragged assembly positions: part -> transform from its modeled pose. */
+  private poses = new Map<string, PartPose>();
+  private interferenceCache = new Map<string, { volume: number; mesh?: MeshData }>();
 
   setDocument(doc: DocumentState) {
     this.scripts = new Map(Object.entries(doc.scripts));
+    this.discovered = null;
     this.overrides = doc.overrides ?? {};
     if (doc.units) this.units = { length: UNITS[doc.units.length] ?? SI_DEFAULT.length, angle: UNITS[doc.units.angle] ?? SI_DEFAULT.angle };
   }
   setScript(path: string, content: string | null) {
     if (content === null) this.scripts.delete(path);
     else this.scripts.set(path, content);
+    this.discovered = null;
   }
   setOverrides(part: string, o: Record<string, string | number>) {
     this.overrides[part] = o;
@@ -108,18 +163,192 @@ export class Engine {
     return Object.fromEntries(this.scripts);
   }
 
-  /** Part ids in stable order (parts/*.ts, sorted). */
+  /** Part ids in stable order (by script path, then export order). */
   parts(): string[] {
-    return [...this.scripts.keys()]
-      .filter((p) => /^parts\/[^/]+\.ts$/.test(p))
-      .sort()
-      .map((p) => p.slice(6, -3));
+    return this.partInfos().map((p) => p.id);
+  }
+
+  /**
+   * Every part the studios export. Loads all scripts in one module cache so a part
+   * re-exported by another studio (or imported to build on) is listed once, under the studio
+   * that defines it: dependencies finish evaluating before their importers.
+   */
+  partInfos(): PartInfo[] {
+    if (this.discovered) return this.discovered;
+    const files = [...this.scripts.keys()].filter((p) => STUDIO_FILE.test(p)).sort();
+    const cache = new Map<string, { exports: any }>();
+    const loaded: [string, Record<string, any>][] = [];
+    const failed = new Set<string>();
+    for (const f of files) {
+      try {
+        loadModule(f, { scripts: this.scripts, api: API_MODULE, seed: this.seed, cache, onLoaded: (path, exports) => loaded.push([path, exports]) });
+      } catch {
+        failed.add(f);
+      }
+    }
+    const owner = new Map<PartDef, string>();
+    for (const [path, exports] of loaded) if (STUDIO_FILE.test(path)) for (const [, v] of exportEntries(exports)) if (isPartDef(v) && !owner.has(v)) owner.set(v, path);
+    const exportsOf = new Map(loaded);
+    const out: PartInfo[] = [];
+    this.assemblyDefs = [];
+    this.partIdOf = new Map();
+    this.assemblyCache = null;
+    for (const f of files) {
+      const stem = studioStem(f);
+      const exports = exportsOf.get(f);
+      if (failed.has(f) || !exports) {
+        out.push(...(this.lastByFile.get(f) ?? [{ id: stem, file: f, export: "default", name: stem, studio: stem }]));
+        continue;
+      }
+      const studio = studioName(exports) ?? stem;
+      const list: PartInfo[] = [];
+      const seen = new Set<PartDef>();
+      // the default export first, then named exports in source order
+      const entries = exportEntries(exports);
+      for (const [key, v] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")]) {
+        if (!isPartDef(v) || owner.get(v) !== f || seen.has(v)) continue;
+        seen.add(v);
+        list.push({ id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio });
+      }
+      for (const [key, v] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")])
+        if (isAssemblyDef(v)) this.assemblyDefs.push({ info: { id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio }, def: v });
+      // nothing exported yet: one placeholder part carries the "must export a part" error
+      if (!list.length && !this.assemblyDefs.some((a) => a.info.file === f)) list.push({ id: stem, file: f, export: "default", name: stem, studio });
+      this.lastByFile.set(f, list);
+      out.push(...list);
+    }
+    for (const f of this.lastByFile.keys()) if (!this.scripts.has(f)) this.lastByFile.delete(f);
+    for (const [def, path] of owner) {
+      const exports = exportsOf.get(path)!;
+      const key = exportEntries(exports).find(([, v]) => v === def)?.[0];
+      if (key) this.partIdOf.set(def, key === "default" ? studioStem(path) : `${studioStem(path)}:${key}`);
+    }
+    return (this.discovered = out);
+  }
+
+  /**
+   * Every assembly the studios export, with joints resolved to part ids. Evaluates the assembly
+   * bodies only (no geometry): connector frames come from each part's regeneration.
+   */
+  assemblies(): AssemblyInfo[] {
+    this.partInfos();
+    if (this.assemblyCache) return this.assemblyCache;
+    const out: AssemblyInfo[] = [];
+    for (const { info, def } of this.assemblyDefs) {
+      const a: AssemblyInfo = { ...info, fixed: [], joints: [], problems: [] };
+      out.push(a);
+      const problem = (message: string, source?: SourceRef) =>
+        a.problems.push({ severity: "error", kind: "runtime", message: source ? `${message} (${source.file.split("/").pop()}:${source.line})` : message, part: info.id, source: source ?? { file: info.file, line: 1 } });
+      let decl;
+      try {
+        decl = declareAssembly(def);
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        problem(err.message, sourceOf(err.stack ?? ""));
+        continue;
+      }
+      const idOf = (p: PartDef, source?: SourceRef) => {
+        const id = this.partIdOf.get(p);
+        if (!id) problem(`the part "${p.name}" isn't exported by a studio, so it can't be in an assembly`, source);
+        return id;
+      };
+      for (const p of decl.fixed) {
+        const id = idOf(p);
+        if (id && !a.fixed.includes(id)) a.fixed.push(id);
+      }
+      const used = new Map<string, number>();
+      for (const j of decl.joints) {
+        const source = sourceOf(j.stack);
+        const ia = idOf(j.a, source),
+          ib = idOf(j.b, source);
+        if (!ia || !ib) continue;
+        let at: AssemblyJoint["at"];
+        if ("connector" in j.at) {
+          const owner = idOf(j.at.connector.part, source);
+          if (!owner) continue;
+          at = { part: owner, connector: j.at.connector.name };
+        } else at = { frame: j.at.frame };
+        const base = j.name ?? `${ia}+${ib}`;
+        const n = (used.get(base) ?? 0) + 1;
+        used.set(base, n);
+        a.joints.push({ name: n > 1 ? `${base}#${n}` : base, type: j.type, a: ia, b: ib, at, limits: j.limits.map((r) => (r ? { min: r.min, max: r.max } : null)), value: j.value, overlap: j.overlap, source });
+      }
+    }
+    return (this.assemblyCache = out);
+  }
+
+  /** Dragged positions (transforms from the modeled pose); parts not listed sit where they're modeled. */
+  setPoses(poses: Record<string, PartPose>) {
+    this.poses = new Map(Object.entries(poses).filter(([, p]) => validPose(p)));
+  }
+
+  /** A part's shape where it's shown: moved by its assembly pose, if any. */
+  private posedShape(part: string, shape = this.need(part).shape) {
+    const p = this.poses.get(part);
+    return p ? placed(shape, p.r, p.t) : shape;
+  }
+
+  /**
+   * Where visible parts overlap. Pairs whose (posed) bounding boxes don't meet are skipped; each
+   * overlap comes back meshed in part `a`'s own coordinates, so it rides along with `a`.
+   * Contact (touching faces) isn't overlap: volumes below a hair are dropped.
+   */
+  interferences(parts: string[], ignore: [string, string][] = []): Interference[] {
+    const skip = new Set(ignore.flatMap(([a, b]) => [`${a}\u0000${b}`, `${b}\u0000${a}`]));
+    const items = parts.flatMap((p) => {
+      const rec = this.shown(p);
+      if (!rec) return [];
+      const bb = boundingBox(rec.shape);
+      const pose = this.poses.get(p) ?? IDENTITY;
+      return [{ part: p, rec, box: worldBox(bb, pose), pose, volume: massProps(rec.shape).volume }];
+    });
+    const out: Interference[] = [];
+    const live = new Set<string>();
+    for (let i = 0; i < items.length; i++)
+      for (let k = i + 1; k < items.length; k++) {
+        const A = items[i],
+          B = items[k];
+        if (skip.has(`${A.part}\u0000${B.part}`) || !boxesOverlap(A.box, B.box)) continue;
+        // B in A's frame: A⁻¹·B
+        const rel = composePose(invertPose(A.pose), B.pose);
+        const key = `${A.rec.key}|${B.rec.key}|${[...rel.r, ...rel.t].map((v) => v.toFixed(6)).join(",")}`;
+        live.add(key);
+        let hit = this.interferenceCache.get(key);
+        if (!hit) {
+          hit = { volume: 0 };
+          try {
+            const r = kBoolean("intersect", A.rec.shape, placed(B.rec.shape, rel.r, rel.t));
+            r.maker?.delete?.();
+            const v = massProps(r.shape).volume;
+            // touching faces and tangent contact leave numerical slivers: not a collision
+            if (v > Math.max(1e-3, 1e-7 * Math.min(A.volume, B.volume))) {
+              hit.volume = v;
+              scoped(() => {
+                const t = topology(r.shape);
+                const bb = boundingBox(r.shape);
+                const tol = meshTolerances(Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]), "coarse");
+                hit!.mesh = tessellate(r.shape, t.faces, t.edges, tol.tolerance, tol.angular);
+              });
+            }
+            r.shape.delete?.();
+          } catch {}
+          this.interferenceCache.set(key, hit);
+        }
+        if (hit.volume > 0) out.push({ a: A.part, b: B.part, volume: hit.volume, mesh: hit.mesh && cloneMesh(hit.mesh) });
+      }
+    // keep only what the current layout uses (plus a few recent, for drags back and forth)
+    if (this.interferenceCache.size > 64) for (const k of [...this.interferenceCache.keys()].slice(0, this.interferenceCache.size - 64)) if (!live.has(k)) this.interferenceCache.delete(k);
+    return out;
   }
 
   regenerate(part: string, quality: MeshQuality = "fine"): PartResult {
     const t0 = performance.now();
-    const file = `parts/${part}.ts`;
-    const partIndex = this.parts().indexOf(part);
+    const infos = this.partInfos();
+    const info = infos.find((p) => p.id === part);
+    const colon = part.indexOf(":");
+    const file = info?.file ?? `studios/${colon < 0 ? part : part.slice(0, colon)}.ts`;
+    const key = info?.export ?? (colon < 0 ? "default" : part.slice(colon + 1));
+    const partIndex = Math.max(0, infos.indexOf(info!));
     this.cache.begin();
     let def: PartDef | undefined;
     let problems: Problem[] = [];
@@ -128,13 +357,20 @@ export class Engine {
     try {
       if (!this.scripts.has(file)) throw new ScriptError(`no script at ${file}`, file);
       const mod = loadModule(file, { scripts: this.scripts, api: API_MODULE, seed: this.seed });
-      def = mod.default;
-      if (!def || (def as any).__part !== true) throw new ScriptError(`${file} must \`export default part("Name", () => ...)\``, file, undefined, undefined, "runtime");
+      def = mod[key];
+      if (!isPartDef(def))
+        throw new ScriptError(
+          key === "default" ? `${file} must export a part: \`export default part("Name", () => ...)\`, or several as named exports: \`export const lid = part("Lid", () => ...)\`` : `${file} no longer exports the part "${key}"`,
+          file,
+          undefined,
+          undefined,
+          "runtime",
+        );
     } catch (e) {
       problems.push(scriptProblem(e, part, file));
     }
     if (def) {
-      const ctx = new PartContext({ part, file, cache: this.cache, overrides: this.overrides[part] ?? {}, units: this.units, partIndex, mapFrame: mapScriptFrame, isUserFile: (f) => /^(parts|lib)\//.test(f) });
+      const ctx = new PartContext({ part, file, cache: this.cache, overrides: this.overrides[part] ?? {}, units: this.units, partIndex, mapFrame: mapScriptFrame, isUserFile: (f) => /^(studios|lib)\//.test(f) });
       run = runPart(def, ctx);
       problems = run.problems;
       this.runs.set(part, run);
@@ -150,14 +386,16 @@ export class Engine {
     const result: PartResult = {
       part,
       file,
-      name: run?.name ?? def?.name ?? part,
+      name: run?.name ?? def?.name ?? info?.name ?? part,
       ok: !!run?.ok && !problems.some((p) => p.severity === "error"),
       partial: !run?.ok,
       empty: !rec,
       problems,
       params: run?.params ?? [],
       color: run?.color,
+      appearance: run?.appearance,
       material: run?.material,
+      connectors: run?.connectors,
       quality,
       faces: [],
       edges: [],
@@ -342,7 +580,7 @@ export class Engine {
     const A = this.need(a),
       B = this.need(b);
     try {
-      const r = kBoolean("intersect", A.shape, B.shape);
+      const r = kBoolean("intersect", this.posedShape(a, A.shape), this.posedShape(b, B.shape));
       r.maker?.delete?.();
       const v = massProps(r.shape).volume;
       r.shape.delete?.();
@@ -354,10 +592,16 @@ export class Engine {
 
   /** Export a part as STEP, STL or 3MF bytes. */
   exportPart(part: string, format: "step" | "stl" | "3mf"): Uint8Array {
-    const rec = this.need(part);
-    if (format === "step") return exportSTEP(rec.shape);
-    if (format === "stl") return exportSTL(rec.shape);
-    return export3MF(this.regenerate(part, "fine"));
+    return this.exportParts([part], format);
+  }
+
+  /** Export parts together: STEP/STL as one compound, 3MF as one object per part. */
+  exportParts(parts: string[], format: "step" | "stl" | "3mf"): Uint8Array {
+    if (!parts.length) throw new Error("nothing to export: no parts given");
+    if (format === "3mf") return export3MF(parts.map((p) => (this.need(p), posedMesh(this.regenerate(p, "fine"), this.poses.get(p)))));
+    const shapes = parts.map((p) => this.posedShape(p));
+    const shape = shapes.length === 1 ? shapes[0] : compound(shapes);
+    return format === "step" ? exportSTEP(shape) : exportSTL(shape);
   }
 
   /** Closest point on an entity to `p` (pins follow their geometry across regenerations). */
@@ -367,9 +611,10 @@ export class Engine {
   }
 
   measure(a: { part: string; kind: EntityKind | "part"; index?: number }, b: { part: string; kind: EntityKind | "part"; index?: number }) {
+    // where the parts are shown: assembly poses apply, so results are in world coordinates
     const shape = (x: typeof a) => {
       const rec = this.need(x.part);
-      return x.kind === "part" ? rec.shape : entityShape(rec, x.kind, x.index!);
+      return this.posedShape(x.part, x.kind === "part" ? rec.shape : entityShape(rec, x.kind, x.index!));
     };
     return kDistance(shape(a), shape(b));
   }
@@ -383,6 +628,83 @@ export class Engine {
   dispose() {
     this.cache.clear();
   }
+}
+
+const STUDIO_FILE = /^studios\/[^/]+\.ts$/;
+
+/** `studios/case.ts` -> `case` (the default part's id, and the prefix of its named parts' ids). */
+export const studioStem = (file: string) => file.slice("studios/".length, -".ts".length);
+
+/** A studio's `export const name = "..."`, trimmed; undefined when absent, blank or not a string. */
+function studioName(exports: Record<string, any>): string | undefined {
+  const n = exportEntries(exports).find(([k]) => k === "name")?.[1];
+  return typeof n === "string" && n.trim() ? n.trim() : undefined;
+}
+
+const isPartDef = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;
+const isAssemblyDef = (v: unknown): v is AssemblyDef => !!v && typeof v === "object" && (v as any).__assembly === true;
+
+/** The first user-code frame of a stack, mapped to its script line. */
+function sourceOf(stack: string): SourceRef | undefined {
+  for (const f of parseStack(stack)) {
+    const m = mapScriptFrame(f);
+    if (m && /^(studios|lib)\//.test(m.file)) return { file: m.file, line: m.line, col: m.col };
+  }
+  return undefined;
+}
+
+const IDENTITY: PartPose = { r: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+const validPose = (p: PartPose) => !!p && Array.isArray(p.r) && p.r.length === 9 && Array.isArray(p.t) && p.t.length === 3 && [...p.r, ...p.t].every(Number.isFinite);
+const applyPose = (p: PartPose, v: Vec3): Vec3 => [
+  p.r[0] * v[0] + p.r[1] * v[1] + p.r[2] * v[2] + p.t[0],
+  p.r[3] * v[0] + p.r[4] * v[1] + p.r[5] * v[2] + p.t[1],
+  p.r[6] * v[0] + p.r[7] * v[1] + p.r[8] * v[2] + p.t[2],
+];
+function invertPose(p: PartPose): PartPose {
+  const r = [p.r[0], p.r[3], p.r[6], p.r[1], p.r[4], p.r[7], p.r[2], p.r[5], p.r[8]];
+  const t = applyPose({ r, t: [0, 0, 0] }, p.t);
+  return { r, t: [-t[0], -t[1], -t[2]] };
+}
+function composePose(a: PartPose, b: PartPose): PartPose {
+  const r = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) r[i * 3 + j] = a.r[i * 3] * b.r[j] + a.r[i * 3 + 1] * b.r[3 + j] + a.r[i * 3 + 2] * b.r[6 + j];
+  return { r, t: applyPose(a, b.t) };
+}
+type Box = { min: Vec3; max: Vec3 };
+function worldBox(bb: Box, p: PartPose): Box {
+  const min: Vec3 = [Infinity, Infinity, Infinity],
+    max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (let c = 0; c < 8; c++) {
+    const w = applyPose(p, [c & 1 ? bb.max[0] : bb.min[0], c & 2 ? bb.max[1] : bb.min[1], c & 4 ? bb.max[2] : bb.min[2]]);
+    for (let k = 0; k < 3; k++) (min[k] = Math.min(min[k], w[k])), (max[k] = Math.max(max[k], w[k]));
+  }
+  return { min, max };
+}
+const boxesOverlap = (a: Box, b: Box) => [0, 1, 2].every((k) => a.min[k] < b.max[k] - 1e-6 && b.min[k] < a.max[k] - 1e-6);
+const cloneMesh = (m: MeshData): MeshData => ({ positions: m.positions.slice(), normals: m.normals.slice(), indices: m.indices.slice(), faceRanges: m.faceRanges.slice(), edgePositions: m.edgePositions.slice(), edgeRanges: m.edgeRanges.slice() });
+
+/** A regeneration result with its mesh moved by an assembly pose (3MF export). */
+function posedMesh(r: PartResult, p?: PartPose): PartResult {
+  if (!p || !r.mesh) return r;
+  const pos = r.mesh.positions.slice();
+  for (let i = 0; i < pos.length; i += 3) {
+    const w = applyPose(p, [pos[i], pos[i + 1], pos[i + 2]]);
+    pos[i] = w[0];
+    pos[i + 1] = w[1];
+    pos[i + 2] = w[2];
+  }
+  return { ...r, mesh: { ...r.mesh, positions: pos } };
+}
+
+/** Export entries, skipping getters that throw (a re-export of a module that failed). */
+function exportEntries(exports: Record<string, any>): [string, unknown][] {
+  const out: [string, unknown][] = [];
+  for (const k of Object.keys(exports)) {
+    try {
+      out.push([k, exports[k]]);
+    } catch {}
+  }
+  return out;
 }
 
 function scriptProblem(e: unknown, part: string, file: string): Problem {
@@ -401,14 +723,17 @@ function scriptProblem(e: unknown, part: string, file: string): Problem {
 export { compound };
 
 /** Minimal 3MF (core spec): one mesh object per part, millimeters. */
-function export3MF(r: PartResult): Uint8Array {
-  
-  const m = r.mesh!;
-  const v: string[] = [];
-  for (let i = 0; i < m.positions.length; i += 3) v.push(`<vertex x="${m.positions[i]}" y="${m.positions[i + 1]}" z="${m.positions[i + 2]}"/>`);
-  const t: string[] = [];
-  for (let i = 0; i < m.indices.length; i += 3) t.push(`<triangle v1="${m.indices[i]}" v2="${m.indices[i + 1]}" v3="${m.indices[i + 2]}"/>`);
-  const model = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" name="${r.name.replace(/[<&"]/g, "")}" type="model"><mesh><vertices>${v.join("")}</vertices><triangles>${t.join("")}</triangles></mesh></object></resources><build><item objectid="1"/></build></model>`;
+function export3MF(results: PartResult[]): Uint8Array {
+  const objects = results.map((r, k) => {
+    const m = r.mesh!;
+    const v: string[] = [];
+    for (let i = 0; i < m.positions.length; i += 3) v.push(`<vertex x="${m.positions[i]}" y="${m.positions[i + 1]}" z="${m.positions[i + 2]}"/>`);
+    const t: string[] = [];
+    for (let i = 0; i < m.indices.length; i += 3) t.push(`<triangle v1="${m.indices[i]}" v2="${m.indices[i + 1]}" v3="${m.indices[i + 2]}"/>`);
+    return `<object id="${k + 1}" name="${r.name.replace(/[<&"]/g, "")}" type="model"><mesh><vertices>${v.join("")}</vertices><triangles>${t.join("")}</triangles></mesh></object>`;
+  });
+  const items = results.map((_, k) => `<item objectid="${k + 1}"/>`).join("");
+  const model = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>${objects.join("")}</resources><build>${items}</build></model>`;
   return zipSync({
     "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`),
     "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`),

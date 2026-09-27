@@ -3,7 +3,7 @@
  *
  *   bracket.zip
  *   ├─ parasocial.json   settings, units, configurations and overrides
- *   ├─ parts/*.ts
+ *   ├─ studios/*.ts
  *   ├─ lib/**\/*.ts
  *   └─ notes.json        optional: threads and anchors
  *
@@ -123,9 +123,11 @@ function payloadFromFiles(files: Map<string, Uint8Array>): DocumentPayload {
 
   const scripts: DocumentPayload["scripts"] = [];
   const ignored: string[] = [];
-  for (const [path, data] of files) {
+  for (let [path, data] of files) {
     if (path === "parasocial.json" || path === "notes.json") continue;
-    if (path.startsWith("parts/") || path.startsWith("lib/")) {
+    // studios/ was parts/ before multi-part studios; older exports still import
+    if (path.startsWith("parts/")) path = `studios/${path.slice("parts/".length)}`;
+    if (path.startsWith("studios/") || path.startsWith("lib/")) {
       const err = validateScriptPath(path);
       if (err) throw new HttpError(400, err);
       scripts.push({ path, content: strFromU8(data) });
@@ -133,7 +135,7 @@ function payloadFromFiles(files: Map<string, Uint8Array>): DocumentPayload {
       ignored.push(path);
     }
   }
-  if (ignored.length) throw new HttpError(400, `Unexpected files outside parts/ and lib/: ${ignored.slice(0, 5).join(", ")}`);
+  if (ignored.length) throw new HttpError(400, `Unexpected files outside studios/ and lib/: ${ignored.slice(0, 5).join(", ")}`);
 
   let notes: ExportedNote[] | undefined;
   const notesBytes = files.get("notes.json");

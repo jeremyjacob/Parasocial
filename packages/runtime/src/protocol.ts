@@ -3,11 +3,15 @@
 // untrusted, and mutations are never reachable through this channel.
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
-import type { DocumentState, PartResult, EntityDescription } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyJoint, Interference, PartPose } from "./engine";
 
 export type EngineRequest =
   | { op: "setDocument"; doc: DocumentState }
   | { op: "setScript"; path: string; content: string | null }
+  /** Every part the scripts export (setDocument and setScript also return this). */
+  | { op: "parts" }
+  /** The parts of a snapshot (another version), from the snapshot engine. */
+  | { op: "snapshotParts"; key: string; doc: DocumentState }
   | { op: "setOverrides"; part: string; overrides: Record<string, string | number> }
   | { op: "regenerate"; part: string; quality?: MeshQuality }
   | { op: "names"; part: string }
@@ -24,7 +28,14 @@ export type EngineRequest =
   | { op: "loopOf"; part: string; edge: number; face?: number }
   | { op: "opsAtLine"; part: string; file: string; line: number }
   | { op: "interference"; a: string; b: string }
-  | { op: "export"; part: string; format: "step" | "stl" | "3mf" }
+  /** The assemblies the studios export (joints resolved to part ids). */
+  | { op: "assemblies" }
+  /** Dragged assembly positions (part -> transform from its modeled pose); measure, interference and export use them. */
+  | { op: "setPoses"; poses: Record<string, PartPose> }
+  /** Where these parts overlap (latest wins: resolves null when superseded). */
+  | { op: "interferences"; parts: string[]; ignore?: [string, string][]; poses?: Record<string, PartPose> }
+  /** One part (`part`) or several together (`parts`: one STEP/STL compound, one 3MF object each). */
+  | { op: "export"; part?: string; parts?: string[]; format: "step" | "stl" | "3mf" }
   | { op: "closestPoint"; part: string; kind: EntityKind; index: number; point: Vec3 }
   /** Regenerate a snapshot (another version) in a separate engine: compare ghosts, viewing old versions. */
   | { op: "regenerateSnapshot"; key: string; doc: DocumentState; part: string }
@@ -49,7 +60,7 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, EntityDescription, DocumentState };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyJoint, Interference, PartPose };
 
 // ---------- validation (app side) ----------
 
@@ -69,24 +80,68 @@ export function validateEngineMessage(m: unknown): EngineMessage | null {
   return null;
 }
 
+/** A part list (setDocument / setScript / parts / snapshotParts). */
+export function validatePartInfos(v: unknown): PartInfo[] | null {
+  if (!Array.isArray(v)) return null;
+  for (const p of v) if (!isObj(p) || !isStr(p.id) || !isStr(p.file) || !isStr(p.export) || !isStr(p.name) || !isStr(p.studio)) return null;
+  return v as PartInfo[];
+}
+
+const isVec3 = (x: unknown) => Array.isArray(x) && x.length === 3 && x.every(isNum);
+const JOINT_TYPES = ["fastened", "revolute", "slider", "cylindrical", "planar", "ball"];
+
+/** The assembly list: part ids, joint types, finite frames and limits. */
+export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
+  if (!Array.isArray(v)) return null;
+  for (const a of v) {
+    if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
+    for (const p of a.problems) if (!isObj(p) || !isStr(p.message)) return null;
+    for (const j of a.joints) {
+      if (!isObj(j) || !isStr(j.name) || !JOINT_TYPES.includes(j.type as string) || !isStr(j.a) || !isStr(j.b) || typeof j.overlap !== "boolean") return null;
+      if (!Array.isArray(j.value) || !j.value.every(isNum) || !Array.isArray(j.limits)) return null;
+      for (const l of j.limits) if (l !== null && (!isObj(l) || (l.min !== undefined && !isNum(l.min)) || (l.max !== undefined && !isNum(l.max)))) return null;
+      const at = j.at;
+      if (!isObj(at)) return null;
+      if ("frame" in at) {
+        const f = at.frame;
+        if (!isObj(f) || !isVec3(f.origin) || !isVec3(f.z) || !isVec3(f.x)) return null;
+      } else if (!isStr(at.part) || !isStr(at.connector)) return null;
+    }
+  }
+  return v as AssemblyInfo[];
+}
+
 const F32 = (x: unknown) => x instanceof Float32Array;
 const U32 = (x: unknown) => x instanceof Uint32Array;
+
+function validMesh(m: unknown, faces?: number, edges?: number): boolean {
+  if (!isObj(m) || !F32(m.positions) || !F32(m.normals) || !U32(m.indices) || !U32(m.faceRanges) || !F32(m.edgePositions) || !U32(m.edgeRanges)) return false;
+  const pos = m.positions as Float32Array,
+    idx = m.indices as Uint32Array;
+  const nVerts = pos.length / 3;
+  if (pos.length % 3 || idx.length % 3) return false;
+  for (let i = 0; i < idx.length; i++) if (idx[i] >= nVerts) return false;
+  if (faces !== undefined && (m.faceRanges as Uint32Array).length !== faces * 2) return false;
+  if (edges !== undefined && (m.edgeRanges as Uint32Array).length !== edges * 2) return false;
+  return true;
+}
+
+/** Overlaps between parts: part ids, a volume, and a well-formed mesh. */
+export function validateInterferences(v: unknown): Interference[] | null {
+  if (!Array.isArray(v)) return null;
+  for (const x of v) if (!isObj(x) || !isStr(x.a) || !isStr(x.b) || !isNum(x.volume) || (x.mesh !== undefined && !validMesh(x.mesh))) return null;
+  return v as Interference[];
+}
 
 /** Structural validation of a regeneration result (typed arrays, sizes, problems). */
 export function validatePartResult(r: unknown): PartResult | null {
   if (!isObj(r) || !isStr(r.part) || !isStr(r.file) || typeof r.ok !== "boolean" || !Array.isArray(r.problems) || !Array.isArray(r.params)) return null;
   if (!Array.isArray(r.faces) || !Array.isArray(r.edges)) return null;
   for (const p of r.problems) if (!isObj(p) || !isStr(p.message) || (p.severity !== "error" && p.severity !== "warning")) return null;
-  if (r.mesh !== undefined) {
-    const m = r.mesh as Record<string, unknown>;
-    if (!isObj(m) || !F32(m.positions) || !F32(m.normals) || !U32(m.indices) || !U32(m.faceRanges) || !F32(m.edgePositions) || !U32(m.edgeRanges)) return null;
-    const pos = m.positions as Float32Array,
-      idx = m.indices as Uint32Array;
-    const nVerts = pos.length / 3;
-    if (pos.length % 3 || idx.length % 3) return null;
-    for (let i = 0; i < idx.length; i++) if (idx[i] >= nVerts) return null;
-    if ((m.faceRanges as Uint32Array).length !== (r.faces as unknown[]).length * 2) return null;
-    if ((m.edgeRanges as Uint32Array).length !== (r.edges as unknown[]).length * 2) return null;
+  if (r.mesh !== undefined && !validMesh(r.mesh, (r.faces as unknown[]).length, (r.edges as unknown[]).length)) return null;
+  if (r.connectors !== undefined) {
+    if (!isObj(r.connectors)) return null;
+    for (const f of Object.values(r.connectors)) if (!isObj(f) || !isVec3(f.origin) || !isVec3(f.z) || !isVec3(f.x)) return null;
   }
   return r as unknown as PartResult;
 }

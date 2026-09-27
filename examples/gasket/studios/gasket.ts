@@ -1,5 +1,7 @@
 import { part, param, sketch, plane, mm } from "parasocial";
 
+export const name = "Gasket";
+
 export default part("Gasket", ({ color }) => {
   const w = param("width", 70, { unit: mm });
   const d = param("depth", 40, { unit: mm });

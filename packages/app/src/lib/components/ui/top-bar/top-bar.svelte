@@ -6,13 +6,10 @@
 	import { SegmentedControl } from '$lib/components/ui/segmented-control';
 	import { AvatarStack, Avatar, type Person } from '$lib/components/ui/avatar';
 	import { IconButton, Button } from '$lib/components/ui/button';
-	import { Select, type SelectItem } from '$lib/components/ui/select';
 	import { ThemeToggle } from '$lib/components/ui/theme-toggle';
 
 	type Props = {
 		document: string;
-		configurations: SelectItem[];
-		configuration?: string;
 		mode?: 'model' | 'code';
 		agents: Person[];
 		user: Person;
@@ -28,12 +25,10 @@
 	};
 	let {
 		document: docName,
-		configurations,
-		configuration = $bindable('default'),
 		mode = $bindable('model'),
 		agents,
 		user,
-		documentMenu = [{ label: 'Rename' }, { label: 'Duplicate' }, { label: 'Export…', shortcut: ['mod', 'shift', 'E'] }],
+		documentMenu = [{ label: 'Rename' }, { label: 'Duplicate' }, { label: 'Export…', shortcut: ['mod', 'E'] }],
 		onCommand,
 		actions,
 		account,
@@ -57,15 +52,13 @@
 			{#snippet trigger(props)}
 				<button
 					{...props}
-					class="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-control pr-1.5 pl-2 text-ui font-semibold text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
+					class="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-control pr-1.5 pl-2 text-ui font-heading font-medium text-fg transition-colors-fast hover:bg-hover focus-ring data-[state=open]:bg-active"
 				>
 					<span class="truncate">{docName}</span>
 					<ChevronDown size={12} class="shrink-0 text-fg-tertiary" />
 				</button>
 			{/snippet}
 		</DropdownMenu>
-		<span class="h-4 w-px bg-line" aria-hidden="true"></span>
-		<Select variant="ghost" items={configurations} bind:value={configuration} aria-label="Configuration" class="text-fg-secondary" />
 	</div>
 
 	<SegmentedControl

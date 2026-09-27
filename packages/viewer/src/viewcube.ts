@@ -267,8 +267,9 @@ function injectStyles() {
 .ps-vc-edge{border-radius:2px}
 .ps-vc-corner{clip-path:polygon(50% 0,100% 100%,0 100%)}
 /* key-lit shading: bevels turn away from the light, so they pick up a darker tone and the
-   silhouette reads as a solid chamfered block */
-.ps-vc-face::after,.ps-vc-edge::after,.ps-vc-corner::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:#000;opacity:calc(.03 + var(--vc-shade,0) * .2)}
+   silhouette reads as a solid chamfered block. --vc-shade-max (set by the viewer per theme) caps
+   the darkening so no piece sinks into the viewport bg and gets lost */
+.ps-vc-face::after,.ps-vc-edge::after,.ps-vc-corner::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:#000;opacity:min(calc(.03 + var(--vc-shade,0) * .2),var(--vc-shade-max,1))}
 .ps-vc-face span{pointer-events:none;position:relative;z-index:1}
 .ps-vc-face:hover,.ps-vc-edge:hover,.ps-vc-corner:hover{background:var(--vc-glass-hover);color:var(--vc-fg-hover,#18181b)}
 .ps-vc-axis{position:absolute;left:0;top:0;height:2px;transform-origin:0 0;border-radius:1px;pointer-events:none;background:currentColor}

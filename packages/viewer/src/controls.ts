@@ -29,6 +29,8 @@ export class CadControls {
   private gesture: Gesture = null;
   private last = new THREE.Vector2();
   private pivot = new THREE.Vector3();
+  /** Depth (along the view axis) of the point grabbed when a pan starts; pan speed keeps it under the cursor. */
+  private panDepth = 0;
   private anim: { from: CamState; to: CamState; t0: number; dur: number } | null = null;
   private movingTimer: any = null;
   /** for orthographic zoom */
@@ -105,10 +107,9 @@ export class CadControls {
     this.startButtons = e.buttons;
     this.moved = 0;
     this.last.set(e.clientX, e.clientY);
-    if (g === "orbit") {
-      const r = this.el.getBoundingClientRect();
-      this.pivot.copy(this.host.pickPoint(e.clientX - r.left, e.clientY - r.top) ?? this.viewCenterPivot());
-    }
+    const r = this.el.getBoundingClientRect();
+    if (g === "orbit") this.pivot.copy(this.host.pickPoint(e.clientX - r.left, e.clientY - r.top) ?? this.viewCenterPivot());
+    else this.panDepth = this.depthAt(e.clientX - r.left, e.clientY - r.top);
     this.el.setPointerCapture(e.pointerId);
     this.el.addEventListener("pointermove", this.onMove);
     this.el.addEventListener("pointerup", this.onUp);
@@ -131,6 +132,20 @@ export class CadControls {
     return cam.position.clone().add(fwd.multiplyScalar(depth));
   }
 
+  /**
+   * View-axis depth of the surface under (x, y), else of the model center, else of the target.
+   * Pan at this depth moves the grabbed point exactly with the cursor (Onshape-like).
+   */
+  private depthAt(x: number, y: number): number {
+    const cam = this.host.camera();
+    const fwd = cam.getWorldDirection(new THREE.Vector3());
+    for (const p of [this.host.pickPoint(x, y), this.host.sceneCenter?.()]) {
+      const d = p ? p.clone().sub(cam.position).dot(fwd) : 0;
+      if (d > 1e-6) return d;
+    }
+    return cam.position.distanceTo(this.target);
+  }
+
   private moved = 0;
   private startButtons = 0;
   private onMove = (e: PointerEvent) => {
@@ -141,7 +156,7 @@ export class CadControls {
     this.last.set(e.clientX, e.clientY);
     this.moved += Math.abs(dx) + Math.abs(dy);
     if (this.gesture === "orbit") this.orbit(dx, dy, this.pivot);
-    else if (this.gesture === "pan") this.pan(dx, dy);
+    else if (this.gesture === "pan") this.pan(dx, dy, this.panDepth);
   };
 
   private onUp = (e: PointerEvent) => {
@@ -166,8 +181,9 @@ export class CadControls {
     const scale = e.deltaMode === 1 ? 16 : 1;
     const isPinch = e.ctrlKey; // trackpad pinch arrives as ctrl+wheel
     if (this.preset === "trackpad" && !isPinch) {
-      if (e.shiftKey) this.pan(-e.deltaX * scale, -e.deltaY * scale);
-      else this.orbit(-e.deltaX * scale * 0.6, -e.deltaY * scale * 0.6, this.target);
+      const now = performance.now();
+      if (e.shiftKey) this.pan(-e.deltaX * scale, -e.deltaY * scale, this.depthAt(x, y));
+      else if (!this.isCoasting(Math.hypot(e.deltaX, e.deltaY) * scale, now)) this.orbit(-e.deltaX * scale * 0.6, -e.deltaY * scale * 0.6, this.target);
     } else {
       // clamp each event so momentum bursts don't lurch, then accelerate gently while the wheel
       // keeps turning (consecutive events within ~90 ms ramp up to 2.2×)
@@ -182,6 +198,24 @@ export class CadControls {
     }
     this.pulseMoving();
   };
+
+  /**
+   * macOS keeps sending scroll events after the fingers lift (momentum). CAD orbit shouldn't
+   * coast, so once a scroll stream decays smoothly for a few events, drop the rest of it until
+   * the stream ends (a gap) or picks up again (fingers back on the pad). Browsers don't expose
+   * the momentum phase, so this is a heuristic on the delta envelope.
+   */
+  private isCoasting(mag: number, now: number): boolean {
+    const c = this.coast;
+    if (now - c.t > 120) c.prev = Infinity, c.decays = 0, c.drop = false; // a new stream
+    c.t = now;
+    if (mag < c.prev * 0.97 && c.prev !== Infinity) c.decays++;
+    else if (mag > c.prev * 1.03) c.decays = 0, c.drop = false;
+    c.prev = mag;
+    if (c.decays >= 4) c.drop = true;
+    return c.drop;
+  }
+  private coast = { t: 0, prev: Infinity, decays: 0, drop: false };
 
   private lastWheel = 0;
   private wheelSign = 0;
@@ -217,14 +251,14 @@ export class CadControls {
     this.host.changed();
   }
 
-  pan(dx: number, dy: number) {
+  /** Pan by screen pixels; in perspective, points at view-axis `depth` track the cursor exactly. */
+  pan(dx: number, dy: number, depth = this.host.camera().position.distanceTo(this.target)) {
     const cam = this.host.camera();
     const h = this.el.clientHeight || 1;
     let worldPerPx: number;
     if ((cam as THREE.PerspectiveCamera).isPerspectiveCamera) {
       const p = cam as THREE.PerspectiveCamera;
-      const dist = cam.position.distanceTo(this.target);
-      worldPerPx = (2 * dist * Math.tan(THREE.MathUtils.degToRad(p.fov / 2))) / h;
+      worldPerPx = (2 * depth * Math.tan(THREE.MathUtils.degToRad(p.fov / 2))) / h;
     } else worldPerPx = this.orthoHeight / h;
     const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
     const upv = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
@@ -238,20 +272,18 @@ export class CadControls {
   /** Zoom by `factor` (>1 = out) toward the point under (x, y). */
   zoomAt(x: number, y: number, factor: number) {
     const cam = this.host.camera();
-    const hit = this.host.pickPoint(x, y);
+    const hit = this.zoomFocus(x, y);
     const w = this.el.clientWidth,
       h = this.el.clientHeight;
     if ((cam as THREE.PerspectiveCamera).isPerspectiveCamera) {
       const focus = hit ?? this.rayPointAtTargetDepth(x, y, w, h);
       const dist = cam.position.distanceTo(focus);
-      const newDist = THREE.MathUtils.clamp(dist * factor, 0.05, 1e6);
-      const dir = cam.position.clone().sub(focus).normalize();
-      const newPos = focus.clone().add(dir.multiplyScalar(newDist));
-      const delta = newPos.clone().sub(cam.position);
-      cam.position.copy(newPos);
-      // keep the target on the view axis, moved proportionally
-      this.target.add(delta.multiplyScalar(1));
-      if (cam.position.distanceTo(this.target) < 0.05) this.target.copy(cam.position).add(new THREE.Vector3().subVectors(focus, cam.position).normalize().multiplyScalar(1));
+      const k = THREE.MathUtils.clamp(dist * factor, 0.05, 1e6) / Math.max(dist, 1e-9);
+      // scale the camera and the target about the focus by the same factor: the view direction is
+      // unchanged and the camera→target distance follows the zoom, so everything that reads it
+      // (pan speed, empty-space zoom, orbit about the target, ortho size) stays in step
+      cam.position.sub(focus).multiplyScalar(k).add(focus);
+      this.target.sub(focus).multiplyScalar(k).add(focus);
     } else {
       const before = this.screenToOrthoWorld(x, y, w, h);
       this.orthoHeight = THREE.MathUtils.clamp(this.orthoHeight * factor, 0.01, 1e6);
@@ -263,6 +295,24 @@ export class CadControls {
     }
     cam.updateMatrixWorld();
     this.host.changed();
+  }
+
+  /**
+   * The point under the cursor for zooming, reused across a wheel burst (same pointer, events
+   * <150 ms apart): a pick stalls on the GPU, and zooming about a point keeps the cursor ray fixed,
+   * so the answer doesn't change until the pointer moves.
+   */
+  private zoomHit: { x: number; y: number; t: number; p: THREE.Vector3 | null } | null = null;
+  private zoomFocus(x: number, y: number) {
+    const now = performance.now(),
+      z = this.zoomHit;
+    if (z && z.x === x && z.y === y && now - z.t < 150) {
+      z.t = now;
+      return z.p?.clone() ?? null;
+    }
+    const p = this.host.pickPoint(x, y);
+    this.zoomHit = { x, y, t: now, p: p?.clone() ?? null };
+    return p;
   }
 
   private rayPointAtTargetDepth(x: number, y: number, w: number, h: number) {
@@ -330,10 +380,18 @@ export class CadControls {
   }
 
   stopAnim() {
-    if (this.anim) {
-      this.anim = null;
-      this.host.moving(false);
+    if (!this.anim) return;
+    this.anim = null;
+    // `up` is blended mid-animation, so the camera can be slightly rolled; orbit only rotates from
+    // wherever it is, so level the horizon again (unless looking straight down/up, where Z-up is degenerate)
+    const cam = this.host.camera();
+    if (Math.abs(cam.getWorldDirection(new THREE.Vector3()).z) < 0.999) {
+      cam.up.set(0, 0, 1);
+      cam.lookAt(this.target);
+      cam.updateMatrixWorld();
+      this.host.changed();
     }
+    this.host.moving(false);
   }
 
   apply(s: CamState) {

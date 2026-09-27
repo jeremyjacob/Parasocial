@@ -9,9 +9,9 @@
 
 <main class="grid min-h-dvh place-items-center bg-canvas px-4">
 	<div class="w-full max-w-[380px] rounded-dialog border border-line-subtle bg-panel p-6 shadow-dialog" data-testid="consent">
-		<div class="mb-5 flex items-center gap-2"><Logo /><span class="text-title font-semibold">Parasocial</span></div>
+		<div class="mb-5 flex items-center gap-2"><Logo /><span class="text-title font-heading font-medium">Parasocial</span></div>
 		{#if data.error}
-			<h1 class="text-heading font-semibold">Can't connect</h1>
+			<h1 class="text-heading">Can't connect</h1>
 			<p class="mt-2 text-body text-fg-secondary">{data.error}</p>
 		{:else}
 			<div class="mb-4 flex items-center gap-3 rounded-md bg-hover p-3">
@@ -21,7 +21,7 @@
 					<div class="truncate text-label text-fg-secondary">{data.redirectHost}</div>
 				</div>
 			</div>
-			<h1 class="text-title font-semibold">Allow {data.clientName} to work on your documents?</h1>
+			<h1 class="text-title">Allow {data.clientName} to work on your documents?</h1>
 			<ul class="mt-3 flex flex-col gap-1.5 text-ui text-fg-secondary">
 				<li>Read your documents, notes and scripts</li>
 				<li>Edit scripts and params, reply to notes</li>

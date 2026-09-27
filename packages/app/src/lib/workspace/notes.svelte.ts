@@ -33,6 +33,12 @@ export class NotesController {
 
 	constructor(private ws: WorkspaceState) {}
 
+	/** Keep draft IDs through undo/redo; only existing, unattached strokes can be posted or discarded. */
+	get draftStrokeIDs(): string[] {
+		const live = new Set(this.strokes.filter((s) => !s.noteID).map((s) => s.id));
+		return (this.draft?.strokeIDs ?? []).filter((id) => live.has(id));
+	}
+
 	/** Stable numbering: #1, #2… by creation order. */
 	numberOf(noteID: string): number {
 		const all = [...this.ws.notes].sort((a, b) => a.createdAt - b.createdAt);
@@ -68,18 +74,18 @@ export class NotesController {
 	}
 
 	async discard() {
-		const d = this.draft;
+		const strokeIDs = this.draftStrokeIDs;
 		this.draft = null;
 		clearTimeout(this.composerTimer);
 		this.composerShown = true;
 		// Esc discards the draft: drop its strokes too
-		for (const id of d?.strokeIDs ?? []) this.ws.zero.mutate(mutators.markup.remove({ id }));
+		for (const id of strokeIDs) this.ws.zero.mutate(mutators.markup.remove({ id }));
 	}
 
 	async post(text: string) {
 		const d = this.draft;
 		const ws = this.ws;
-		if (!d || !ws.viewer || !ws.engine) return;
+		if (!d || !ws.viewer || this.posting) return false;
 		this.posting = true;
 		try {
 			// names for the targets (stable names are how notes find their geometry again)
@@ -87,8 +93,8 @@ export class NotesController {
 				d.targets.map(async (t) => {
 					const r = t.ref;
 					if ((r.kind as string) === 'part') return { kind: 'part' as const, part: r.part, name: r.part, point: t.point, normal: t.normal };
-					const desc = await ws.engine!.describe(r.part, r.kind, r.index);
-					return { kind: r.kind, part: r.part, name: desc.name, point: t.point, normal: t.normal };
+					const name = await this.targetName(r);
+					return { kind: r.kind, part: r.part, name, point: t.point, normal: t.normal };
 				})
 			);
 			// snapshot of the view (with markup) → upload first, then reference (§3)
@@ -106,24 +112,36 @@ export class NotesController {
 				sectionPlane: ws.viewer.getSection() ?? undefined,
 				snapshot: hash
 			};
-			await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs: d.strokeIDs } as any), 'Add note').then((r) => r.client);
+			await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs: this.draftStrokeIDs } as any), 'Add note').then((r) => r.client);
 			this.draft = null;
 			this.active = id;
 			ws.tool = 'select';
+			return true;
 		} catch (e) {
 			toast.error((e as Error).message);
+			return false;
 		} finally {
 			this.posting = false;
 		}
+	}
+
+	/** Names belong to the displayed mesh, which may be available before the engine boots. */
+	private async targetName(ref: EntityRef): Promise<string> {
+		if ((ref.kind as string) === 'part') return ref.part;
+		const names = this.ws.results[ref.part]?.names;
+		const cached = ref.kind === 'face' || ref.kind === 'edge' ? names?.[ref.kind]?.[ref.index] : undefined;
+		if (cached) return cached;
+		if (!this.ws.engine || !this.ws.kernelReady) throw new Error("The model is still loading. Your note is kept; try again once it's ready.");
+		return (await this.ws.engine.describe(ref.part, ref.kind, ref.index)).name;
 	}
 
 	/** Re-anchor an orphaned note to a newly picked entity. */
 	async reanchor(noteID: string, t: DraftTarget) {
 		const ws = this.ws;
 		const n = ws.notes.find((x) => x.id === noteID);
-		if (!n || !ws.engine) return;
+		if (!n) return;
 		const r = t.ref;
-		const name = (r.kind as string) === 'part' ? r.part : (await ws.engine.describe(r.part, r.kind, r.index)).name;
+		const name = await this.targetName(r);
 		const anchor = { ...n.anchor, targets: [{ kind: r.kind, part: r.part, name, point: t.point, normal: t.normal }] };
 		const { snapshot: _s, ...rest } = anchor as any;
 		await ws.mutate(mutators.note.reanchor({ noteID, anchor: rest } as any), 'Re-anchor note');
@@ -149,7 +167,6 @@ export class NotesController {
 	/** Resolve every note's targets against the current geometry and place pins. */
 	async resolveAll() {
 		const ws = this.ws;
-		if (!ws.engine || !ws.kernelReady) return;
 		const run = ++this.resolving;
 		const pins: Pin[] = [];
 		for (const n of ws.notes) {
@@ -157,10 +174,12 @@ export class NotesController {
 			const part = t?.part ?? ws.parts[0];
 			if (!t || !part) continue;
 			let point = t.point as Vec3;
+			const unresolved = n.orphaned ? 'orphaned' : 'unknown';
 			let status = 'orphaned';
+			if (!ws.engine || !ws.kernelReady) status = unresolved;
 			const partOk = !!ws.results[part] && !ws.results[part].empty;
 			if (partOk && (t.kind === 'part' || t.kind === 'point')) status = 'name';
-			else if (partOk) {
+			else if (partOk && ws.engine && ws.kernelReady) {
 				try {
 					const [res] = await ws.engine.resolve(part, [{ kind: t.kind, name: t.name, query: t.query, point: t.point, normal: t.normal } as any]);
 					status = res.status;
@@ -170,7 +189,7 @@ export class NotesController {
 					}
 				} catch {
 					// an engine failure is not evidence the geometry is gone: keep the last known state
-					status = n.orphaned ? 'orphaned' : 'unknown';
+					status = unresolved;
 				}
 			}
 			if (run !== this.resolving) return; // a newer resolution started

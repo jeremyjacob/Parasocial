@@ -1,0 +1,22 @@
+{
+  "volume": 10740,
+  "area": 7910,
+  "faces": 12,
+  "edges": 26,
+  "vertices": 16,
+  "valid": true,
+  "faceNames": [
+    "box:lid/plate · xmax",
+    "box:lid/plate · xmin",
+    "box:lid/plate · ymax",
+    "box:lid/plate · ymin",
+    "box:lid/plate · ymin",
+    "box:lid/plate · zmax",
+    "box:lid/plate · zmin",
+    "box:lid/tab · xmax",
+    "box:lid/tab · xmin",
+    "box:lid/tab · ymin",
+    "box:lid/tab · zmax",
+    "box:lid/tab · zmin"
+  ]
+}

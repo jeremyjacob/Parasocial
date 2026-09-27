@@ -13,8 +13,11 @@ import { withDepthBias } from "./depthbias";
 import { InfiniteGrid } from "./grid";
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { HaloPass } from "./halo";
+import { scaleAO, setupAO, sizeAO } from "./ao";
+import { screenShading } from "./shading";
 
-export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean };
+/** A pencil stroke; with `part`, its points are in that part's coordinates and move with it. */
+export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean; part?: string };
 
 export type DisplayMode = "shaded" | "shadedEdges" | "wireframe" | "hiddenLine";
 export type SelectionFilter = { face: boolean; edge: boolean; vertex: boolean; part: boolean };
@@ -34,13 +37,37 @@ export type ViewerOptions = {
 };
 
 type Highlight = { refs: EntityRef[] };
+type AOBuffer = { pass: GTAOPass; halo: THREE.WebGLRenderTarget; haloScratch: THREE.WebGLRenderTarget; scale: number; radius: number };
 
 /** Orange tint on selected faces and parts alike: strong, with shading still visible. */
 const SELECTED_TINT = 0.75;
 /** Origin axis lines, shared with the view cube's triad so the two match. */
 const AXIS_OPACITY = 0.375;
+/** View cube face colors (rgba); translucent, so the viewport bg shows through a little. */
+const VC_FACE_DARK = [39, 39, 42, 0.92] as const;
+const VC_FACE_LIGHT = [255, 255, 255, 0.94] as const;
+/** Minimum luma gap (0..1, sRGB) the darkest shaded cube piece keeps above the viewport bg. */
+const VC_SHADE_GAP = 0.04;
+
+/**
+ * The strongest darkening the view cube's key-light shading may apply before a piece would sink
+ * to within VC_SHADE_GAP of the viewport bg and get lost against it. The shade is a black overlay,
+ * which scales the composited face color (face over bg, as the cube's --vc-glass does) uniformly.
+ */
+function viewCubeShadeMax(face: readonly number[], background: string): number {
+  const hex = new THREE.Color(background).getHex(); // sRGB
+  const bg = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+  const a = face[3] * 0.88; // --vc-glass thins the face to 88%
+  const luma = (c: readonly number[]) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+  const faceL = luma([0, 1, 2].map((i) => face[i] * a + bg[i] * (1 - a)));
+  const bgL = luma(bg);
+  if (faceL <= bgL) return 1; // cube darker than the bg: darkening only moves it further away
+  return Math.max(0, 1 - (bgL + VC_SHADE_GAP) / faceL);
+}
 /** Faces-only render layer: the first phase of the AO frame (see renderShaded). */
 const FACE_LAYER = 2;
+/** The grid renders before the scene, without contributing depth. */
+const BACKGROUND_LAYER = 3;
 
 export class Viewer {
   readonly renderer: THREE.WebGLRenderer;
@@ -81,12 +108,26 @@ export class Viewer {
   private ro: ResizeObserver;
   private disposed = false;
   stats = { frames: 0, lastFrameMs: 0, lastPickMs: 0 };
-  /** Subtle ambient occlusion, dropped while the camera moves (§9). */
+  /** Ambient occlusion + depth halo, every frame; a cheaper halo while the camera moves (§9). */
   ao = true;
-  private aoPass: GTAOPass | null = null;
+  /** AO at device resolution (at rest) and at CSS resolution (camera moving). */
+  private aoFull: AOBuffer | null = null;
+  private aoFast: AOBuffer | null = null;
   private haloPass: HaloPass | null = null;
+  private faceVis: [THREE.Mesh, boolean][] = [];
   private moving = false;
   private aoEnabledByDepth = true;
+  /** Pixel ratio at rest; motion drops to 1× when frames run long, restored when it settles. */
+  private baseDpr = 1;
+  private lowRes = false;
+  private slowFrames = 0;
+  private lastTick = 0;
+  private boundsCache: THREE.Box3 | null = null;
+  private sphereCache = new THREE.Sphere();
+  /** Assembly poses: part -> transform from its modeled position (absent = identity). */
+  private transforms = new Map<string, THREE.Matrix4>();
+  /** Overlap volumes between parts, red; each rides along with its first part. */
+  private overlaps = new THREE.Group();
 
   constructor(container: HTMLElement, o: ViewerOptions = {}) {
     this.container = container;
@@ -103,7 +144,8 @@ export class Viewer {
     } catch {}
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", stencil: true, reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
     (this.renderer as any).__psReversed = reversed;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, o.maxDpr ?? 2));
+    this.baseDpr = Math.min(window.devicePixelRatio || 1, o.maxDpr ?? 2);
+    this.renderer.setPixelRatio(this.baseDpr);
     // GTAO handles reversed-Z but not the logarithmic-depth fallback
     this.aoEnabledByDepth = reversed;
     this.ao = (o as any).ao ?? true;
@@ -144,9 +186,10 @@ export class Viewer {
     this.scene.add(this.persp, this.ortho);
 
     this.grid = new THREE.Group();
+    this.groundGrid.mesh.layers.set(BACKGROUND_LAYER);
     this.grid.add(this.groundGrid.mesh);
     this.triad = new THREE.Group();
-    this.scene.add(this.grid, this.triad, this.markup);
+    this.scene.add(this.grid, this.triad, this.markup, this.overlaps);
     this.markup.renderOrder = 4;
 
     this.controls = new CadControls(canvas, {
@@ -157,11 +200,7 @@ export class Viewer {
         return b.isEmpty() ? null : b.getCenter(new THREE.Vector3());
       },
       changed: () => this.syncCameras(),
-      moving: (on) => {
-        this.moving = on;
-        if (!on) this.requestRender(); // restore AO once the camera stops
-        this.emit("moving", on);
-      },
+      moving: (on) => this.setMoving(on),
     });
     this.controls.preset = o.nav ?? "onshape";
     this.controls.reducedMotion = o.reducedMotion ?? matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -171,8 +210,8 @@ export class Viewer {
         container,
         (dir) => this.setViewDir(dir),
         (dx, dy, phase) => {
-          if (phase === "start") this.controls.stopAnim(), this.emit("moving", true);
-          else if (phase === "end") this.emit("moving", false);
+          if (phase === "start") this.controls.stopAnim(), this.setMoving(true);
+          else if (phase === "end") this.setMoving(false);
           else this.controls.orbit(dx, dy, this.controls.target);
         },
       );
@@ -188,12 +227,29 @@ export class Viewer {
   }
 
   // ---------- events ----------
-  on(ev: "moving" | "camera" | "rendered", fn: (e: any) => void) {
+  on(ev: "moving" | "camera" | "rendered" | "poses", fn: (e: any) => void) {
     (this.listeners[ev] ??= new Set()).add(fn);
     return () => this.listeners[ev].delete(fn);
   }
   private emit(ev: string, e: unknown) {
     this.listeners[ev]?.forEach((f) => f(e));
+  }
+
+  private setMoving(on: boolean) {
+    this.moving = on;
+    this.slowFrames = 0;
+    if (!on) {
+      // full quality once the camera stops: the full halo, and full resolution if motion dropped it
+      if (this.lowRes) this.setLowRes(false);
+      else this.requestRender();
+    }
+    this.emit("moving", on);
+  }
+
+  private setLowRes(on: boolean) {
+    this.lowRes = on;
+    this.renderer.setPixelRatio(on ? 1 : this.baseDpr);
+    this.resize();
   }
 
   get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
@@ -230,6 +286,7 @@ export class Viewer {
     if (d.dim) this.dimmed.add(d.id);
     else this.dimmed.delete(d.id);
     p.group.visible = !this.hidden.has(d.id);
+    this.placeGroup(p.group, d.id);
     this.scene.add(p.group);
     // drop highlights that no longer exist
     const valid = (r: EntityRef) => r.part !== d.id || this.exists(r);
@@ -237,6 +294,7 @@ export class Viewer {
     if (this.preselect && !valid(this.preselect)) this.preselect = null;
     this.errors = this.errors.filter(valid);
     this.restyle(d.id);
+    this.boundsCache = null;
     if (this.section) this.applyClip(p);
     this.updateGrid();
     this.requestRender();
@@ -250,6 +308,7 @@ export class Viewer {
     this.parts.delete(id);
     this.slots[p.slot] = null;
     this.selection.refs = this.selection.refs.filter((r) => r.part !== id);
+    this.boundsCache = null;
     this.requestRender();
   }
 
@@ -278,12 +337,16 @@ export class Viewer {
     else this.hidden.add(id);
     const p = this.parts.get(id);
     if (p) p.group.visible = visible;
+    this.syncOverlaps();
+    this.boundsCache = null;
     this.requestRender();
   }
 
   /** Show only these parts (empty = show all). */
   isolate(ids: string[]) {
     for (const [id, p] of this.parts) p.group.visible = (!ids.length || ids.includes(id)) && !this.hidden.has(id);
+    this.syncOverlaps();
+    this.boundsCache = null;
     this.requestRender();
   }
 
@@ -400,7 +463,8 @@ export class Viewer {
         break;
     }
     p.faceMesh.userData.shown = p.faceMesh.visible;
-    const sil = this.mode !== "wireframe" && !this.dimmed.has(p.id);
+    // the silhouette is an inverted hull: behind see-through faces it would fill the part solid
+    const sil = this.mode !== "wireframe" && !this.dimmed.has(p.id) && !p.translucent;
     p.setSilhouette(sil, new THREE.Color(t.silhouette));
     p.silhouette.userData.shown = sil;
   }
@@ -416,7 +480,9 @@ export class Viewer {
     const t = this.theme;
     this.scene.background = new THREE.Color(t.background);
     this.scene.environmentIntensity = t.dark ? 0.34 : 0.4;
-    this.container.style.setProperty("--vc-face", t.dark ? "rgba(39,39,42,.92)" : "rgba(255,255,255,.94)");
+    const face = t.dark ? VC_FACE_DARK : VC_FACE_LIGHT;
+    this.container.style.setProperty("--vc-face", `rgba(${face.join(",")})`);
+    this.container.style.setProperty("--vc-shade-max", String(+viewCubeShadeMax(face, t.background).toFixed(4)));
     this.container.style.setProperty("--vc-face-hover", t.dark ? "#3f3f46" : "#ffffff");
     this.container.style.setProperty("--vc-border", t.dark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.12)");
     this.container.style.setProperty("--vc-fg", t.dark ? "#a1a1aa" : "#71717a");
@@ -436,9 +502,14 @@ export class Viewer {
     to.position.copy(from.position);
     to.up.copy(from.up);
     to.lookAt(this.controls.target);
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
     if (ortho) {
       const d = from.position.distanceTo(this.controls.target);
-      this.controls.orthoHeight = 2 * d * Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
+      this.controls.orthoHeight = 2 * d * tanHalf;
+    } else {
+      // ortho zoom doesn't move the camera: put it where the perspective view shows the same height
+      const dir = from.position.clone().sub(this.controls.target).normalize();
+      to.position.copy(this.controls.target).add(dir.multiplyScalar(this.controls.orthoHeight / (2 * tanHalf)));
     }
     this.syncCameras();
   }
@@ -453,14 +524,25 @@ export class Viewer {
   // ---------- views ----------
   /** Model bounds of visible parts. */
   bounds(parts?: string[]): THREE.Box3 {
+    if (!parts && this.boundsCache) return this.boundsCache.clone();
     const box = new THREE.Box3();
     for (const [id, p] of this.parts) {
       if (parts && !parts.includes(id)) continue;
       if (!p.group.visible) continue;
       const b = p.faceMesh.geometry.boundingBox;
-      if (b) box.union(b);
+      if (b) box.union(b.clone().applyMatrix4(p.group.matrix));
+    }
+    if (!parts) {
+      this.boundsCache = box.clone();
+      box.getBoundingSphere(this.sphereCache);
     }
     return box;
+  }
+
+  /** Bounding sphere of the visible model (cached with bounds(); don't mutate). */
+  private modelSphere(): THREE.Sphere {
+    if (!this.boundsCache) this.bounds();
+    return this.sphereCache;
   }
 
   /** Fit the camera to `box` (default: everything), keeping the view direction. */
@@ -481,7 +563,8 @@ export class Viewer {
     this.requestRender();
   }
 
-  fitSelection(animate = true) {
+  /** Fit the selection; `orient` also turns the view to look along the selected faces' mean normal. */
+  fitSelection(animate = true, orient = false) {
     const box = new THREE.Box3();
     const v = new THREE.Vector3();
     for (const r of this.selection.refs) {
@@ -490,14 +573,39 @@ export class Viewer {
       if (r.kind === "face") {
         const lo = p.faceVerts[r.index * 2],
           cnt = p.faceVerts[r.index * 2 + 1];
-        for (let i = lo; i < lo + cnt; i++) box.expandByPoint(v.fromArray(p.data.mesh.positions, i * 3));
+        for (let i = lo; i < lo + cnt; i++) box.expandByPoint(v.fromArray(p.data.mesh.positions, i * 3).applyMatrix4(p.group.matrix));
       } else if (r.kind === "edge") {
         const s = p.data.mesh.edgeRanges[r.index * 2],
           c = p.data.mesh.edgeRanges[r.index * 2 + 1];
-        for (let i = s; i < s + c; i++) box.expandByPoint(v.fromArray(p.data.mesh.edgePositions, i * 3));
-      } else if (p.faceMesh.geometry.boundingBox) box.union(p.faceMesh.geometry.boundingBox);
+        for (let i = s; i < s + c; i++) box.expandByPoint(v.fromArray(p.data.mesh.edgePositions, i * 3).applyMatrix4(p.group.matrix));
+      } else if (p.faceMesh.geometry.boundingBox) box.union(p.faceMesh.geometry.boundingBox.clone().applyMatrix4(p.group.matrix));
     }
-    if (!box.isEmpty()) this.fit(box, animate);
+    if (!box.isEmpty()) this.fit(box, animate, (orient && this.selectionNormal()) || undefined);
+  }
+
+  /** Mean outward normal of the selected faces (each area-weighted, then averaged), or null if none/degenerate. */
+  selectionNormal(): THREE.Vector3 | null {
+    const sum = new THREE.Vector3();
+    const n = new THREE.Vector3(),
+      a = new THREE.Vector3(),
+      b = new THREE.Vector3(),
+      c = new THREE.Vector3();
+    for (const r of this.selection.refs) {
+      const p = this.parts.get(r.part);
+      if (!p || r.kind !== "face") continue;
+      const m = p.data.mesh;
+      const start = m.faceRanges[r.index * 2],
+        count = m.faceRanges[r.index * 2 + 1];
+      n.set(0, 0, 0);
+      for (let i = start; i < start + count; i += 3) {
+        a.fromArray(m.positions, m.indices[i] * 3);
+        b.fromArray(m.positions, m.indices[i + 1] * 3).sub(a);
+        c.fromArray(m.positions, m.indices[i + 2] * 3).sub(a);
+        n.add(b.cross(c));
+      }
+      if (n.lengthSq() > 0) sum.add(n.normalize().transformDirection(p.group.matrix));
+    }
+    return sum.lengthSq() > 1e-12 ? sum.normalize() : null;
   }
 
   /** Fit all; if the view is already fitted (nothing would move), go to the default iso view instead. */
@@ -533,6 +641,93 @@ export class Viewer {
     animate ? this.controls.animateTo(to) : this.controls.apply(to);
   }
 
+  // ---------- assembly poses ----------
+  /**
+   * Move a part from where it's modeled (assembly drag): a column-major 4×4 rigid transform, or
+   * null for the modeled position. Picking, bounds, pins and highlights all follow.
+   */
+  setPartTransform(id: string, m: ArrayLike<number> | null) {
+    const prev = this.transforms.get(id);
+    if (!m) {
+      if (!prev) return;
+      this.transforms.delete(id);
+    } else if (prev) prev.fromArray(m as number[]);
+    else this.transforms.set(id, new THREE.Matrix4().fromArray(m as number[]));
+    const p = this.parts.get(id);
+    if (p) {
+      this.placeGroup(p.group, id);
+      if (this.section) this.applyClip(p);
+    }
+    const g = this.ghosts.get(id);
+    if (g) this.placeGroup(g, id);
+    for (const o of this.overlaps.children) if (o.userData.part === id) this.placeGroup(o, id);
+    for (const l of this.markup.children) if (l.userData.part === id) this.placeGroup(l, id);
+    this.boundsCache = null;
+    this.requestRender();
+    this.emit("poses", id);
+  }
+
+  /** A part's transform from its modeled position (identity when it hasn't moved). */
+  partTransform(id: string): THREE.Matrix4 {
+    return this.transforms.get(id)?.clone() ?? new THREE.Matrix4();
+  }
+
+  /** Part coordinates -> world. */
+  toWorld(part: string, v: THREE.Vector3): THREE.Vector3 {
+    const m = this.transforms.get(part);
+    return m ? v.clone().applyMatrix4(m) : v.clone();
+  }
+
+  /** World -> part coordinates. */
+  toLocal(part: string, v: THREE.Vector3): THREE.Vector3 {
+    const m = this.transforms.get(part);
+    return m ? v.clone().applyMatrix4(m.clone().invert()) : v.clone();
+  }
+
+  private placeGroup(o: THREE.Object3D, part: string) {
+    const m = this.transforms.get(part);
+    o.matrixAutoUpdate = false;
+    if (m) o.matrix.copy(m);
+    else o.matrix.identity();
+    o.matrixWorldNeedsUpdate = true;
+  }
+
+  /**
+   * Where parts overlap (interference): red volumes, each mesh in part `a`'s coordinates. Drawn
+   * solid where visible and faintly through whatever covers them, so buried overlaps still read.
+   */
+  setInterferences(list: { a: string; b: string; mesh: import("./part").PartMesh }[]) {
+    for (const o of [...this.overlaps.children]) {
+      o.traverse((c: any) => (c.geometry?.dispose(), c.material?.dispose?.()));
+      this.overlaps.remove(o);
+    }
+    const red = new THREE.Color(this.theme.error);
+    for (const x of list) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(x.mesh.positions, 3));
+      g.setAttribute("normal", new THREE.BufferAttribute(x.mesh.normals, 3));
+      g.setIndex(new THREE.BufferAttribute(x.mesh.indices, 1));
+      const grp = new THREE.Group();
+      // through other geometry: faint
+      const ghost = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: red, transparent: true, opacity: 0.28, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
+      ghost.renderOrder = 8;
+      // where it's the nearest surface: solid, lit a little so its shape reads
+      const solid = new THREE.Mesh(g, withDepthBias(new THREE.MeshStandardMaterial({ color: red, emissive: red, emissiveIntensity: 0.35, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }), 0.0005));
+      solid.renderOrder = 9;
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute("position", new THREE.BufferAttribute(x.mesh.edgePositions, 3));
+      const edges = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: red, transparent: true, opacity: 0.9, depthTest: false }));
+      edges.renderOrder = 10;
+      grp.add(ghost, solid, edges);
+      grp.userData.part = x.a;
+      grp.userData.pair = [x.a, x.b];
+      this.placeGroup(grp, x.a);
+      this.overlaps.add(grp);
+    }
+    this.syncOverlaps();
+    this.requestRender();
+  }
+
   // ---------- markup (pencil strokes) ----------
   /** Replace the drawn markup strokes (world coordinates). */
   setMarkup(strokes: MarkupStroke[]) {
@@ -542,14 +737,24 @@ export class Viewer {
     }
     this.markup.clear();
     for (const s of strokes) {
-      if (s.points.length < 2) continue;
+      if (!s.points.length) continue;
       const g = new LineGeometry();
-      g.setPositions(s.points.flat());
+      // A click is a dot. A tiny segment gives Line2 round caps without a zero-length direction.
+      let points = s.points;
+      if (points.length === 1) {
+        const point = new THREE.Vector3(...points[0]);
+        const start = s.part ? this.toWorld(s.part, point) : point;
+        const end = start.clone().addScaledVector(new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0), Math.max(1, this.camera.position.distanceTo(start)) * 1e-6);
+        points = [points[0], (s.part ? this.toLocal(s.part, end) : end).toArray() as [number, number, number]];
+      }
+      g.setPositions(points.flat());
       const m = withDepthBias(new LineMaterial({ color: new THREE.Color(s.color), linewidth: s.width ?? 3, resolution: this.resolution, worldUnits: false, transparent: true, opacity: s.dim ? 0.35 : 0.95, depthTest: true }), 0.001) as LineMaterial;
       const l = new Line2(g, m);
       l.computeLineDistances();
       l.renderOrder = 4;
       l.userData.id = s.id;
+      l.userData.part = s.part;
+      if (s.part) this.placeGroup(l, s.part);
       this.markup.add(l);
     }
     this.requestRender();
@@ -563,13 +768,68 @@ export class Viewer {
     this.renderer.localClippingEnabled = true;
     this.section = plane ? new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3().fromArray(plane.normal).normalize().negate(), new THREE.Vector3().fromArray(plane.origin)) : null;
     for (const p of this.parts.values()) this.applyClip(p);
+    this.syncOverlaps();
     this.requestRender();
   }
 
+  /** Overlap volumes show while both of their parts do, and are cut by the section plane. */
+  private syncOverlaps() {
+    for (const o of this.overlaps.children) {
+      const [a, b] = o.userData.pair as [string, string];
+      o.visible = !!this.parts.get(a)?.group.visible && !!this.parts.get(b)?.group.visible;
+      o.traverse((c: any) => {
+        if (!c.material) return;
+        c.material.clippingPlanes = this.section ? [this.section] : null;
+        c.material.needsUpdate = true;
+      });
+    }
+  }
+
   private applyClip(p: PartObject) {
-    const cap = new THREE.Color(this.theme.dark ? "#44444a" : "#d2d3d8");
-    const hatch = new THREE.Color(this.theme.dark ? "#66666e" : "#a2a3aa");
-    p.setClip(this.section ? [this.section] : [], cap, hatch, this.renderer.getPixelRatio());
+    if (!this.section) return p.setClip([]);
+    // varied per part (stable across regenerations: keyed on the id), like drafting section hatches
+    let h = 2166136261;
+    for (let i = 0; i < p.id.length; i++) h = Math.imul(h ^ p.id.charCodeAt(i), 16777619);
+    h >>>= 0;
+    const angles = [45, 135, 60, 120, 30, 150, 75, 105];
+    const scales = [1, 0.75, 1.3];
+    // ~20 lines across a part's cut, whatever its size
+    const spacing = Math.max(p.faceMesh.geometry.boundingSphere?.radius ?? 1, 1e-3) / 16;
+    p.setClip([this.section], { angle: (angles[h % angles.length] * Math.PI) / 180, spacing: spacing * scales[(h >>> 8) % scales.length], pixelRatio: this.renderer.getPixelRatio() });
+  }
+
+  /** Plane of a planar face (outward normal, centroid), or null if the face is curved. */
+  facePlane(ref: EntityRef): { origin: number[]; normal: number[] } | null {
+    const p = this.parts.get(ref.part);
+    if (!p || ref.kind !== "face") return null;
+    const m = p.data.mesh;
+    const start = m.faceRanges[ref.index * 2],
+      count = m.faceRanges[ref.index * 2 + 1];
+    const a = new THREE.Vector3(),
+      b = new THREE.Vector3(),
+      c = new THREE.Vector3(),
+      n = new THREE.Vector3(),
+      o = new THREE.Vector3();
+    let area = 0;
+    for (let i = start; i < start + count; i += 3) {
+      a.fromArray(m.positions, m.indices[i] * 3);
+      b.fromArray(m.positions, m.indices[i + 1] * 3);
+      c.fromArray(m.positions, m.indices[i + 2] * 3);
+      const tn = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+      const ta = tn.length() / 2;
+      n.add(tn);
+      o.addScaledVector(a.add(b).add(c).divideScalar(3), ta);
+      area += ta;
+    }
+    if (area <= 0 || n.lengthSq() === 0) return null;
+    n.normalize();
+    o.divideScalar(area);
+    // planar: every vertex lies on the mean plane (within a hair of the face's size)
+    const lo = p.faceVerts[ref.index * 2],
+      cnt = p.faceVerts[ref.index * 2 + 1];
+    const tol = Math.max(Math.sqrt(area) * 1e-4, 1e-6);
+    for (let v = lo; v < lo + cnt; v++) if (Math.abs(a.fromArray(m.positions, v * 3).sub(o).dot(n)) > tol) return null;
+    return { origin: o.applyMatrix4(p.group.matrix).toArray(), normal: n.transformDirection(p.group.matrix).toArray() };
   }
 
   getSection() {
@@ -626,6 +886,7 @@ export class Viewer {
       const grp = new THREE.Group();
       grp.add(new THREE.Mesh(g, mat), edges);
       grp.renderOrder = 5;
+      this.placeGroup(grp, part);
       this.ghosts.set(part, grp);
       this.scene.add(grp);
     }
@@ -682,25 +943,7 @@ export class Viewer {
     const px = Math.round(x * dpr),
       py = Math.round(y * dpr);
     cam.setViewOffset(W, H, px - R, py - R, size, size);
-    for (const p of this.parts.values()) p.pickMode(true, this.filter.edge && this.mode !== "shaded", this.filter.face || this.filter.part);
-    const bg = this.scene.background;
-    this.scene.background = null;
-    const env = this.scene.environment;
-    this.scene.environment = null;
-    this.grid.visible = this.triad.visible = false;
-    const prevTM = this.renderer.toneMapping;
-    this.renderer.toneMapping = THREE.NoToneMapping;
-    this.renderer.setRenderTarget(this.pickTarget);
-    this.renderer.setClearColor(0x000000, 0);
-    this.renderer.clear();
-    // edges on top of faces within their pixel footprint: draw faces, then edges with depth test
-    this.renderer.render(this.scene, cam);
-    this.renderer.setRenderTarget(null);
-    this.renderer.toneMapping = prevTM;
-    this.scene.background = bg;
-    this.scene.environment = env;
-    this.restoreHelpers();
-    for (const p of this.parts.values()) p.pickMode(false, false, false);
+    this.renderIds(this.pickTarget, this.filter.edge && this.mode !== "shaded", this.filter.face || this.filter.part);
     cam.clearViewOffset();
     this.renderer.readRenderTargetPixels(this.pickTarget, 0, 0, size, size, this.pickBuf);
     // an edge within ~5.5 device px wins (edges are thin); else whatever is under the cursor
@@ -728,6 +971,36 @@ export class Viewer {
   }
 
   /**
+   * Render the ID buffer (pick materials; no background, helpers or markup) into `rt` with the
+   * current camera, view offset included. Edges draw on top of faces within their pixel footprint.
+   */
+  private renderIds(rt: THREE.WebGLRenderTarget, edges: boolean, faces: boolean) {
+    const r = this.renderer;
+    for (const p of this.parts.values()) p.pickMode(true, edges, faces);
+    const bg = this.scene.background,
+      env = this.scene.environment,
+      tm = r.toneMapping;
+    this.scene.background = null;
+    this.scene.environment = null;
+    this.grid.visible = this.triad.visible = this.markup.visible = false;
+    const overlaps = this.overlaps.visible;
+    this.overlaps.visible = false;
+    r.toneMapping = THREE.NoToneMapping;
+    r.setRenderTarget(rt);
+    r.setClearColor(0x000000, 0);
+    r.clear();
+    r.render(this.scene, this.camera);
+    r.setRenderTarget(null);
+    r.toneMapping = tm;
+    this.scene.background = bg;
+    this.scene.environment = env;
+    this.restoreHelpers();
+    this.markup.visible = true;
+    this.overlaps.visible = overlaps;
+    for (const p of this.parts.values()) p.pickMode(false, false, false);
+  }
+
+  /**
    * Box select (§8 Selection): `window` selects entities fully inside the rectangle (projected
    * geometry); `crossing` selects anything visible that touches it (ID buffer over the rect).
    */
@@ -739,8 +1012,9 @@ export class Viewer {
       wantEdge = this.filter.edge && this.mode !== "shaded";
     if (mode === "window") {
       const v = new THREE.Vector3();
+      let place = new THREE.Matrix4();
       const inside = (arr: Float32Array, i: number) => {
-        v.fromArray(arr, i * 3).project(this.camera);
+        v.fromArray(arr, i * 3).applyMatrix4(place).project(this.camera);
         const sx = ((v.x + 1) / 2) * this.container.clientWidth,
           sy = ((1 - v.y) / 2) * this.container.clientHeight;
         return sx >= ax && sx <= bx && sy >= ay && sy <= by && v.z <= 1;
@@ -748,6 +1022,7 @@ export class Viewer {
       for (const [id, p] of this.parts) {
         if (!p.group.visible) continue;
         const m = p.data.mesh;
+        place = p.group.matrix;
         if (this.filter.part && !wantFace && !wantEdge) {
           let all = true;
           for (let i = 0; i < m.positions.length / 3 && all; i += 7) all = inside(m.positions, i);
@@ -786,25 +1061,7 @@ export class Viewer {
     const rt = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.UnsignedByteType });
     const cam = this.camera;
     cam.setViewOffset(this.canvas.width, this.canvas.height, Math.round(ax * dpr), Math.round(ay * dpr), w, h);
-    for (const p of this.parts.values()) p.pickMode(true, wantEdge, wantFace || this.filter.part);
-    const bg = this.scene.background,
-      env = this.scene.environment;
-    this.scene.background = null;
-    this.scene.environment = null;
-    this.grid.visible = this.triad.visible = this.markup.visible = false;
-    const tm = this.renderer.toneMapping;
-    this.renderer.toneMapping = THREE.NoToneMapping;
-    this.renderer.setRenderTarget(rt);
-    this.renderer.setClearColor(0, 0);
-    this.renderer.clear();
-    this.renderer.render(this.scene, cam);
-    this.renderer.setRenderTarget(null);
-    this.renderer.toneMapping = tm;
-    this.scene.background = bg;
-    this.scene.environment = env;
-    this.restoreHelpers();
-    this.markup.visible = true;
-    for (const p of this.parts.values()) p.pickMode(false, false, false);
+    this.renderIds(rt, wantEdge, wantFace || this.filter.part);
     cam.clearViewOffset();
     const buf = new Uint8Array(rw * rh * 4);
     this.renderer.readRenderTargetPixels(rt, 0, 0, rw, rh, buf);
@@ -845,15 +1102,22 @@ export class Viewer {
     return out;
   }
 
-  /** Pick plus the exact surface point and normal (ray vs. the picked face's triangles). */
-  pickPoint(x: number, y: number): (EntityRef & { point: THREE.Vector3; normal?: THREE.Vector3 }) | null {
-    const saved = this.filter;
-    this.filter = { face: true, edge: false, vertex: false, part: false };
-    const ref = this.pick(x, y);
-    this.filter = saved;
+  /**
+   * Pick plus the exact surface point and normal (ray vs. the picked face's triangles). `picked`
+   * skips the GPU pick when the face under (x, y) is already known.
+   */
+  pickPoint(x: number, y: number, picked?: EntityRef | null): (EntityRef & { point: THREE.Vector3; normal?: THREE.Vector3; local?: THREE.Vector3 }) | null {
+    let ref = picked;
+    if (ref === undefined) {
+      const saved = this.filter;
+      this.filter = { face: true, edge: false, vertex: false, part: false };
+      ref = this.pick(x, y);
+      this.filter = saved;
+    }
     if (!ref || ref.kind !== "face") return null;
     const p = this.parts.get(ref.part)!;
-    const ray = this.rayAt(x, y);
+    // the mesh is in part coordinates: intersect there, answer in world coordinates
+    const ray = this.rayAt(x, y).applyMatrix4(p.group.matrix.clone().invert());
     const m = p.data.mesh;
     const start = m.faceRanges[ref.index * 2],
       count = m.faceRanges[ref.index * 2 + 1];
@@ -879,10 +1143,17 @@ export class Viewer {
       }
     }
     if (!best) {
-      // grazing hit: fall back to the face center
-      best = p.faceCenter(ref.index, new THREE.Vector3());
+      // grazing hit (the ID buffer saw the face, the ray just misses its triangles): take the point
+      // on the cursor ray nearest the face's closest vertex, which keeps the pivot under the cursor
+      let vd = Infinity;
+      for (let i = start; i < start + count; i++) {
+        a.fromArray(m.positions, m.indices[i] * 3);
+        const d = ray.distanceSqToPoint(a);
+        if (d < vd) (vd = d), b.copy(a);
+      }
+      best = vd < Infinity ? ray.closestPointToPoint(b, new THREE.Vector3()) : p.faceCenter(ref.index, new THREE.Vector3());
     }
-    return { ...ref, point: best, normal: bn };
+    return { ...ref, point: best.applyMatrix4(p.group.matrix), normal: bn?.transformDirection(p.group.matrix), local: best.clone() };
   }
 
   rayAt(x: number, y: number): THREE.Ray {
@@ -905,9 +1176,40 @@ export class Viewer {
     const cam = this.camera.position;
     const dp = cam.distanceTo(p),
       dh = cam.distanceTo(hit.point);
-    const scale = Math.max(1, this.bounds().getBoundingSphere(new THREE.Sphere()).radius);
+    const scale = Math.max(1, this.modelSphere().radius);
     return dp <= dh + tolerance * scale;
   }
+
+  /**
+   * isPointVisible for many points at once: one ID render of the whole view (at CSS resolution)
+   * and a pixel read per point, instead of a full pick (render + GPU stall) each.
+   */
+  pointsVisible(points: THREE.Vector3[], tolerance = 0.02): boolean[] {
+    const W = Math.max(1, this.container.clientWidth),
+      H = Math.max(1, this.container.clientHeight);
+    const screen = points.map((p) => {
+      const s = this.project(p);
+      return s && s.x >= 0 && s.y >= 0 && s.x <= W && s.y <= H ? s : null;
+    });
+    if (!screen.some(Boolean)) return points.map(() => false);
+    const rt = (this.visTarget ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: true }));
+    if (rt.width !== W || rt.height !== H) rt.setSize(W, H);
+    this.renderIds(rt, false, true);
+    const px = new Uint8Array(4);
+    const cam = this.camera.position;
+    const scale = Math.max(1, this.modelSphere().radius);
+    return points.map((p, i) => {
+      const s = screen[i];
+      if (!s) return false;
+      this.renderer.readRenderTargetPixels(rt, Math.min(W - 1, Math.floor(s.x)), H - 1 - Math.min(H - 1, Math.floor(s.y)), 1, 1, px);
+      const id = decodeId(px[0], px[1], px[2], px[3]);
+      const part = id?.kind === "face" ? this.slots[id.slot] : null;
+      if (!id || !part) return true;
+      const hit = this.pickPoint(s.x, s.y, { part, kind: "face", index: id.index });
+      return !hit || cam.distanceTo(p) <= cam.distanceTo(hit.point) + tolerance * scale;
+    });
+  }
+  private visTarget: THREE.WebGLRenderTarget | null = null;
 
   /** Screen position (CSS px) of a world point, or null if behind the camera. */
   project(p: THREE.Vector3): { x: number; y: number } | null {
@@ -920,15 +1222,15 @@ export class Viewer {
   entityCenter(r: EntityRef): THREE.Vector3 | null {
     const p = this.parts.get(r.part);
     if (!p) return null;
-    if (r.kind === "face") return p.faceCenter(r.index, new THREE.Vector3());
+    if (r.kind === "face") return p.faceCenter(r.index, new THREE.Vector3()).applyMatrix4(p.group.matrix);
     if (r.kind === "edge") {
       const m = p.data.mesh;
       const s = m.edgeRanges[r.index * 2],
         c = m.edgeRanges[r.index * 2 + 1];
       const mid = s + Math.floor(c / 2);
-      return new THREE.Vector3().fromArray(m.edgePositions, mid * 3);
+      return new THREE.Vector3().fromArray(m.edgePositions, mid * 3).applyMatrix4(p.group.matrix);
     }
-    return p.faceMesh.geometry.boundingSphere?.center.clone() ?? null;
+    return p.faceMesh.geometry.boundingSphere?.center.clone().applyMatrix4(p.group.matrix) ?? null;
   }
 
   // ---------- frame loop ----------
@@ -949,9 +1251,8 @@ export class Viewer {
     this.ortho.bottom = -oh / 2;
     this.ortho.updateProjectionMatrix();
     // near/far from scene size, so depth precision stays good
-    const b = this.bounds();
-    if (!b.isEmpty()) {
-      const s = b.getBoundingSphere(new THREE.Sphere());
+    const s = this.modelSphere();
+    if (!s.isEmpty()) {
       const d = this.persp.position.distanceTo(s.center);
       this.persp.near = Math.max(0.01, (d - s.radius * 4) * 0.5, s.radius / 2000);
       this.persp.far = d + s.radius * 20;
@@ -966,8 +1267,7 @@ export class Viewer {
       h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
     this.renderer.getDrawingBufferSize(this.resolution);
-    this.aoPass?.setSize(w, h);
-    this.haloPass?.setSize(w, h);
+    for (const b of [this.aoFull, this.aoFast]) if (b) this.sizeAO(b, b === this.aoFull ? this.renderer.getPixelRatio() : 1);
     this.syncCameras();
     this.renderNow();
   }
@@ -976,67 +1276,105 @@ export class Viewer {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.loop);
     const now = performance.now();
-    const animating = this.controls.tick(now) || this.tickFades(now) || this.tickShimmer(now);
-    if (animating) this.syncCameras();
-    if (this.needsRender || animating) this.renderNow();
+    const dt = now - this.lastTick;
+    this.lastTick = now;
+    // only a camera animation moves the camera; fades and shimmer just redraw
+    if (this.controls.tick(now)) this.syncCameras();
+    if (this.tickFades(now) || this.tickShimmer(now)) this.needsRender = true;
+    if (!this.needsRender) return;
+    // motion that can't hold ~45 fps drops to 1× pixel ratio until the camera stops
+    if (this.moving && !this.lowRes && this.baseDpr > 1) {
+      this.slowFrames = dt > 22 && dt < 250 ? this.slowFrames + 1 : 0;
+      if (this.slowFrames >= 4) return this.setLowRes(true); // resize() renders
+    }
+    this.renderNow();
   };
 
   /**
-   * AO + depth halo, cheap enough to run every frame (orbiting included, like Onshape): no
-   * full-resolution intermediate target. GTAO computes normals/depth/AO at CSS-pixel resolution
-   * from the faces alone; the halo pass multiplies AO × halo straight onto the canvas.
+   * AO + depth halo, every frame (orbiting included, like Onshape). A G-buffer of the faces alone
+   * feeds GTAO (ao.ts) and the halo (halo.ts): per device pixel at rest (per CSS pixel, a 2×
+   * display turns contact shading blocky along creases), per CSS pixel while the camera moves,
+   * where a quarter of the cost matters more than the fine detail. The face material then reads
+   * both at its own pixels (shading.ts).
    */
-  private ensureShading() {
-    if (this.aoPass) return;
-    const w = Math.max(1, this.container.clientWidth),
-      h = Math.max(1, this.container.clientHeight);
-    this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
-    this.aoPass.output = GTAOPass.OUTPUT.Off; // compute only; the halo pass composites
+  private makeAO(scale: number): AOBuffer {
+    const pass = new GTAOPass(this.scene, this.camera, 1, 1);
+    pass.output = GTAOPass.OUTPUT.Off; // compute only; the face material applies it
     // float depth: GTAO's default 24-bit buffer can't resolve reversed-Z at range, and the
     // quantization reads as occlusion on flat surfaces (a uniform grey wash instead of contact AO)
-    this.aoPass.depthTexture.type = THREE.FloatType;
-    // the sample count stays fixed so nothing recompiles mid-orbit
-    this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1.3, samples: 12 });
-    this.haloPass = new HaloPass(this.camera, () => this.aoPass!.depthTexture, () => this.aoPass!.pdRenderTarget.texture);
-    this.haloPass.setSize(w, h); // same CSS-pixel grid as the depth it samples
+    pass.depthTexture.type = THREE.FloatType;
+    // each buffer's sample count stays fixed so nothing recompiles mid-orbit
+    setupAO(pass, scale > 1 ? 16 : 12);
+    const halo = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    const b = { pass, halo, haloScratch: halo.clone(), scale, radius: 0 };
+    this.sizeAO(b, scale);
+    return b;
+  }
+
+  private sizeAO(b: AOBuffer, scale: number) {
+    const w = Math.max(1, this.container.clientWidth),
+      h = Math.max(1, this.container.clientHeight);
+    b.scale = scale;
+    b.pass.setSize(Math.round(w * scale), Math.round(h * scale));
+    b.halo.setSize(Math.round(w * scale), Math.round(h * scale));
+    b.haloScratch.setSize(Math.round(w * scale), Math.round(h * scale));
+    sizeAO(b.pass, scale);
   }
 
   /**
-   * The shaded frame: 1) faces, 2) AO buffers from the faces, 3) AO × halo multiplied onto them,
-   * 4) everything else (edges, silhouettes, overlays, grid, axes, markup) over that, depth-tested
-   * against the faces. Lines and helpers are never darkened and blend exactly as in a plain render.
+   * The shaded frame: 1) G-buffer, AO and halo from the faces, 2) the faces, lit with AO and
+   * multiplied by the halo, 3) everything else (edges, silhouettes, overlays, markup) over that,
+   * depth-tested against the faces. Lines and helpers are never darkened and blend exactly as in
+   * a plain render.
    */
   private renderShaded() {
-    this.ensureShading();
     const r = this.renderer,
-      cam = this.camera,
-      ao = this.aoPass!,
-      halo = this.haloPass!;
+      cam = this.camera;
+    // both up front, so the first orbit doesn't stall allocating the fast one
+    this.aoFull ??= this.makeAO(r.getPixelRatio());
+    this.aoFast ??= this.makeAO(1);
+    const b = this.moving ? this.aoFast : this.aoFull;
+    const ao = b.pass,
+      halo = (this.haloPass ??= new HaloPass(cam));
     (ao as any).camera = cam;
     halo.camera = cam;
     // scale the AO radius and the halo's overlap gap with the model
-    const radius = this.bounds().getBoundingSphere(new THREE.Sphere()).radius || 10;
-    ao.updateGtaoMaterial({ radius: radius * 0.08 });
+    const sr = this.modelSphere().radius,
+      radius = sr > 0 ? sr : 10;
+    if (radius !== b.radius) scaleAO(ao, radius), (b.radius = radius);
     halo.threshold = radius * 0.02;
-    halo.range = radius * 0.5;
+    halo.range = radius * 0.2;
     const layers = cam.layers.mask,
       autoClear = r.autoClear,
-      bg = this.scene.background;
-    r.setRenderTarget(null);
+      bg = this.scene.background,
+      s = screenShading;
     cam.layers.set(FACE_LAYER);
-    r.render(this.scene, cam);
     ao.render(r, null as any, null as any, 0, false);
-    cam.layers.mask = layers;
-    // from here on everything draws over the faces: no clears (the full-screen quad and the scene
-    // render would otherwise wipe them), and back on the canvas (GTAO leaves its target bound)
+    halo.render(r, { depth: ao.depthTexture, normal: ao.normalTexture, width: ao.width, height: ao.height, scale: b.scale }, b.halo, b.haloScratch, this.moving);
+    // from here on everything draws over what's on the canvas: no clears
     r.autoClear = false;
     r.setRenderTarget(null);
-    halo.render(r);
-    const faces = [...this.parts.values()].map((p) => [p.faceMesh, p.faceMesh.visible] as const);
+    s.psAO.value = ao.pdRenderTarget.texture;
+    s.psHalo.value = b.halo.texture;
+    s.psDepth.value = ao.depthTexture;
+    s.psProjInv.value.copy(cam.projectionMatrixInverse);
+    s.psViewport.value.copy(this.resolution);
+    s.psOn.value = true;
+    try {
+      r.render(this.scene, cam);
+    } finally {
+      s.psOn.value = false;
+      s.psAO.value = s.psHalo.value = s.psDepth.value = null;
+      cam.layers.mask = layers;
+    }
+    const faces = this.faceVis;
+    faces.length = 0;
+    // opaque faces are drawn; a translucent part's faces blend in now, over everything
+    for (const p of this.parts.values()) if (!p.translucent) faces.push([p.faceMesh, p.faceMesh.visible]), (p.faceMesh.visible = false);
     this.scene.background = null;
-    for (const [m] of faces) m.visible = false;
     r.render(this.scene, cam);
     for (const [m, v] of faces) m.visible = v;
+    faces.length = 0;
     this.scene.background = bg;
     r.autoClear = autoClear;
   }
@@ -1066,8 +1404,12 @@ export class Viewer {
     this.requestRender();
   }
 
+  private shimmerAt = 0;
   private tickShimmer(now: number): boolean {
     if (!this.shimmer.size || this.controls.reducedMotion) return false;
+    // a slow sine: ~24 steps a second is smooth, and spares full shaded frames in between
+    if (now - this.shimmerAt < 40) return false;
+    this.shimmerAt = now;
     const k = 0.5 + 0.5 * Math.sin(now / 420);
     for (const id of this.shimmer) this.parts.get(id)?.setEmissive(0.06 + 0.08 * k);
     return true;
@@ -1079,9 +1421,23 @@ export class Viewer {
     this.viewCube?.update(this.camera);
     this.syncHelpers();
     const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section;
-    if (useAO) {
-      this.renderShaded();
-    } else this.renderer.render(this.scene, this.camera);
+    const r = this.renderer, cam = this.camera;
+    const layers = cam.layers.mask, autoClear = r.autoClear, bg = this.scene.background;
+    try {
+      // Paint the grid first, then depth-test axes and parts together over it.
+      r.setRenderTarget(null);
+      cam.layers.set(BACKGROUND_LAYER);
+      r.render(this.scene, cam);
+      cam.layers.mask = layers;
+      r.autoClear = false;
+      this.scene.background = null;
+      if (useAO) this.renderShaded();
+      else r.render(this.scene, cam);
+    } finally {
+      cam.layers.mask = layers;
+      r.autoClear = autoClear;
+      this.scene.background = bg;
+    }
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
     this.emit("rendered", null);
@@ -1106,21 +1462,19 @@ export class Viewer {
     const size = b.isEmpty() ? 100 : Math.max(b.max.x - b.min.x, b.max.y - b.min.y) * 1.6;
     const step = Math.pow(10, Math.floor(Math.log10(Math.max(size, 1) / 8)));
     const t = this.theme;
-    const z = b.isEmpty() ? 0 : Math.min(0, b.min.z);
-    this.groundGrid.configure(step, z - 1e-4 * step, t.grid, t.gridMajor);
-    // origin axes: the positive half-lines, depth-tested like any other object. Unit
-    // length here; syncHelpers scales them out to the far plane so they run to the horizon.
+    this.groundGrid.configure(step, 0, t.grid, t.gridMajor);
+    // Origin axes share the parts' depth buffer without a bias. Unit length here;
+    // syncHelpers scales them out to the far plane so they run to the horizon.
     const axis = (d: number[], c: string) => {
       const g = new LineGeometry();
       g.setPositions([0, 0, 0, ...d]);
-      const m = withDepthBias(new LineMaterial({ color: new THREE.Color(c), linewidth: 2, resolution: this.resolution, worldUnits: false, transparent: true, opacity: AXIS_OPACITY, depthWrite: false }), 0.0004) as LineMaterial;
+      const m = new LineMaterial({ color: new THREE.Color(c), linewidth: 2, resolution: this.resolution, worldUnits: false, transparent: true, opacity: AXIS_OPACITY, depthTest: true, depthWrite: false });
       const l = new Line2(g, m);
       l.frustumCulled = false;
       return l;
     };
     for (const [d, c] of [[[1, 0, 0], t.axisX], [[0, 1, 0], t.axisY], [[0, 0, 1], t.axisZ]] as [number[], string][])
       this.triad.add(axis(d, c));
-    this.triad.renderOrder = 1;
   }
 
   /** Keep the grid and axes reaching the horizon from wherever the camera is. */
@@ -1146,7 +1500,10 @@ export class Viewer {
     this.groundGrid.dispose();
     for (const p of this.parts.values()) p.dispose();
     this.pickTarget.dispose();
-    this.aoPass?.dispose();
+    this.visTarget?.dispose();
+    this.aoFull?.pass.dispose();
+    this.aoFast?.pass.dispose();
+    for (const b of [this.aoFull, this.aoFast]) b?.halo.dispose(), b?.haloScratch.dispose();
     this.haloPass?.dispose();
     this.envTex?.dispose();
     this.renderer.dispose();

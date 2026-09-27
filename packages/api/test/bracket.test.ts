@@ -2,13 +2,13 @@ import { beforeAll, expect, test } from "bun:test";
 import { loadKernel } from "@parasocial/kernel";
 import { OpCache, names, select } from "@parasocial/naming";
 import { PartContext, runPart } from "@parasocial/api/internal";
-import bracket from "../../../examples/bracket/parts/bracket";
+import bracket from "../../../examples/bracket/studios/bracket";
 
 beforeAll(async () => { await loadKernel(); });
 
 const run = (cache: OpCache, overrides: Record<string, string | number> = {}) => {
   cache.begin();
-  return runPart(bracket, new PartContext({ part: "bracket", file: "parts/bracket.ts", cache, overrides, isUserFile: (f) => f.includes("examples/") }));
+  return runPart(bracket, new PartContext({ part: "bracket", file: "studios/bracket.ts", cache, overrides, isUserFile: (f) => f.includes("examples/") }));
 };
 
 test("bracket regenerates with stable names", () => {
@@ -25,7 +25,7 @@ test("bracket regenerates with stable names", () => {
   expect(r.params.map((p) => p.name)).toEqual(["thickness", "width"]);
   const ops = r.ops.map((o) => `${o.id} @${o.callSite?.line}`);
   console.log(ops);
-  expect(r.ops.find((o) => o.id === "bracket/corners")!.callSite!.line).toBe(13);
+  expect(r.ops.find((o) => o.id === "bracket/corners")!.callSite!.line).toBe(15);
 });
 
 test("names survive upstream dimension changes; per-op cache reruns only downstream", () => {

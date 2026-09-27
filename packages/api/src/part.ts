@@ -3,14 +3,15 @@ import type { OpRecord } from "@parasocial/naming";
 import { ctx, withContext, PartContext, shortLoc } from "./context";
 import { OpError, userError } from "./op";
 import { Solid } from "./solid";
-import type { ColorSpec, Material, ParamDecl, Problem } from "./types";
+import type { Appearance, ColorSpec, Material, ParamDecl, Problem } from "./types";
 import { evaluate, UNITS, type Unit } from "./units";
+import type { ConnectorFrame } from "./connector";
 
 export type PartTools = {
   color: {
     /** Next color from the curated part palette (round-robin by part order). */
     auto(): ColorSpec;
-    /** A specific hex color. */
+    /** A specific hex color, e.g. `"#4a7bd0"`. Pass it to `.color()`; opacity goes in `.opacity()` / `.appearance()`. */
     rgb(hex: string): ColorSpec;
   };
 };
@@ -21,16 +22,33 @@ export type PartDef = {
   readonly __part: true;
   readonly name: string;
   readonly body: PartBody;
+  /** A connector of this part, for assembly joints: `revolute(body, lid, lid.at("hinge"))`. */
+  at(connector: string): ConnectorRef;
 };
 
+/** A named connector on a part (declared in its body with `.connector(name, ...)`). */
+export type ConnectorRef = { readonly __connector: true; readonly part: PartDef; readonly name: string };
+
 /**
- * Declare a part. Each `parts/*.ts` default-exports one:
- * `export default part("Bracket", () => sketch(plane.XY).rect(40, 25).extrude(3))`
+ * Declare a part. A studio (`studios/*.ts`) exports one or more:
+ * `export default part("Bracket", () => sketch(plane.XY).rect(40, 25).extrude(3))` (part id `bracket`),
+ * or several as named exports, `export const lid = part("Lid", () => ...)` in `studios/case.ts`
+ * (part id `case:lid`). Each part regenerates on its own, with its own params, color and ops.
+ * The studio's display name is `export const name = "Case"` (the file name when absent).
  */
 export function part(name: string, body: PartBody): PartDef {
   if (typeof name !== "string" || !name.trim()) throw new Error('part(name, body): name must be a non-empty string, e.g. part("Bracket", () => ...)');
   if (typeof body !== "function") throw new Error("part(name, body): body must be a function returning a solid");
-  return Object.freeze({ __part: true as const, name, body });
+  const def: PartDef = Object.freeze({
+    __part: true as const,
+    name,
+    body,
+    at(connector: string): ConnectorRef {
+      if (typeof connector !== "string" || !connector) throw new Error(`${name}.at(name): name the connector, e.g. .at("hinge")`);
+      return Object.freeze({ __connector: true as const, part: def, name: connector });
+    },
+  });
+  return def;
 }
 
 export type ParamOptions = {
@@ -122,7 +140,10 @@ export type PartRun = {
   record?: OpRecord;
   partial: boolean;
   color?: ColorSpec;
+  appearance?: Appearance;
   material?: Material;
+  /** Named frames for assembly joints (part coordinates). */
+  connectors?: Record<string, ConnectorFrame>;
   params: ParamDecl[];
   problems: Problem[];
   ops: OpRecord[];
@@ -168,7 +189,9 @@ function runOnce(def: PartDef, c: PartContext): PartRun {
     record: lastGood,
     partial: !!error,
     color: out?.meta.color,
+    appearance: out?.meta.appearance,
     material: out?.meta.material,
+    connectors: out?.meta.connectors,
     params: c.params,
     problems: c.problems,
     ops: c.ops,

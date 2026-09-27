@@ -63,12 +63,12 @@
 	>
 		<div class="mb-5 flex items-center gap-2">
 			<Logo />
-			<span class="text-title font-semibold">Parasocial</span>
+			<span class="text-title font-heading font-medium">Parasocial</span>
 		</div>
 
 		{#key mode}<div class="animate-[ps-tab-in_var(--duration-base)_var(--ease-out)]">
 		{#if mode === 'signup'}
-			<h1 class="text-heading font-semibold">{data.needsSetup ? 'Set up this instance' : 'Create your account'}</h1>
+			<h1 class="text-heading">{data.needsSetup ? 'Set up this instance' : 'Create your account'}</h1>
 			{#if data.needsSetup}
 				<p class="mt-1 text-body text-fg-secondary">The first account becomes the admin.</p>
 			{/if}
@@ -91,7 +91,7 @@
 				</div>
 			{/if}
 		{:else}
-			<h1 class="text-heading font-semibold">Welcome back</h1>
+			<h1 class="text-heading">Welcome back</h1>
 			<div class="mt-5 flex flex-col gap-3">
 				<Button variant="primary" size="lg" onclick={passkey} disabled={!!busy} class="w-full justify-center" data-testid="signin-passkey">
 					{#if busy === 'signin'}<LoaderCircle class="animate-spin" size={14} />{:else}<KeyRound size={14} />{/if}

@@ -10,7 +10,7 @@ const scripts: Record<string, Record<string, string>> = {};
 for (const d of new Glob("*/parasocial.json").scanSync(examples)) {
   const name = dirname(d);
   scripts[name] = {};
-  for (const f of new Glob("{parts,lib}/**/*.ts").scanSync(join(examples, name))) scripts[name][f] = readFileSync(join(examples, name, f), "utf8");
+  for (const f of new Glob("{studios,lib}/**/*.ts").scanSync(join(examples, name))) scripts[name][f] = readFileSync(join(examples, name, f), "utf8");
 }
 const build = await Bun.build({ entrypoints: [join(here, "main.ts")], target: "browser", format: "esm", minify: false });
 if (!build.success) throw new AggregateError(build.logs);

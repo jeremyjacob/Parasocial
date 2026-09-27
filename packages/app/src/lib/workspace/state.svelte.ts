@@ -4,11 +4,12 @@
 import { untrack } from 'svelte';
 import type { Viewer, EntityRef } from '@parasocial/viewer';
 import { mutators, captureInverse, captureInverseAll, type AnyMR, type ParasocialZero, type Script, type Configuration, type ParamOverride, type Version, type Note, type AgentSession, type Document as DocRow } from '@parasocial/sync';
-import type { PartResult, EngineInfo } from '@parasocial/runtime/protocol';
+import type { PartResult, PartInfo, EngineInfo, AssemblyInfo } from '@parasocial/runtime/protocol';
 import { packResult, unpackResult, derivedKey, type CachedPart } from '@parasocial/runtime/pack';
 import type { EngineClient } from '@parasocial/runtime/browser/client';
 import { partColorAt } from '$lib/styles/tokens';
 import { newID } from '$lib/zero';
+import { AssemblyController } from './assembly.svelte';
 
 type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 
@@ -27,6 +28,8 @@ export class WorkspaceState {
 	userName = '';
 	engine: EngineClient | null = null;
 	viewer: Viewer | null = null;
+	/** Assemblies: joints, dragging, saved positions, interference. */
+	readonly asm: AssemblyController = new AssemblyController(this);
 
 	// ---- synced rows (set by the component from useQuery) ----
 	doc = $state.raw<DocRow | null>(null);
@@ -59,13 +62,16 @@ export class WorkspaceState {
 	isolated = $state<string[]>([]);
 	openScript = $state<string | null>(null);
 	/** Section view (S): axis, offset along it (mm), flipped. */
-	section = $state<{ axis: 'X' | 'Y' | 'Z'; offset: number; flip: boolean } | null>(null);
+	/** Axis-aligned section, or 'Face': through a planar face's plane (offset along its outward normal). */
+	section = $state<{ axis: 'X' | 'Y' | 'Z' | 'Face'; offset: number; flip: boolean; plane?: { origin: number[]; normal: number[] } } | null>(null);
 	/** Ground grid and origin triad (G, Shift+G); remembered per browser. */
 	showGrid = $state(pref('parasocial:grid', true));
 	showOrigin = $state(pref('parasocial:origin', true));
 	revealLine = $state<number | null>(null);
 
 	// ---- engine-derived metadata ----
+	/** The parts the scripts export, as last discovered by the engine (remembered per document for cache-first open). */
+	partInfos = $state.raw<PartInfo[]>([]);
 	results = $state.raw<Record<string, PartMeta>>({});
 	regen = $state<Record<string, RegenState>>({});
 	kernelReady = $state(false);
@@ -109,16 +115,45 @@ export class WorkspaceState {
 		try {
 			const saved = localStorage.getItem(`parasocial:config:${o.documentID}`);
 			if (saved) this.activeConfigID = saved === 'default' ? null : saved;
+			this.partInfos = JSON.parse(localStorage.getItem(`parasocial:parts:${o.documentID}`) ?? '[]');
 		} catch {}
 	}
 
 	// ---------- derived ----------
+	/** Part ids in studio order. A studio the engine hasn't loaded yet counts as one part named after the file. */
 	get parts(): string[] {
+		return this.partTree.flatMap((g) => g.parts.map((p) => p.id));
+	}
+
+	/**
+	 * Parts grouped under the studio that exports them (Parts tab tree), in path order; `name` is
+	 * the studio's display name. A studio's assemblies come along (a studio may export only those).
+	 */
+	get partTree(): { file: string; name: string; parts: PartInfo[]; assemblies: AssemblyInfo[] }[] {
 		return this.scripts
 			.map((s) => s.path)
-			.filter((p) => /^parts\/[^/]+\.ts$/.test(p))
+			.filter((p) => /^studios\/[^/]+\.ts$/.test(p))
 			.sort()
-			.map((p) => p.slice(6, -3));
+			.map((file) => {
+				const known = this.partInfos.filter((p) => p.file === file);
+				const stem = file.slice('studios/'.length, -'.ts'.length);
+				// part lists remembered before studios had names lack `studio`
+				const assemblies = this.asm.assemblies.filter((a) => a.file === file);
+				const name = known[0]?.studio ?? assemblies[0]?.studio ?? stem;
+				return { file, name, assemblies, parts: known.length || assemblies.length ? known : [{ id: stem, file, export: 'default', name: stem, studio: stem }] };
+			});
+	}
+
+	/** The studio script a part comes from. */
+	scriptOf(part: string): string {
+		return this.partInfos.find((p) => p.id === part)?.file ?? `studios/${part.split(':')[0]}.ts`;
+	}
+
+	private setPartInfos(infos: PartInfo[]) {
+		this.partInfos = infos;
+		try {
+			localStorage.setItem(`parasocial:parts:${this.documentID}`, JSON.stringify(infos));
+		} catch {}
 	}
 
 	get activeConfig() {
@@ -178,36 +213,45 @@ export class WorkspaceState {
 		const scripts = Object.fromEntries(this.scripts.map((s) => [s.path, s.content]));
 		// unsaved buffers preview live (typing regenerates coarse, then refines)
 		for (const [p, b] of Object.entries(this.buffers)) if (b.content !== b.baseContent) scripts[p] = b.content;
-		const parts = this.parts;
 		const quality = this.scrubbing || this.typing ? 'coarse' : 'fine';
 		if (!this.cacheFirstDone) {
 			this.cacheFirstDone = true;
-			this.cacheFirst(scripts, parts);
+			this.cacheFirst(scripts, this.parts);
 		}
 		const toRegen = new Set<string>();
+		let parts: string[];
 		if (!this.docSent) {
 			this.docSent = true;
-			const overrides = Object.fromEntries(parts.map((p) => [p, this.overridesFor(p)]));
-			await engine.setDocument({ scripts, overrides, units: { length: this.doc?.units ?? 'mm', angle: 'deg' } });
+			// overrides for every part that has any (the part list comes back from the engine)
+			const ids = new Set([...this.parts, ...(this.activeConfig?.overrides ?? []).map((o) => o.part), ...Object.keys(this.live)]);
+			const overrides = Object.fromEntries([...ids].map((p) => [p, this.overridesFor(p)]));
+			this.setPartInfos(await engine.setDocument({ scripts, overrides, units: { length: this.doc?.units ?? 'mm', angle: 'deg' } }));
+			// before listing parts: a studio that only exports an assembly has none
+			await this.asm.refresh();
 			for (const [k, v] of Object.entries(scripts)) this.sentScripts.set(k, v);
-			for (const p of parts) this.sentOverrides.set(p, JSON.stringify(overrides[p]));
+			for (const p of ids) this.sentOverrides.set(p, JSON.stringify(overrides[p]));
+			parts = this.parts;
 			parts.forEach((p) => toRegen.add(p));
 		} else {
 			let scriptChanged = false;
+			let infos: PartInfo[] | null = null;
 			for (const [path, content] of Object.entries(scripts)) {
 				if (this.sentScripts.get(path) !== content) {
 					this.sentScripts.set(path, content);
-					await engine.setScript(path, content);
+					infos = await engine.setScript(path, content);
 					scriptChanged = true;
 				}
 			}
 			for (const path of [...this.sentScripts.keys()]) {
 				if (!(path in scripts)) {
 					this.sentScripts.delete(path);
-					await engine.setScript(path, null);
+					infos = await engine.setScript(path, null);
 					scriptChanged = true;
 				}
 			}
+			if (infos) this.setPartInfos(infos);
+			if (scriptChanged) await this.asm.refresh();
+			parts = this.parts;
 			if (scriptChanged) parts.forEach((p) => toRegen.add(p));
 			for (const p of parts) {
 				const o = this.overridesFor(p);
@@ -271,6 +315,8 @@ export class WorkspaceState {
 		}
 		// selections on a part that changed shape keep their indices only if still valid (viewer prunes)
 		if (this.viewer) this.selection = this.viewer.getSelection();
+		// connectors may have moved with the geometry; overlaps certainly may have
+		if (!fromCache) this.asm.rebuild();
 	}
 
 	private paint(r: PartResult, mesh: Mesh, crossfade = false) {
@@ -281,6 +327,7 @@ export class WorkspaceState {
 			faceEdges: r.faceEdges,
 			hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))),
 			color: this.partColor(r.part, dark),
+			appearance: r.appearance,
 			dim: !r.ok
 		}, { crossfade });
 		this.viewer!.setVisible(r.part, !this.hidden.includes(r.part));
@@ -319,6 +366,7 @@ export class WorkspaceState {
 		if (this.isolated.length) v.isolate(this.isolated);
 		if (this.selection.length) v.setSelection(this.selection);
 		v.setCameraState(stash.camera, false);
+		this.asm.attach();
 		return stash.meshes.size > 0;
 	}
 
@@ -558,11 +606,21 @@ export class WorkspaceState {
 	setHidden(part: string, hidden: boolean) {
 		this.hidden = hidden ? [...new Set([...this.hidden, part])] : this.hidden.filter((p) => p !== part);
 		this.viewer?.setVisible(part, !hidden);
+		this.asm.check();
 	}
 
 	isolate(part: string | null) {
 		this.isolated = part && !(this.isolated.length === 1 && this.isolated[0] === part) ? [part] : [];
 		this.viewer?.isolate(this.isolated);
+		this.asm.check();
+	}
+
+	/** Isolate a set of parts (a studio's parts); toggles off when exactly that set is isolated. */
+	isolateMany(parts: string[]) {
+		const same = this.isolated.length === parts.length && parts.every((p) => this.isolated.includes(p));
+		this.isolated = same ? [] : [...parts];
+		this.viewer?.isolate(this.isolated);
+		this.asm.check();
 	}
 
 	/** Section on/off (S). Turning it on restores the last axis, offset and flip used. */
@@ -577,7 +635,7 @@ export class WorkspaceState {
 
 	/** Remember section settings (called whenever they change). */
 	rememberSection() {
-		if (!this.section) return;
+		if (!this.section || this.section.axis === 'Face') return;
 		try {
 			localStorage.setItem('parasocial:section', JSON.stringify(this.section));
 		} catch {}
@@ -593,6 +651,62 @@ export class WorkspaceState {
 		this.viewer?.setHelpers({ grid: this.showGrid, origin: this.showOrigin });
 	}
 
+	/**
+	 * Keep the documents-list thumbnail current: once the committed geometry of a version newer
+	 * than the thumbnail's has settled (every part regenerated fine, nothing unsaved or scrubbing,
+	 * Default configuration), render it offscreen, upload, and record it. Idempotent; call often.
+	 */
+	#thumbTimer: ReturnType<typeof setTimeout> | undefined;
+	#thumbBusy = false;
+	refreshThumbnail() {
+		clearTimeout(this.#thumbTimer);
+		const d = this.doc;
+		if (!d || !this.viewer || this.#thumbBusy) return;
+		if (d.thumbLight && (d.thumbVersion ?? -1) >= d.headVersion) return;
+		const settled =
+			this.parts.length > 0 &&
+			this.parts.every((p) => this.regen[p] !== 'running' && this.results[p]?.quality === 'fine') &&
+			this.parts.some((p) => this.results[p]?.ok) &&
+			!this.scrubbing &&
+			!this.typing &&
+			this.activeConfigID === null &&
+			!Object.keys(this.live).length &&
+			!this.dirty.length;
+		if (!settled) return;
+		const version = d.headVersion;
+		this.#thumbTimer = setTimeout(() => void this.#renderThumbnail(version), 1500);
+	}
+
+	async #renderThumbnail(version: number) {
+		const v = this.viewer;
+		if (!v || this.doc?.headVersion !== version) return;
+		const parts = this.parts.flatMap((p) => {
+			const r = this.results[p],
+				mesh = v.meshOf(p);
+			if (!r?.ok || !mesh) return [];
+			const hiddenEdges = new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : [])));
+			return [{ id: p, mesh, faceEdges: r.faceEdges, hiddenEdges, color: { light: this.partColor(p, false), dark: this.partColor(p, true) }, appearance: r.appearance }];
+		});
+		if (!parts.length) return;
+		this.#thumbBusy = true;
+		try {
+			const { renderThumbnails } = await import('./thumbnail');
+			const blobs = await renderThumbnails(parts);
+			const upload = async (b: Blob) => {
+				const res = await fetch(`/api/blobs?document=${encodeURIComponent(this.documentID)}`, { method: 'POST', body: b, headers: { 'Content-Type': 'image/webp' } });
+				if (!res.ok) throw new Error(`thumbnail upload failed (${res.status})`);
+				return ((await res.json()) as { hash: string }).hash;
+			};
+			const [light, dark] = await Promise.all([upload(blobs.light), upload(blobs.dark)]);
+			// not an edit: straight to Zero, outside undo
+			await this.zero.mutate(mutators.document.setThumbnail({ id: this.documentID, light, dark, version })).client;
+		} catch (e) {
+			console.warn('thumbnail', e);
+		} finally {
+			this.#thumbBusy = false;
+		}
+	}
+
 	/** Recolor viewer parts for a theme change. */
 	retheme(dark: boolean) {
 		for (const p of this.parts) this.viewer?.setPartColor(p, this.partColor(p, dark));
@@ -604,7 +718,7 @@ export class WorkspaceState {
 }
 
 function emptyMeta(part: string): PartMeta {
-	return { part, file: `parts/${part}.ts`, name: part, ok: false, partial: true, empty: true, problems: [], params: [], quality: 'fine', faces: [], edges: [], vertices: [], faceEdges: [], timings: { total: 0, script: 0, ops: 0, mesh: 0, cacheHits: 0, cacheMisses: 0 } };
+	return { part, file: `studios/${part.split(':')[0]}.ts`, name: part, ok: false, partial: true, empty: true, problems: [], params: [], quality: 'fine', faces: [], edges: [], vertices: [], faceEdges: [], timings: { total: 0, script: 0, ops: 0, mesh: 0, cacheHits: 0, cacheMisses: 0 } };
 }
 
 function pref(key: string, fallback: boolean): boolean {

@@ -144,6 +144,34 @@ describe("refcount sweep", () => {
   });
 });
 
+describe("document thumbnails", () => {
+  const bytes = (n: number) => new Uint8Array([...PNG, n]);
+  const hashOf = async (r: Response) => ((await r.json()) as { hash: string }).hash;
+
+  test("set after upload, signed for members only, never replaced by an older render, kept by the sweep", async () => {
+    const doc = await newDoc(db, ada);
+    const [l1, d1, l2, d2] = await Promise.all([1, 2, 3, 4].map(async (n) => hashOf(await upload(ada, doc, bytes(n)))));
+    const missing = await runMutator(db, mutators.document.setThumbnail({ id: doc, light: "c".repeat(64), dark: d1, version: 1 }), { userID: ada });
+    expect(missing.ok).toBe(false);
+    expect((await runMutator(db, mutators.document.setThumbnail({ id: doc, light: l2, dark: d2, version: 2 }), { userID: ada })).ok).toBe(true);
+    await runMutator(db, mutators.document.setThumbnail({ id: doc, light: l1, dark: d1, version: 1 }), { userID: ada });
+    const [row] = await db.sql`SELECT thumb_light, thumb_dark, thumb_version FROM documents WHERE id = ${doc}`;
+    expect(row).toEqual({ thumb_light: l2, thumb_dark: d2, thumb_version: 2 });
+    expect((await runMutator(db, mutators.document.setThumbnail({ id: doc, light: l1, dark: d1, version: 3 }), { userID: bob })).ok).toBe(false);
+
+    const urls = await blobs.thumbnailURLs(ada, [doc]);
+    expect(urls[doc]!.light).toContain(l2);
+    expect((await blobs.handle(new Request(urls[doc]!.dark))).status).toBe(200);
+    expect(await blobs.thumbnailURLs(bob, [doc])).toEqual({});
+
+    await db.sql`UPDATE blobs SET created_at = now() - interval '2 days' WHERE hash IN (${l1}, ${d1}, ${l2}, ${d2})`;
+    const { deleted } = await sweepBlobs(db, store);
+    expect(deleted).toEqual(expect.arrayContaining([l1, d1]));
+    expect(deleted).not.toContain(l2);
+    expect(deleted).not.toContain(d2);
+  });
+});
+
 // Runs against the compose MinIO (or any S3) when S3_TEST_ENDPOINT is set.
 const s3 = process.env.S3_TEST_ENDPOINT;
 describe.skipIf(!s3)("S3 adapter", () => {

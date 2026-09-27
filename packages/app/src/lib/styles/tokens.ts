@@ -21,15 +21,15 @@ export interface SelectionColors {
 
 export const selection: Record<ThemeName, SelectionColors> = {
 	light: {
-		preselect: '#ff9933',
-		selectedStroke: '#f77f00',
-		selectedFill: '#ff921e',
+		preselect: '#f5ae4f',
+		selectedStroke: '#e0922a',
+		selectedFill: '#f2b25c',
 		selectedFillOpacity: 0.5
 	},
 	dark: {
-		preselect: '#ffa347',
-		selectedStroke: '#ff8c1a',
-		selectedFill: '#ff9628',
+		preselect: '#f7b45a',
+		selectedStroke: '#eda03a',
+		selectedFill: '#eaa84f',
 		selectedFillOpacity: 0.46
 	}
 };

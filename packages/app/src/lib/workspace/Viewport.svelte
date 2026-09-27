@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { dev } from '$app/environment';
-	import { Crosshair, Copy, EyeOff, Focus, Code2, MessageCircle, Ruler, Layers, Plus, Bot, Box, X, FlipVertical2 } from '@lucide/svelte';
+	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
@@ -23,7 +23,7 @@
 	import NoteComposer from './NoteComposer.svelte';
 	import { rise, fadeOut } from '$lib/styles/motion';
 
-	let { ws, nc, onAddPart, onConnect, onOpenNote }: { ws: WorkspaceState; nc: NotesController; onAddPart: () => void; onConnect: () => void; onOpenNote: (id: string) => void } = $props();
+	let { ws, nc, onAddStudio, onConnect, onOpenNote }: { ws: WorkspaceState; nc: NotesController; onAddStudio: () => void; onConnect: () => void; onOpenNote: (id: string) => void } = $props();
 
 	let host: HTMLDivElement;
 	let viewer: Viewer | null = $state.raw(null);
@@ -32,6 +32,12 @@
 	let down: { x: number; y: number; button: number } | null = null;
 	/** Box select: left-drag in the select tool. Left→right = window, right→left = crossing. */
 	let box = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+	/**
+	 * Dragging a part of an assembly (select tool, left button on a part that can move). It starts
+	 * once the pointer moves; a click without moving still selects. The grabbed point follows the
+	 * cursor on a plane facing the camera, through the solver.
+	 */
+	let partDrag: { part: string; local: [number, number, number]; plane: THREE.Plane; x: number; y: number; started: boolean } | null = null;
 	/** Tab cycles through the faces stacked under the cursor (§8 Selection). */
 	let stack: { x: number; y: number; refs: EntityRef[]; i: number } | null = null;
 	let pointer: { x: number; y: number } | null = null;
@@ -53,6 +59,12 @@
 		if (e.button !== 2 || !down || down.button !== 2) return;
 		const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4;
 		if (moved) return;
+		// right-click selects like a left click first (keeping a selection it lands inside), so the menu acts on it
+		if (ws.tool === 'select') {
+			const ref = ctxTarget;
+			if (!ref) ws.clearSelection();
+			else if (!ws.selection.some((s) => s.part === ref.part && s.kind === ref.kind && s.index === ref.index)) ws.select([ref]);
+		}
 		synthetic = true;
 		host.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY, button: 2 }));
 		synthetic = false;
@@ -124,7 +136,7 @@
 		for (const a of ws.agents) {
 			if (a.status !== 'working' && a.status !== 'writing') continue;
 			const d = (a.detail ?? {}) as any;
-			if (typeof d.path === 'string' && d.path.startsWith('parts/')) working.add(d.path.slice(6, -3));
+			if (typeof d.path === 'string') for (const p of ws.parts) if (ws.scriptOf(p) === d.path) working.add(p);
 			if (d.noteID) for (const t of ws.notes.find((n) => n.id === d.noteID)?.anchor.targets ?? []) if (t.part) working.add(t.part);
 		}
 		viewer?.setShimmer([...working]);
@@ -145,6 +157,10 @@
 			fitted = true;
 			queueMicrotask(() => viewer!.setView('iso', false));
 		}
+	});
+	// documents-list thumbnail, once the geometry of a new version settles
+	$effect(() => {
+		if (viewer) ws.refreshThumbnail();
 	});
 	$effect(() => {
 		ws.selection;
@@ -187,25 +203,37 @@
 		let best: { id: string; d: number } | null = null;
 		for (const s of nc.strokes.filter((s) => !s.noteID)) {
 			for (const pt of s.points) {
-				const sp = viewer!.project(new THREE.Vector3(...pt));
+				const sp = viewer!.project(viewer!.toWorld(s.part, new THREE.Vector3(...pt)));
 				if (!sp) continue;
 				const d = Math.hypot(sp.x - x, sp.y - y);
 				if (d < 10 && (!best || d < best.d)) best = { id: s.id, d };
 			}
 		}
 		if (best) {
-			ws.zero.mutate(mutators.markup.remove({ id: best.id }));
-			if (nc.draft) nc.draft = { ...nc.draft, strokeIDs: nc.draft.strokeIDs.filter((i) => i !== best!.id) };
+			ws.mutate(mutators.markup.remove({ id: best.id }), 'Erase stroke');
 		}
 	}
 
 	function onMove(e: PointerEvent) {
+		if (partDrag && e.buttons & 1 && viewer) {
+			if (!partDrag.started) {
+				if (Math.hypot(e.clientX - partDrag.x, e.clientY - partDrag.y) <= 4) return;
+				if (!ws.asm.startDrag(partDrag.part, partDrag.local)) return void (partDrag = null);
+				partDrag.started = true;
+				host.setPointerCapture(e.pointerId);
+				onLeave();
+			}
+			const r = host.getBoundingClientRect();
+			const hit = viewer.rayAt(e.clientX - r.left, e.clientY - r.top).intersectPlane(partDrag.plane, new THREE.Vector3());
+			if (hit) ws.asm.dragTo([hit.x, hit.y, hit.z]);
+			return;
+		}
 		if (stroke && e.buttons & 1) {
 			// the browser merges moves into one event per frame: take every sub-sample, so a slow
 			// frame doesn't flatten a stroke
 			const samples = (e.getCoalescedEvents?.() ?? []).length ? e.getCoalescedEvents() : [e];
 			for (const ev of samples) addPenSample(ev);
-			viewer!.setMarkup([...markupFor(), { id: 'live', points: stroke.points, color: nc.penColor, width: 3 }]);
+			renderMarkup();
 			return;
 		}
 		strokeless(e);
@@ -217,7 +245,7 @@
 			const pp = penPoint(e);
 			if (pp) {
 				const last = stroke.points[stroke.points.length - 1];
-				if (!last || pp.p.distanceTo(new THREE.Vector3(...last)) > 0.05) stroke.points.push([pp.p.x, pp.p.y, pp.p.z]);
+				if (!last || pp.p.distanceToSquared(new THREE.Vector3(...last)) > 1e-12) stroke.points.push([pp.p.x, pp.p.y, pp.p.z]);
 				if (pp.ref) {
 					stroke.part ??= pp.ref.part;
 					const k = `${pp.ref.part}:${pp.ref.kind}:${pp.ref.index}`;
@@ -230,7 +258,7 @@
 	function strokeless(e: PointerEvent) {
 		const rr = host.getBoundingClientRect();
 		pointer = { x: e.clientX - rr.left, y: e.clientY - rr.top };
-		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !e.altKey && !viewer?.controls.spaceHeld && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
+		if (down && down.button === 0 && ws.tool === 'select' && e.buttons & 1 && !box && !partDrag && !e.altKey && !viewer?.controls.spaceHeld && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) {
 			box = { x0: down.x - rr.left, y0: down.y - rr.top, x1: pointer.x, y1: pointer.y };
 		}
 		if (box) {
@@ -241,6 +269,7 @@
 		stack = null;
 		if (ws.tool === 'pencil') return viewer.setPreselect(null);
 		const ref = pickAt(e);
+		host.style.cursor = ws.tool === 'select' && ref && ws.asm.movable(ref.part) ? 'grab' : '';
 		const h = ws.hover;
 		if (ref && h && ref.part === h.part && ref.kind === h.kind && ref.index === h.index) return clearTimeout(hoverTimer);
 		// the preselect waits for the pointer to linger briefly, so sweeping across faces stays calm
@@ -260,25 +289,51 @@
 		down = { x: e.clientX, y: e.clientY, button: e.button };
 		if (ws.tool === 'pencil' && e.button === 0 && viewer) {
 			if (nc.eraser) return eraseAt(e);
-			stroke = { points: [], part: null, plane: null, crossed: [], seen: new Set() };
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(viewer.camera.getWorldDirection(new THREE.Vector3()).negate(), viewer.controls.target);
+			stroke = { points: [], part: null, plane, crossed: [], seen: new Set() };
 			nc.holdComposer();
 			host.setPointerCapture(e.pointerId);
-			const pp = penPoint(e);
-			if (pp) stroke.points.push([pp.p.x, pp.p.y, pp.p.z]);
+			addPenSample(e);
+			renderMarkup();
 			return;
 		}
-		// right-click only targets the context menu; it never changes the selection
-		if (e.button === 2) ctxTarget = pickAt(e);
+		if (ws.tool === 'select' && e.button === 0 && viewer && !e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && !viewer.controls.spaceHeld) {
+			const r = host.getBoundingClientRect();
+			const hit = viewer.pickPoint(e.clientX - r.left, e.clientY - r.top);
+			if (hit?.local && ws.asm.movable(hit.part)) {
+				const facing = viewer.camera.getWorldDirection(new THREE.Vector3()).negate();
+				partDrag = { part: hit.part, local: [hit.local.x, hit.local.y, hit.local.z], plane: new THREE.Plane().setFromNormalAndCoplanarPoint(facing, hit.point), x: e.clientX, y: e.clientY, started: false };
+			}
+		}
+		// right-click targets the context menu (a Tab-cycled preselection wins, as for a click); it selects on release
+		if (e.button === 2) ctxTarget = stack && ws.hover ? ws.hover : pickAt(e);
 	}
 
 	async function onUp(e: PointerEvent) {
+		if (partDrag && e.button === 0) {
+			const d = partDrag;
+			partDrag = null;
+			if (d.started) {
+				down = null;
+				host.releasePointerCapture?.(e.pointerId);
+				await ws.asm.endDrag();
+				return;
+			}
+		}
 		if (stroke) {
+			addPenSample(e);
 			const s = stroke;
 			stroke = null;
-			if (s.points.length < 2 || !s.part) return renderMarkup();
+			down = null;
+			host.releasePointerCapture(e.pointerId);
+			if (!s.points.length || !s.part) return renderMarkup();
+			// stored in the part's coordinates, so the stroke moves with it in an assembly
+			const part = s.part;
+			s.points = s.points.map((p) => viewer!.toLocal(part, new THREE.Vector3(...p)).toArray() as [number, number, number]);
+			s.crossed = s.crossed.map((t) => localTarget(t));
 			const id = newID();
 			const r = host.getBoundingClientRect();
-			ws.zero.mutate(mutators.markup.add({ id, documentID: ws.documentID, part: s.part, points: s.points, color: nc.penColor, width: 3 }));
+			ws.mutate(mutators.markup.add({ id, documentID: ws.documentID, part: s.part, points: s.points, color: nc.penColor, width: 3 }), 'Draw stroke');
 			nc.addStrokeToDraft(id, s.crossed, { x: e.clientX - r.left, y: e.clientY - r.top });
 			return;
 		}
@@ -303,7 +358,7 @@
 			const ref = edge?.kind === 'edge' ? edge : hit;
 			if (!ref) return;
 			const point = hit?.point ?? viewer.entityCenter(ref)!;
-			const targets: DraftTarget[] = [{ ref: { part: ref.part, kind: ref.kind, index: ref.index }, point: [point.x, point.y, point.z], normal: hit?.normal ? [hit.normal.x, hit.normal.y, hit.normal.z] : undefined }];
+			const targets: DraftTarget[] = [localTarget({ ref: { part: ref.part, kind: ref.kind, index: ref.index }, point: [point.x, point.y, point.z], normal: hit?.normal ? [hit.normal.x, hit.normal.y, hit.normal.z] : undefined })];
 			if (nc.reanchoring) return void nc.reanchor(nc.reanchoring, targets[0]);
 			// shift adds to the draft's targets (a note can point at many entities)
 			const all = e.shiftKey && nc.draft ? [...nc.draft.targets, ...targets] : targets;
@@ -350,7 +405,12 @@
 		try {
 			const m = await ws.engine.measure(sel[0] as any, sel[1] as any);
 			if (ws.selection !== sel) return;
-			pair = pairReadouts(sel, m, ws.results);
+			pair = pairReadouts(sel, m, ws.results, (part, v, dir) => {
+				const t = viewer?.partTransform(part);
+				if (!t) return v;
+				const w = new THREE.Vector3(...v);
+				return (dir ? w.transformDirection(t) : w.applyMatrix4(t)).toArray() as [number, number, number];
+			});
 			// when "distance" is ambiguous (two holes), lead with center to center
 			pinned = pair.some((r) => r.key === 'center') ? 'center' : 'min';
 		} catch {}
@@ -361,7 +421,7 @@
 		const text = `${shown.label} ${shown.value} ${shown.unit}${angle ? `, ${angle.value}°` : ''}: `;
 		const a = new THREE.Vector3(...shown.a),
 			b = new THREE.Vector3(...shown.b);
-		const targets = ws.selection.map((ref, i) => ({ ref, point: (i ? shown.b : shown.a) as [number, number, number] }));
+		const targets = ws.selection.map((ref, i) => localTarget({ ref, point: (i ? shown.b : shown.a) as [number, number, number] }));
 		nc.startFromTargets(targets, viewer?.project(a.add(b).multiplyScalar(0.5)) ?? { x: 200, y: 200 }, text);
 	}
 
@@ -374,13 +434,29 @@
 	const sectionRange = $derived.by(() => {
 		const r = Object.values(ws.results).filter((x) => x.bbox);
 		if (!r.length || !ws.section) return { min: -50, max: 50 };
-		const k = { X: 0, Y: 1, Z: 2 }[ws.section.axis];
+		const pl = ws.section.plane;
+		if (ws.section.axis === 'Face' && pl) {
+			// signed distance of the model's bbox corners from the face plane
+			const lo = [0, 1, 2].map((k) => Math.min(...r.map((x) => x.bbox!.min[k])));
+			const hi = [0, 1, 2].map((k) => Math.max(...r.map((x) => x.bbox!.max[k])));
+			const ds = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [0, 1, 2].reduce((d, k) => d + ((i >> k) & 1 ? hi[k] : lo[k]) * pl.normal[k], 0) - [0, 1, 2].reduce((d, k) => d + pl.origin[k] * pl.normal[k], 0));
+			return { min: Math.min(...ds, 0), max: Math.max(...ds, 0) };
+		}
+		const k = { X: 0, Y: 1, Z: 2 }[ws.section.axis as 'X' | 'Y' | 'Z'];
 		return { min: Math.min(...r.map((x) => x.bbox!.min[k])), max: Math.max(...r.map((x) => x.bbox!.max[k])) };
 	});
 	$effect(() => {
 		const s = ws.section;
 		if (!viewer) return;
 		if (!s) return viewer.setSection(null);
+		if (s.axis === 'Face' && s.plane) {
+			const { origin, normal } = s.plane;
+			// a hair toward the kept side, so the face itself clips away cleanly instead of z-fighting the cap
+			const eps = Math.max(viewer.bounds().getSize(new THREE.Vector3()).length() * 1e-5, 1e-6);
+			const d = s.offset + (s.flip ? eps : -eps);
+			viewer.setSection({ origin: origin.map((c, k) => c + normal[k] * d), normal: s.flip ? normal.map((c) => -c) : normal });
+			return;
+		}
 		const n = s.axis === 'X' ? [1, 0, 0] : s.axis === 'Y' ? [0, 1, 0] : [0, 0, 1];
 		const o = n.map((c) => c * s.offset);
 		viewer.setSection({ origin: o, normal: s.flip ? n.map((c) => -c) : n });
@@ -393,10 +469,20 @@
 		const open = new Set(ws.notes.filter((n) => n.status !== 'Resolved' && !n.removedAt).map((n) => n.id));
 		return nc.strokes
 			.filter((s) => !s.noteID || open.has(s.noteID) || nc.hovered === s.noteID)
-			.map((s) => ({ id: s.id, points: s.points, color: s.color, width: s.width, dim: !!s.noteID && nc.hovered !== null && nc.hovered !== s.noteID }));
+			.map((s) => ({ id: s.id, points: s.points, color: s.color, width: s.width, part: s.part, dim: !!s.noteID && nc.hovered !== null && nc.hovered !== s.noteID }));
+	}
+
+	/** Note targets are stored in part coordinates (assembly parts move; the anchor moves with them). */
+	function localTarget(t: DraftTarget): DraftTarget {
+		if (!viewer) return t;
+		const p = viewer.toLocal(t.ref.part, new THREE.Vector3(...t.point));
+		const n = t.normal ? viewer.toLocal(t.ref.part, new THREE.Vector3(...t.point).add(new THREE.Vector3(...t.normal))).sub(p).normalize() : undefined;
+		return { ...t, point: p.toArray() as [number, number, number], normal: n?.toArray() as [number, number, number] | undefined };
 	}
 	function renderMarkup() {
-		viewer?.setMarkup(markupFor());
+		const marks: Parameters<Viewer['setMarkup']>[0] = markupFor();
+		if (stroke) marks.push({ id: 'live', points: stroke.points, color: nc.penColor, width: 3, part: undefined, dim: false });
+		viewer?.setMarkup(marks);
 	}
 	$effect(() => {
 		nc.strokes;
@@ -431,10 +517,22 @@
 				line: p.source?.line
 			};
 		}
+		const ap = ws.asm.problems[0];
+		if (ap) {
+			const name = ws.asm.assemblies.find((a) => a.id === ap.assembly)?.name ?? ap.assembly;
+			return { tone: 'error' as const, title: `${name}: joints need a fix`, detail: ws.asm.problems.length > 1 ? `${ws.asm.problems.length} problems` : '', message: ap.message, source: ap.source ? `${ap.source.file.split('/').pop()}:${ap.source.line}` : undefined, file: ap.source?.file, line: ap.source?.line };
+		}
 		if (warnings.length) {
 			const r = warnings[0];
 			const p = r.problems[0];
 			return { tone: 'warning' as const, title: `${r.name}: ${warnings.reduce((n, w) => n + w.problems.length, 0)} warning${warnings.length > 1 || r.problems.length > 1 ? 's' : ''}`, detail: '', message: p.message, source: p.source ? `${p.source.file.split('/').pop()}:${p.source.line}` : undefined, file: p.source?.file, line: p.source?.line };
+		}
+		// assembly parts running into each other (the red in the viewport)
+		const hits = ws.asm.overlaps;
+		if (hits.length) {
+			const n = (id: string) => ws.results[id]?.name ?? id;
+			const o = hits[0];
+			return { tone: 'warning' as const, title: hits.length === 1 ? `${n(o.a)} and ${n(o.b)} overlap` : `${hits.length} overlaps`, detail: 'I hides the red', message: hits.map((h) => `${n(h.a)} and ${n(h.b)} share ${num(h.volume, 1)} mm³`).join('\n'), source: undefined, file: undefined, line: undefined };
 		}
 		return null;
 	});
@@ -446,7 +544,8 @@
 		ws.mode = 'code';
 	}
 
-	const busy = $derived(!ws.kernelReady || Object.values(ws.regen).some((s) => s !== 'idle'));
+	// an engine that failed to load shows its error in the status pill, not an endless loader
+	const busy = $derived((!ws.kernelReady && !ws.engineError) ||Object.values(ws.regen).some((s) => s !== 'idle'));
 	const empty = $derived(ws.synced && ws.parts.length === 0);
 	const neverGenerated = $derived(ws.synced && ws.parts.length > 0 && !Object.values(ws.results).some((r) => !r.empty));
 
@@ -455,8 +554,6 @@
 		const sel = ws.selection;
 		const items: MenuEntry[] = [];
 		const target = t ?? sel[0];
-		items.push({ label: 'Note', icon: MessageCircle, shortcut: ['C'], disabled: !target, onSelect: () => (ws.tool = 'note') });
-		items.push({ label: 'Measure', icon: Ruler, shortcut: ['M'], onSelect: () => (ws.tool = 'measure') });
 		if (target && target.kind !== ('part' as any)) {
 			items.push({
 				label: 'Select all from this operation',
@@ -491,24 +588,16 @@
 					ws.select((await ws.engine!.loopOf(target.part, edges[0], target.index)).map((index) => ({ part: target.part, kind: 'edge' as const, index })));
 				}
 			});
+			const plane = viewer?.facePlane(target) ?? null;
+			items.push({ label: 'Section view', icon: Scissors, disabled: !plane, onSelect: () => plane && (ws.section = { axis: 'Face', offset: 0, flip: false, plane }) });
 		}
-		items.push({ type: 'separator' });
+		if (items.length) items.push({ type: 'separator' });
 		if (target) {
 			items.push({ label: 'Isolate', icon: Focus, onSelect: () => ws.isolate(target.part) });
 			items.push({ label: 'Hide part', icon: EyeOff, onSelect: () => ws.setHidden(target.part, true) });
 		}
-		items.push({ label: 'Zoom to', icon: Crosshair, shortcut: ['F'], onSelect: () => (sel.length ? viewer?.fitSelection() : viewer?.fit()) });
 		if (target && target.kind !== ('part' as any)) {
 			items.push({ type: 'separator' });
-			items.push({
-				label: 'Reveal source',
-				icon: Code2,
-				disabled: !ws.kernelReady,
-				onSelect: async () => {
-					const d = await ws.engine!.describe(target.part, target.kind, target.index);
-					revealSource(d.createdBy?.source?.file, d.createdBy?.source?.line);
-				}
-			});
 			items.push({
 				label: 'Copy reference',
 				icon: Copy,
@@ -569,9 +658,9 @@
 		></div>
 	{/if}
 	{#if ws.section}
-		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-panel border border-line-subtle bg-elevated py-1 pr-1 pl-3 shadow-toolbar" data-testid="section-bar">
+		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="section-bar">
 			<span class="text-ui font-medium">Section</span>
-			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }]} onValueChange={(v) => (ws.section = { ...ws.section!, axis: v as any, offset: axisCenter(v as any) })} class="w-28" />
+			<SegmentedControl value={ws.section.axis} items={[{ value: 'X', text: 'X' }, { value: 'Y', text: 'Y' }, { value: 'Z', text: 'Z' }, ...(ws.section.axis === 'Face' ? [{ value: 'Face', text: 'Face' }] : [])]} onValueChange={(v) => v !== 'Face' && (ws.section = { axis: v as 'X' | 'Y' | 'Z', flip: ws.section!.flip, offset: axisCenter(v as 'X' | 'Y' | 'Z') })} class={ws.section.axis === 'Face' ? 'w-44' : 'w-28'} />
 			<Slider value={ws.section.offset} min={sectionRange.min} max={sectionRange.max} step={(sectionRange.max - sectionRange.min) / 200 || 0.1} onValueChange={(v: number) => (ws.section = { ...ws.section!, offset: v })} class="w-40" aria-label="Section offset" />
 			<span class="w-16 text-label text-fg-secondary tabular-nums">{num(ws.section.offset, 1)} mm</span>
 			<IconButton label="Flip" size="sm" onclick={() => (ws.section = { ...ws.section!, flip: !ws.section!.flip })}><FlipVertical2 /></IconButton>
@@ -580,7 +669,7 @@
 	{/if}
 
 	{#if readouts.length}
-		<div class="absolute right-3 bottom-3 z-20 flex min-w-52 flex-col rounded-panel border border-line-subtle bg-elevated p-1 shadow-popover" data-testid="measure-card" in:rise={{ y: 4, scale: 0.98, origin: '100% 100%' }} out:fadeOut>
+		<div class="absolute right-3 bottom-3 z-20 flex min-w-52 flex-col rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] shadow-toolbar" data-testid="measure-card" in:rise={{ y: 4, scale: 0.98, origin: '100% 100%' }} out:fadeOut>
 			{#each readouts as r (r.key)}
 				{@const on = shown?.key === r.key}
 				{#if r.a}
@@ -613,11 +702,11 @@
 	{/if}
 
 	{#if empty}
-		<div class="absolute inset-0 z-10 grid place-items-center" data-testid="empty-document">
+		<div class="absolute inset-0 z-10 grid place-items-center bg-[radial-gradient(closest-side,var(--bg-canvas)_35%,color-mix(in_oklab,var(--bg-canvas)_60%,transparent))] backdrop-blur-[3px]" data-testid="empty-document">
 			<EmptyState size="panel" class="animate-enter" title="No parts yet">
 				{#snippet action()}
 					<div class="flex gap-2">
-						<Button variant="primary" onclick={onAddPart} data-testid="add-part"><Plus size={14} /> Add a part</Button>
+						<Button variant="primary" onclick={onAddStudio} data-testid="add-studio"><Plus size={14} /> Add a studio</Button>
 						<Button onclick={onConnect}><Bot size={14} /> Connect an agent</Button>
 					</div>
 				{/snippet}

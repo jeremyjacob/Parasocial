@@ -59,6 +59,8 @@ export async function createPlatform(opts: PlatformOptions = {}) {
     auth: auth.handle,
     /** GET|POST /api/blobs/[...path] */
     blobs: blobs.handle,
+    /** Signed documents-list thumbnail URLs for a user's documents (SSR and POST /api/blobs/thumbs) */
+    thumbnailURLs: blobs.thumbnailURLs,
     /** GET /api/documents/:id/export, POST /api/documents/import */
     documents: zip.handle,
     /** GET /api/versions/:id */

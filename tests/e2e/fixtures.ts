@@ -27,7 +27,7 @@ export async function signUp(page: Page, name = uniqueName()) {
 }
 
 export async function openExample(page: Page, slug: string, parts: string[]) {
-  await page.getByTestId(`example-${slug}`).click();
+  await page.getByTestId(`example-${slug}`).dblclick();
   await page.waitForURL(/\/d\//);
   await page.waitForFunction((ps) => {
     const ws = (globalThis as any).__ws;

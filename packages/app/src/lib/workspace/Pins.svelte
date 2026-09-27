@@ -15,13 +15,15 @@
 	let offs: (() => void)[] = [];
 
 	const shown = $derived(nc.pins.filter((p) => !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
+	/** Pins are in part coordinates; assembly parts may have moved. */
+	const at = (p: Pin) => viewer.toWorld(p.part, new THREE.Vector3(...p.point));
 
 	function layout() {
 		raf = 0;
 		const out: Placed[] = [];
 		for (const p of shown) {
 			if (occluded.has(p.noteID) && !p.orphaned && nc.active !== p.noteID) continue;
-			const s = viewer.project(new THREE.Vector3(...p.point));
+			const s = viewer.project(at(p));
 			if (!s) continue;
 			// cluster pins that land within 22px of each other
 			const near = out.find((c) => Math.hypot(c.x - s.x, c.y - s.y) < 22);
@@ -34,13 +36,17 @@
 
 	function occlusion() {
 		const next = new Set<string>();
-		for (const p of shown) if (!viewer.isPointVisible(new THREE.Vector3(...p.point))) next.add(p.noteID);
+		const vis = viewer.pointsVisible(shown.map(at));
+		shown.forEach((p, i) => !vis[i] && next.add(p.noteID));
 		occluded = next;
 		schedule();
 	}
 
 	onMount(() => {
 		offs.push(viewer.on('camera', schedule));
+		// dragging an assembly moves pins with their parts; occlusion once it settles
+		let settle: ReturnType<typeof setTimeout> | undefined;
+		offs.push(viewer.on('poses', () => (schedule(), clearTimeout(settle), (settle = setTimeout(occlusion, 150)))));
 		offs.push(viewer.on('moving', (on: boolean) => !on && occlusion()));
 		occlusion();
 	});
@@ -56,7 +62,7 @@
 
 	function zoomTo(c: Placed) {
 		const box = new THREE.Box3();
-		for (const p of c.pins) box.expandByPoint(new THREE.Vector3(...p.point));
+		for (const p of c.pins) box.expandByPoint(at(p));
 		box.expandByScalar(Math.max(5, box.getSize(new THREE.Vector3()).length() * 0.3));
 		viewer.fit(box, true);
 	}

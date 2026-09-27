@@ -12,30 +12,34 @@ const update = !!process.env.UPDATE_GOLDEN;
 beforeAll(load);
 
 describe("golden: examples + corpus parts", () => {
-  const files = [...new Glob("examples/*/parts/*.ts").scanSync(root), ...new Glob("tests/corpus/parts/*.ts").scanSync(root)].sort();
+  const files = [...new Glob("examples/*/studios/*.ts").scanSync(root), ...new Glob("tests/corpus/studios/*.ts").scanSync(root)].sort();
   for (const f of files) {
-    test(f, async () => {
-      const { engine, part } = engineFor(join(root, f));
-      const r = regen(engine, part);
-      expect(r.problems.filter((p) => p.severity === "error")).toEqual([]);
-      const g = summarize(r.record);
-      const gp = join(import.meta.dir, "golden", f.replace(/\//g, "__") + ".json");
-      if (update || !existsSync(gp)) writeFileSync(gp, JSON.stringify(g, null, 2) + "\n");
-      const want: Golden = JSON.parse(readFileSync(gp, "utf8"));
-      expect(g.valid).toBe(true);
-      expect(g.faces).toBe(want.faces);
-      expect(g.edges).toBe(want.edges);
-      expect(g.vertices).toBe(want.vertices);
-      expect(Math.abs(g.volume - want.volume) / want.volume).toBeLessThan(1e-6);
-      expect(Math.abs(g.area - want.area) / want.area).toBeLessThan(1e-6);
-      expect(g.faceNames).toEqual(want.faceNames);
-    });
+    // every part the script exports: the default is golden/<file>.json, a named export golden/<file>#<name>.json
+    const { parts } = engineFor(join(root, f));
+    for (const { id, export: key } of parts) {
+      test(key === "default" ? f : `${f} ${key}`, async () => {
+        const { engine } = engineFor(join(root, f));
+        const r = regen(engine, id);
+        expect(r.problems.filter((p) => p.severity === "error")).toEqual([]);
+        const g = summarize(r.record);
+        const gp = join(import.meta.dir, "golden", f.replace(/\//g, "__") + (key === "default" ? "" : `#${key}`) + ".json");
+        if (update || !existsSync(gp)) writeFileSync(gp, JSON.stringify(g, null, 2) + "\n");
+        const want: Golden = JSON.parse(readFileSync(gp, "utf8"));
+        expect(g.valid).toBe(true);
+        expect(g.faces).toBe(want.faces);
+        expect(g.edges).toBe(want.edges);
+        expect(g.vertices).toBe(want.vertices);
+        expect(Math.abs(g.volume - want.volume) / want.volume).toBeLessThan(1e-6);
+        expect(Math.abs(g.area - want.area) / want.area).toBeLessThan(1e-6);
+        expect(g.faceNames).toEqual(want.faceNames);
+      });
+    }
   }
 });
 
 describe("fillets survive upstream dimension changes", () => {
   test("filletchain across a parameter sweep", async () => {
-    const { engine } = engineFor(join(root, "tests/corpus/parts/filletchain.ts"));
+    const { engine } = engineFor(join(root, "tests/corpus/studios/filletchain.ts"));
     const base = regen(engine, "filletchain");
     const want = names(base.record!, "face").map((n) => n.str).sort();
     const verticals = want.filter((n) => n.startsWith("filletchain/verticals · fillet"));
@@ -48,7 +52,7 @@ describe("fillets survive upstream dimension changes", () => {
   });
 
   test("bracket fillet + chamfer names across width/thickness", async () => {
-    const { engine } = engineFor(join(root, "examples/bracket/parts/bracket.ts"));
+    const { engine } = engineFor(join(root, "examples/bracket/studios/bracket.ts"));
     const want = names(regen(engine, "bracket").record, "face").map((n) => n.str).sort();
     for (const width of [30, 45, 80]) for (const thickness of [1.5, 3, 8]) {
       const r = regen(engine, "bracket", { width, thickness });
@@ -59,7 +63,7 @@ describe("fillets survive upstream dimension changes", () => {
 
 describe("split faces", () => {
   test("a split face resolves to all descendants and disambiguates by point", async () => {
-    const { engine } = engineFor(join(root, "tests/corpus/parts/split.ts"));
+    const { engine } = engineFor(join(root, "tests/corpus/studios/split.ts"));
     const r = regen(engine, "split");
     const rec = r.record!;
     const top = nameIndex(rec, "face").get("split/block · cap.end")!;
@@ -84,7 +88,7 @@ describe("split faces", () => {
 
 describe("anchors: name, nearest, orphaned", () => {
   test("a note on a fillet face orphans when the fillet goes away; a nearby face falls back to nearest", async () => {
-    const { engine } = engineFor(join(root, "tests/corpus/parts/filletchain.ts"));
+    const { engine } = engineFor(join(root, "tests/corpus/studios/filletchain.ts"));
     const r = regen(engine, "filletchain");
     const rec = r.record!;
     const fname = names(rec, "face").find((n) => n.str.startsWith("filletchain/verticals · fillet"))!.str;

@@ -26,7 +26,7 @@
 <header class="flex h-12 shrink-0 items-center gap-3 border-b border-line-subtle bg-panel px-4">
 	<a href="/" class="focus-ring flex items-center gap-2 rounded-control" aria-label="Parasocial home">
 		<Logo />
-		<span class="text-body font-semibold">Parasocial</span>
+		<span class="text-body font-heading font-medium">Parasocial</span>
 	</a>
 	{#if title}
 		<span class="text-fg-tertiary">/</span>

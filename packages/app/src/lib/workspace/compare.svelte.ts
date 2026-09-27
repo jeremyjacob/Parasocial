@@ -38,13 +38,15 @@ export class CompareController {
 		return out;
 	}
 
-	private async regenerate(id: string, parts: string[]): Promise<Map<string, PartResult>> {
+	/** Regenerate `parts` (default: all of them) as they were in version `id`; parts it didn't have are skipped. */
+	private async regenerate(id: string, parts?: string[]): Promise<Map<string, PartResult>> {
 		const v = await this.fetchVersion(id);
 		const out = new Map<string, PartResult>();
 		const doc = { scripts: v.scripts, overrides: this.overridesIn(v.version) };
-		for (const part of parts) {
-			if (!(`parts/${part}.ts` in v.scripts)) continue;
-			const r = await this.ws.engine!.regenerateSnapshot(`${id}:${this.ws.activeConfigID}`, doc, part);
+		const key = `${id}:${this.ws.activeConfigID}`;
+		const had = (await this.ws.engine!.snapshotParts(key, doc)).map((p) => p.id);
+		for (const part of parts ? parts.filter((p) => had.includes(p)) : had) {
+			const r = await this.ws.engine!.regenerateSnapshot(key, doc, part);
 			if (r?.mesh) out.set(part, r);
 		}
 		return out;
@@ -110,10 +112,10 @@ export class CompareController {
 		try {
 			const v = await this.fetchVersion(id);
 			this.viewScripts = v.scripts;
-			const res = await this.regenerate(id, Object.keys(v.scripts).filter((p) => /^parts\/[^/]+\.ts$/.test(p)).map((p) => p.slice(6, -3)));
+			const res = await this.regenerate(id);
 			const dark = document.documentElement.dataset.theme === 'dark';
 			for (const part of ws.parts) if (!res.has(part)) ws.viewer.removePart(part);
-			for (const [part, r] of res) ws.viewer.setPart({ id: part, mesh: r.mesh!, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))), color: ws.partColor(part, dark) });
+			for (const [part, r] of res) ws.viewer.setPart({ id: part, mesh: r.mesh!, faceEdges: r.faceEdges, hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam ? [i] : []))), color: ws.partColor(part, dark), appearance: r.appearance });
 		} catch (e) {
 			this.error = (e as Error).message;
 		} finally {

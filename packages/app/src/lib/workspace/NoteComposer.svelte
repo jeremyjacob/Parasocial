@@ -9,19 +9,16 @@
 	let el: HTMLTextAreaElement;
 	const d = $derived(nc.draft!);
 	const label = $derived.by(() => {
-		const kinds = d.targets.map((t) => t.ref.kind as string);
-		const one = kinds.length === 1 ? kinds[0] : `${kinds.length} items`;
 		const parts = [...new Set(d.targets.map((t) => ws.results[t.ref.part]?.name ?? t.ref.part))];
-		return `${one === 'part' ? 'Part' : one.charAt(0).toUpperCase() + one.slice(1)} · ${parts.join(', ')}`;
+		return parts.join(', ');
 	});
 	$effect(() => {
 		d;
-		queueMicrotask(() => el?.focus());
+		if (ws.tool !== 'pencil') queueMicrotask(() => el?.focus());
 	});
 	async function post() {
-		if (!text.trim() && !d.strokeIDs.length) return;
-		await nc.post(text.trim());
-		text = '';
+		if (!text.trim() && !nc.draftStrokeIDs.length) return;
+		if (await nc.post(text.trim())) text = '';
 	}
 	function onkey(e: KeyboardEvent) {
 		e.stopPropagation();

@@ -11,7 +11,7 @@ test.describe("workspace", () => {
     await page.mouse.move(p.x, p.y);
     await page.mouse.click(p.x, p.y);
     await expect(page.getByTestId("stable-name")).toHaveText("bracket/base · cap.end");
-    await expect(page.getByTestId("created-by-source")).toContainText("bracket.ts:10");
+    await expect(page.getByTestId("created-by-source")).toContainText("bracket.ts:12");
     // reveal source opens Code mode at that line
     await page.getByTestId("created-by-source").click();
     await expect(page.getByTestId("code-editor")).toBeVisible();

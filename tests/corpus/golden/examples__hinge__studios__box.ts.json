@@ -1,0 +1,26 @@
+{
+  "volume": 29252,
+  "area": 29592,
+  "faces": 16,
+  "edges": 36,
+  "vertices": 24,
+  "valid": true,
+  "faceNames": [
+    "box/bay · xmax",
+    "box/bay · xmin",
+    "box/bay · ymax",
+    "box/bay · zmax",
+    "box/bay · zmin",
+    "box/block · xmax",
+    "box/block · xmin",
+    "box/block · ymax",
+    "box/block · ymin",
+    "box/block · zmax",
+    "box/block · zmin",
+    "box/well · xmax",
+    "box/well · xmin",
+    "box/well · ymax",
+    "box/well · ymin",
+    "box/well · zmin"
+  ]
+}

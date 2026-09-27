@@ -10,7 +10,7 @@ Target feel: Figma UI3 / Framer. Calm, precise, dense but never barren.
 
 ```
 src/app.html                     pre-paint theme script (no flash)
-src/app.css                      tailwind + Inter + tokens + base
+src/app.css                      tailwind + Inter / Montserrat + tokens + base
 src/lib/styles/tokens.css        every token, light + dark, Tailwind @theme mapping
 src/lib/styles/tokens.ts         same values for Three.js / workers (selection, part palette, motion)
 src/lib/styles/base.css          element defaults, utilities: field, focus-ring, nest/nest-inner, animate-pop
@@ -31,7 +31,7 @@ scripts/screens.ts               Playwright screenshots of /design → design-sc
 - **Orange is selection.** `--selection-preselect`, `--selection-selected-stroke`, `--selection-selected-fill`.
   Nothing else may be orange: not warnings (those are amber-yellow, hue ~45°), not part colours, not avatars.
   The selection label pill is orange because it belongs to the selection.
-- **List selection is neutral** (`bg-active`), so the parts list never competes with orange 3D selection.
+- **List selection is a blue tint** (`bg-accent-subtle`), so the parts list never competes with orange 3D selection.
 - **Overrides** use `--override` (the accent's text tone) for the value and the dot.
 - **Agents** are not a hue. They're graphite squircles (`--agent`) with a sparkle glyph; a working agent gets
   a slow accent sweep around the avatar. Human avatars are round with pale identity tints (`avatarTints`).
@@ -65,8 +65,10 @@ glare on the dark canvas.
 
 ### Typography
 
-Inter Variable, self-hosted through `@fontsource-variable/inter` (the woff2 files are bundled by Vite and
-served from our origin, so it's COEP-safe). The scale is compact:
+Inter Variable for body text and controls (`@fontsource-variable/inter`), Montserrat for headings
+(`@fontsource-variable/montserrat`). Both are self-hosted through Vite, so they are COEP-safe. Semantic headings
+use Montserrat automatically; use `font-heading font-medium` for non-heading elements styled as titles.
+The scale keeps controls compact and gives headings more room:
 
 | class | size/line | use |
 |---|---|---|
@@ -74,16 +76,18 @@ served from our origin, so it's COEP-safe). The scale is compact:
 | `text-label` | 11/16 | field labels (secondary grey), meta, badges |
 | `text-ui` | 12/16 | **default**: controls, menus, list rows, values |
 | `text-body` | 13/20 | reading text: notes, descriptions |
-| `text-title` | 15/20 | dialog titles, empty states |
-| `text-heading` / `text-display` | 20/28, 28/34 | /design and marketing-ish pages only |
+| `text-section` | 14/20 | panel and section headings |
+| `text-title` | 17/24 | dialog titles, empty states |
+| `text-heading` / `text-display` | 22/30, 30/38 | /design and marketing-ish pages only |
 
-Weights: 400 values/body, 500 controls/tabs/menus, 600 section titles. Every `input`, `output` and
-`[role=spinbutton]` gets tabular numerals from base.css; use the `tabular` utility on any other number.
+Weights: Inter 400 for values/body and 500 for controls/tabs/menus; Montserrat 500 for headings and the logotype.
+Every `input`, `output` and `[role=spinbutton]` requests tabular numerals from base.css;
+use the `tabular` utility on any other number.
 Tailwind's default palette, type scale, radii and shadows are removed (`--*: initial`), so only tokens exist.
 
 ### Spacing, sizes, radii
 
-- 4px grid (Tailwind's `--spacing` = 4px). Controls 28px (`h-7`), small 24px, large 32px. List rows 32px.
+- 4px grid (Tailwind's `--spacing` = 4px). Controls 28px (`h-7`), small 24px, large 32px. List rows 28px.
   Panel section title rows 40px, 16px side padding. Top bar 44px.
 - Radii: `sm 4 · control 6 · md 8 · popover 10 · panel 12 · dialog 14 · full`.
 - **Concentric nesting: inner = outer − padding.** Encoded as paired vars and used by components:
@@ -125,7 +129,7 @@ and dialogs portal out of their subtree, a forced-theme scope must also provide 
    fixed dark grey because the tints are always pale.)
 2. **Icons**: `@lucide/svelte` at 16px, stroke 1.5, set once via `setLucideProps` in the layout. Use 12–14px
    only inside 20px chips or for chevrons in fields.
-3. **Heights**: 28px for anything interactive in panels, 32px for list rows and toolbar tools. Don't invent
+3. **Heights**: 28px for anything interactive in panels and list rows, 32px for toolbar tools. Don't invent
    in-between sizes.
 4. **Labels** are 11px secondary grey; values are 12px primary. Units and evaluated results are tertiary and
    sit at the right edge of the field.
@@ -182,7 +186,7 @@ is pinned for that reason.
 - Dev and preview send `COOP: same-origin` and `COEP: require-corp`, so anything that breaks under
   cross-origin isolation shows up in development. All assets (fonts included) are same-origin.
 - Weight: runtime deps are bits-ui, @lucide/svelte (tree-shaken per icon), tailwind-merge, tailwind-variants,
-  clsx, svelte-toolbelt (already a bits-ui dependency) and the Inter woff2 files. There's no toast, command or
+  clsx, svelte-toolbelt (already a bits-ui dependency) and the Inter / Montserrat woff2 files. There's no toast, command or
   animation library.
 
 ## Critique log (/design, 1440×900 @2×)
@@ -239,6 +243,6 @@ under Known gaps.
   measuring (every current use has equal widths).
 - The DropdownMenu checkbox entries in ViewportControls act as radios for display mode. That's semantically
   a `RadioGroup`; switch it when the menu model grows radio support.
-- Only Latin glyph subsets of Inter load by default (fontsource splits by unicode-range, so other scripts
+- Only needed glyph subsets of Inter and Montserrat load (fontsource splits by unicode-range, so other subsets
   load on demand).
 - Clay empty-state art is an SVG placeholder until the engine renders real AVIF/WebP clay shots.

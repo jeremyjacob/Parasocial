@@ -1,6 +1,8 @@
 import { part, param, sketch, plane, mm } from "parasocial";
 import { boltCircle } from "../lib/holes";
 
+export const name = "Flange";
+
 export default part("Flange", ({ color }) => {
   const od = param("outerDiameter", 90, { min: 40, max: 200, unit: mm });
   const bore = param("bore", 30, { min: 5, max: 80, unit: mm });

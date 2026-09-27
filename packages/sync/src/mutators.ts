@@ -73,6 +73,16 @@ async function pg(tx: Tx, text: string, params: unknown[] = []): Promise<Record<
   return [...(await tx.dbTransaction.query(text, params))] as Record<string, unknown>[];
 }
 
+/** Postgres channel for note activity agents may need to act on (see NoteEvent). */
+export const NOTE_EVENTS_CHANNEL = "parasocial_note_events";
+/** Payload on NOTE_EVENTS_CHANNEL: a note was created, or a human replied on one. */
+export type NoteEvent = { documentID: string; noteID: string; kind: "created" | "reply" };
+
+/** Wakes MCP sessions waiting on the document. Delivered on commit, so rolled-back mutations never announce. */
+async function notifyNote(tx: Tx, event: NoteEvent) {
+  if (isServer(tx)) await pg(tx, "SELECT pg_notify($1, $2)", [NOTE_EVENTS_CHANNEL, JSON.stringify(event)]);
+}
+
 const ROLE_RANK: Record<Role, number> = { viewer: 0, editor: 1, owner: 2 };
 
 function requireUser(ctx: Ctx): MutatorContext {
@@ -597,6 +607,47 @@ export const mutators = defineMutators({
       },
     ),
 
+    /**
+     * Where an assembly's joints were dragged to (`settings.poses[assembly][joint] = values`), or
+     * null to clear. Shared by everyone in the document; not a version (it moves parts, not geometry).
+     */
+    setPose: defineMutator(
+      z.object({
+        id,
+        assembly: z.string().min(1).max(200),
+        joints: z.record(z.string().min(1).max(200), z.array(z.number().finite()).max(6)).nullable(),
+      }),
+      async ({ tx, ctx, args }) => {
+        await authorize(tx, ctx, args.id, "editor");
+        const doc = await need(tx, await tx.run(zql.documents.where("id", args.id).one()), "Document");
+        if (!doc) return;
+        const settings = (doc.settings ?? {}) as Record<string, any>;
+        const poses: Record<string, unknown> = { ...(settings.poses ?? {}) };
+        if (args.joints) poses[args.assembly] = args.joints;
+        else delete poses[args.assembly];
+        await tx.mutate.documents.update({ id: args.id, settings: { ...settings, poses } as any });
+      },
+    ),
+
+    /**
+     * Records the documents-list thumbnail (blobs uploaded first). Not an edit: updatedAt stays,
+     * no version. Any member who can see the geometry may refresh it; an older render never
+     * replaces a newer one.
+     */
+    setThumbnail: defineMutator(
+      z.object({ id, light: z.string().regex(SHA256_RE), dark: z.string().regex(SHA256_RE), version: z.number().int().min(0) }),
+      async ({ tx, ctx, args }) => {
+        await authorize(tx, ctx, args.id, "viewer");
+        const doc = await tx.run(zql.documents.where("id", args.id).one());
+        if (!doc || (doc.thumbVersion ?? -1) > args.version) return;
+        if (isServer(tx)) {
+          const rows = await pg(tx, "SELECT hash FROM blobs WHERE hash = ANY($1)", [[args.light, args.dark]]);
+          if (rows.length < new Set([args.light, args.dark]).size) fail("blob_missing", "Upload the thumbnail before referencing it");
+        }
+        await tx.mutate.documents.update({ id: args.id, thumbLight: args.light, thumbDark: args.dark, thumbVersion: args.version });
+      },
+    ),
+
     delete: defineMutator(z.object({ id }), async ({ tx, ctx, args }) => {
       await authorize(tx, ctx, args.id, "owner");
       if (isServer(tx)) {
@@ -961,6 +1012,7 @@ export const mutators = defineMutators({
             createdAt: now,
           });
         }
+        await notifyNote(tx, { documentID: args.documentID, noteID: args.id, kind: "created" });
       },
     ),
 
@@ -1002,6 +1054,7 @@ export const mutators = defineMutators({
         } else {
           await tx.mutate.notes.update({ id: note.id, updatedAt: now });
         }
+        if (humanReply) await notifyNote(tx, { documentID: note.documentID, noteID: note.id, kind: "reply" });
       },
     ),
 

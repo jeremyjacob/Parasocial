@@ -12,13 +12,15 @@
 		/** The right-clickable region. */
 		children: Snippet;
 		class?: string;
+		/** Runs as the menu opens, before it renders `items`. */
+		onOpen?: () => void;
 	};
-	let { items, children, class: className }: Props = $props();
+	let { items, children, class: className, onOpen }: Props = $props();
 	const portalTarget = usePortalTarget();
 </script>
 
-<ContextMenu.Root>
-	<ContextMenu.Trigger class={className}>
+<ContextMenu.Root onOpenChange={(open) => open && onOpen?.()}>
+	<ContextMenu.Trigger class={className} disabled={items.length === 0}>
 		{@render children()}
 	</ContextMenu.Trigger>
 	<ContextMenu.Portal to={portalTarget()}>

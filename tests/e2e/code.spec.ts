@@ -4,7 +4,7 @@ import type { Page } from "@playwright/test";
 // Code mode (§8): unsaved edits preview live, ⌘S saves a version, History restores one,
 // and a change saved elsewhere while this buffer is dirty raises a conflict banner.
 
-const PATH = "parts/bracket.ts";
+const PATH = "studios/bracket.ts";
 const widthOf = (page: Page) => wsEval<number>(page, "ws.results.bracket.bbox.max[0] - ws.results.bracket.bbox.min[0]");
 const heightOf = (page: Page) => wsEval<number>(page, "ws.results.bracket.bbox.max[2] - ws.results.bracket.bbox.min[2]");
 const scriptContent = (page: Page) => page.evaluate((p) => (globalThis as any).__ws.scripts.find((s: any) => s.path === p)?.content as string, PATH);

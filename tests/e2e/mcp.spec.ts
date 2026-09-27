@@ -109,10 +109,10 @@ test("agent loop: human note → agent claims, edits, replies → Awaiting revie
     await expect(card).toContainText("Agent working");
 
     // edit the script: thickness 3 → 5, corner fillet 2 → 4
-    const sc = await agent.call<{ version: number; content: string }>("read_script", { path: "parts/bracket.ts" });
+    const sc = await agent.call<{ version: number; content: string }>("read_script", { path: "studios/bracket.ts" });
     expect(sc.content).toContain('param("thickness", 3,');
     const res = await agent.call<any>("edit_script", {
-      path: "parts/bracket.ts",
+      path: "studios/bracket.ts",
       baseVersion: sc.version,
       message: "Thicker plate, larger corner fillets",
       note: noteID,
@@ -138,11 +138,25 @@ test("agent loop: human note → agent claims, edits, replies → Awaiting revie
     await expect(card).toContainText("Thicker plate, larger corner fillets"); // linked version summary
     // the geometry changed: the plate is 5 mm thick now
     await expect.poll(() => wsEval<number>(page, "ws.results.bracket.bbox.max[2] - ws.results.bracket.bbox.min[2]"), { timeout: 30_000 }).toBeCloseTo(5, 1);
-    await expect.poll(() => page.evaluate(() => (globalThis as any).__ws.scripts.find((s: any) => s.path === "parts/bracket.ts")?.content as string)).toContain('4, { tag: "corners" }');
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__ws.scripts.find((s: any) => s.path === "studios/bracket.ts")?.content as string)).toContain('4, { tag: "corners" }');
     expect(await wsEval<number>(page, "ws.versions.length")).toBe(versionsBefore + 1);
     // the version is the agent's, and the note stays attached to its (moved) top face
     await page.getByRole("tab", { name: "History" }).click();
     await expect(page.getByTestId("history-panel").getByTestId("version-row").first()).toContainText("Thicker plate, larger corner fillets");
+    // waiting for more work: the human's follow-up wakes wait_for_notes (the note from before the
+    // agent connected isn't news, and neither is the agent's own reply)
+    expect(await agent.call<any>("wait_for_notes", { timeoutSeconds: 1 })).toMatchObject({ notes: [] });
+    const waiting = agent.call<any>("wait_for_notes", { timeoutSeconds: 30 });
+    const t0 = Date.now();
+    await page.waitForTimeout(300);
+    await page.evaluate(() => (globalThis as any).__nc.reply((globalThis as any).__ws.notes[0].id, "Looks good, but make the fillets 3 mm."));
+    const woke = await waiting;
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(woke.notes).toHaveLength(1);
+    expect(woke.notes[0]).toMatchObject({ id: noteID, reason: { replies: [{ text: "Looks good, but make the fillets 3 mm." }] } });
+    expect(woke.notes[0].reason.created).toBeUndefined();
+    await expect.poll(() => wsEval<string>(page, "ws.notes[0].status")).toBe("Open"); // a human reply reopens it
+
     await expect.poll(() => page.evaluate(() => (globalThis as any).__nc.pins[0]?.resolution)).toBe("name");
     expect(await page.evaluate(() => (globalThis as any).__nc.pins[0].point[2])).toBeCloseTo(5, 0);
     // the pin is drawn on the moved face (reported with its visibility state if it isn't)

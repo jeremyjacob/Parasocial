@@ -41,7 +41,7 @@
 		<ClayArt size={size === 'page' ? 144 : 72} />
 	{/if}
 	<div class="flex max-w-[280px] flex-col gap-1">
-		<h3 class={cn('font-semibold text-fg', size === 'page' ? 'text-title' : 'text-ui')}>{title}</h3>
+		<h3 class={cn('text-fg', size === 'page' ? 'text-title' : 'text-section')}>{title}</h3>
 		{#if description}<p class="text-ui text-fg-secondary">{description}</p>{/if}
 	</div>
 	{#if action || shortcut}

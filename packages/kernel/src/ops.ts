@@ -245,6 +245,19 @@ export function transform(shape: Shape, t: Trsf): Built {
   }));
 }
 
+/**
+ * The shape placed by a rigid transform (rotation `r`, row-major 3×3, then translation `t`).
+ * Cheap: a located copy that shares the geometry (assembly poses for booleans, distance, export).
+ */
+export function placed(shape: Shape, r: number[], t: Vec3): Shape {
+  const O = oc();
+  return scoped(() => {
+    const tr = tmp(new O.gp_Trsf());
+    tr.SetDisplacement(tmp(new O.gp_Ax3()), tmp(new O.gp_Ax3(pnt(t), dir([r[2], r[5], r[8]]), dir([r[0], r[3], r[6]]))));
+    return shape.Moved(tmp(new O.TopLoc_Location(tr)), false);
+  });
+}
+
 export function box(dx: number, dy: number, dz: number, corner: Vec3 = [0, 0, 0]): Built {
   const O = oc();
   return guard("box", () => scoped(() => {

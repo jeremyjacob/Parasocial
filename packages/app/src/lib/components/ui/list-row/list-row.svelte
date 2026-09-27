@@ -4,7 +4,6 @@
 	import { cn } from '$lib/utils';
 	import { ColorSwatch } from '$lib/components/ui/color-swatch';
 	import { StatusBadge, type Status } from '$lib/components/ui/badge';
-	import { Tooltip } from '$lib/components/ui/tooltip';
 	import IsolateIcon from './isolate-icon.svelte';
 
 	type Props = {
@@ -14,7 +13,13 @@
 		/** Status text shown after the dot, for errors ("didn't regenerate"). */
 		statusLabel?: string;
 		visible?: boolean;
+		/** Hidden by its parent row: greyed, but the eye-off only shows on hover (the parent carries it). */
+		parentHidden?: boolean;
 		selected?: boolean;
+		/** Bold name without the selected background (e.g. a group whose children are selected). */
+		strong?: boolean;
+		/** Greyed out like a hidden row, without pinning the eye (e.g. outside an isolation). */
+		dimmed?: boolean;
 		/** Agent currently working on this part: subtle shimmer across the row. */
 		busy?: boolean;
 		/** Keep hover actions revealed (row has an open menu, or docs). */
@@ -38,7 +43,10 @@
 		status = 'ok',
 		statusLabel,
 		visible = $bindable(true),
+		parentHidden = false,
 		selected = false,
+		strong = false,
+		dimmed = false,
 		busy = false,
 		showActions = false,
 		leading,
@@ -63,22 +71,23 @@
 	}
 
 	const toggleClass =
-		'inline-flex size-6 items-center justify-center rounded-sm text-fg-tertiary transition-colors-fast hover:bg-hover hover:text-fg focus-ring aria-pressed:text-fg-secondary';
+		'inline-flex size-6 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg focus-ring aria-pressed:text-fg-secondary';
 	/** Toggles with a set state stay visible at rest (hidden, isolated). */
-	const pinned = $derived(!visible || isolated);
+	const pinned = $derived((!visible && !parentHidden) || isolated);
 </script>
 
-<!-- 32px row. Selection in lists is neutral (orange is only for 3D selection). -->
-<!-- The name button carries keyboard access; the row itself is a larger mouse target. -->
+<!-- 28px row. List selection is a blue tint (orange is only for 3D selection). -->
+<!-- The name button carries keyboard access; the row itself is a larger mouse target that selects on press. -->
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div
 	class={cn(
-		'group/row relative flex h-8 items-center gap-2 overflow-hidden rounded-control pr-1 pl-2 text-ui select-none',
-		'outline-none transition-colors-fast has-[.row-main:focus-visible]:shadow-[inset_0_0_0_1px_var(--border-focus)]',
-		selected ? 'bg-active' : 'hover:bg-hover',
+		'group/row relative flex h-7 items-center gap-2 overflow-hidden rounded-control pr-1 pl-1.5 text-ui select-none',
+		'outline-none has-[.row-main:focus-visible]:shadow-[inset_0_0_0_1px_var(--border-focus)]',
+		selected ? 'bg-accent-subtle' : 'hover:bg-hover',
 		className
 	)}
-	{onclick}
+	onpointerdown={(e) => e.button === 0 && onclick?.()}
+	onclick={(e) => e.detail === 0 && onclick?.()}
 >
 	{#if busy}
 		<span
@@ -93,13 +102,13 @@
 			{#if leading}
 				{@render leading()}
 			{:else if color}
-				<ColorSwatch {color} size={12} class={cn(!visible && 'opacity-40')} />
+				<ColorSwatch {color} size={12} class={cn((!visible || dimmed) && 'opacity-30')} />
 			{/if}
 		</span>
 	{/if}
 	<button
 		type="button"
-		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', visible ? 'text-fg' : 'text-fg-tertiary', selected && 'font-medium')}
+		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', visible && !dimmed ? 'text-fg' : 'text-fg-tertiary/60', (selected || strong) && 'font-medium')}
 		aria-current={selected ? 'true' : undefined}>{name}</button
 	>
 	<!--
@@ -109,7 +118,7 @@
 	<div class="grid shrink-0 items-center justify-items-end [grid-template-areas:'slot']">
 		<div
 			class={cn(
-				'flex h-6 items-center gap-1.5 [grid-area:slot] transition-opacity duration-[var(--duration-fast)]',
+				'flex h-6 items-center gap-1.5 [grid-area:slot]',
 				!pinned && 'pr-[9px]',
 				!pinned && 'group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0',
 				!pinned && showActions && 'opacity-0',
@@ -121,37 +130,29 @@
 		</div>
 		<div
 			class={cn(
-				'flex items-center gap-0.5 [grid-area:slot] transition-opacity duration-[var(--duration-fast)]',
+				'flex items-center gap-0.5 [grid-area:slot]',
 				pinned || showActions ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100'
 			)}
 		>
-			{#if actions}<span class={cn('flex items-center gap-0.5', pinned && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}>{@render actions()}</span>{/if}
+			{#if actions}<!-- svelte-ignore a11y_no_static_element_interactions --><span onpointerdown={(e) => e.stopPropagation()} class={cn('flex items-center gap-0.5', pinned && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}>{@render actions()}</span>{/if}
 			{#if onIsolateChange}
-				<Tooltip label={isolated ? 'Show all parts' : 'Isolate'}>
-					{#snippet trigger(tp)}
-						<button
-							{...tp}
-							type="button"
-							aria-label={isolated ? 'Show all parts' : `Isolate ${name}`}
-							aria-pressed={isolated}
-							class={cn(toggleClass, pinned && !isolated && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
-							onclick={toggleIsolate}><IsolateIcon on={isolated} /></button
-						>
-					{/snippet}
-				</Tooltip>
+				<button
+					type="button"
+					aria-label={isolated ? 'Show all parts' : `Isolate ${name}`}
+					aria-pressed={isolated}
+					class={cn(toggleClass, pinned && !isolated && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
+					onpointerdown={(e) => e.stopPropagation()}
+					onclick={toggleIsolate}><IsolateIcon on={isolated} /></button
+				>
 			{/if}
-			<Tooltip label={visible ? 'Hide' : 'Show'}>
-				{#snippet trigger(tp)}
-					<button
-						{...tp}
-						type="button"
-						aria-label="{visible ? 'Hide' : 'Show'} {name}"
-						aria-pressed={!visible}
-						class={cn(toggleClass, pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
-						onclick={toggleVisible}>{#if visible}<Eye />{:else}<EyeOff />{/if}</button
-					>
-				{/snippet}
-			</Tooltip>
+			<button
+				type="button"
+				aria-label="{visible ? 'Hide' : 'Show'} {name}"
+				aria-pressed={!visible}
+				class={cn(toggleClass, pinned && visible && 'opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100')}
+				onpointerdown={(e) => e.stopPropagation()}
+				onclick={toggleVisible}>{#if visible}<Eye />{:else}<EyeOff />{/if}</button
+			>
 		</div>
 	</div>
 </div>

@@ -115,7 +115,7 @@
 
 	{#each groups as g (g.part)}
 		{@const overrides = g.params.filter((p) => p.overridden).length}
-		<PropertySection title={g.name} meta={overrides ? `${overrides} override${overrides === 1 ? '' : 's'}` : `${g.params.length} param${g.params.length === 1 ? '' : 's'}`} collapsible>
+		<PropertySection title={g.name} meta={overrides ? `${overrides} override${overrides === 1 ? '' : 's'}` : `${g.params.length} param${g.params.length === 1 ? '' : 's'}`}>
 			{#snippet actions()}
 				{#if overrides}
 					<IconButton label="Reset all in {g.name}" size="sm" onclick={() => ws.resetAll(g.part)}><RotateCcw /></IconButton>
@@ -189,7 +189,7 @@
 <Dialog bind:open={dialogOpen} title={dialog?.kind === 'rename' ? 'Rename configuration' : dialog?.kind === 'duplicate' ? 'Duplicate configuration' : 'New configuration'}>
 	{#if dialog}
 		<form id="config-form" onsubmit={submitDialog}>
-			<Input bind:value={dialog.name} placeholder="Name" autofocus />
+			<Input bind:value={dialog.name} placeholder="Name" />
 		</form>
 	{/if}
 	{#snippet footer()}

@@ -112,3 +112,19 @@ test("sweep, loft, shell, draft, thicken, split, offset", async () => {
   const th = k.thicken(rectFace(10, 10).face, 2);
   expect(k.massProps(th.shape).volume).toBeCloseTo(200, 0);
 });
+
+test("placed: a located copy moves by a rigid transform", () => {
+  const { box, placed, boundingBox, massProps, boolean } = require("../src");
+  const b = box(10, 20, 30).shape;
+  // 90° about Z, then +100 in X: (x, y) -> (-y + 100, x)
+  const r = [0, -1, 0, 1, 0, 0, 0, 0, 1];
+  const moved = placed(b, r, [100, 0, 0]);
+  const bb = boundingBox(moved);
+  expect(bb.min[0]).toBeCloseTo(80, 6);
+  expect(bb.max[0]).toBeCloseTo(100, 6);
+  expect(bb.max[1]).toBeCloseTo(10, 6);
+  expect(massProps(moved).volume).toBeCloseTo(6000, 6);
+  // booleans respect the location
+  const overlap = boolean("intersect", b, placed(b, [1, 0, 0, 0, 1, 0, 0, 0, 1], [5, 0, 0])).shape;
+  expect(massProps(overlap).volume).toBeCloseTo(3000, 4);
+});

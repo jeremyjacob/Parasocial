@@ -1,0 +1,28 @@
+{
+  "volume": 10552.6529,
+  "area": 11505.1964,
+  "faces": 18,
+  "edges": 39,
+  "vertices": 26,
+  "valid": true,
+  "faceNames": [
+    "box:drawer/front · xmax",
+    "box:drawer/front · xmin",
+    "box:drawer/front · ymax",
+    "box:drawer/front · ymin",
+    "box:drawer/front · zmax",
+    "box:drawer/front · zmin",
+    "box:drawer/inside · xmax",
+    "box:drawer/inside · xmin",
+    "box:drawer/inside · ymax",
+    "box:drawer/inside · ymin",
+    "box:drawer/inside · zmin",
+    "box:drawer/knob · cap.end",
+    "box:drawer/knob · side",
+    "box:drawer/tray · xmax",
+    "box:drawer/tray · xmin",
+    "box:drawer/tray · ymax",
+    "box:drawer/tray · zmax",
+    "box:drawer/tray · zmin"
+  ]
+}

@@ -12,7 +12,7 @@
 	const items = $derived(ws.versions.map((v) => ({ value: v.id, label: `v${v.number} · ${v.message}`, hint: clockTime(v.createdAt) })));
 </script>
 
-<div class="flex items-center gap-3 rounded-panel border border-line-subtle bg-elevated py-1.5 pr-1.5 pl-3 shadow-toolbar" data-testid="compare-bar">
+<div class="flex items-center gap-3 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="compare-bar">
 	<span class="text-ui font-medium">Compare</span>
 	<Select size="sm" {items} value={cmp.against ?? ''} onValueChange={(v) => ((cmp.against = v), cmp.load())} class="w-56" aria-label="Compare with version" />
 	<span class="text-label text-fg-secondary">Before</span>

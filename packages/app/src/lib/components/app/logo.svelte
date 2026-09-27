@@ -1,8 +1,6 @@
 <script lang="ts">
-	// The Parasocial mark ("Face" concept): a solid with its top face lifted and picked out in the
-	// accent — the moment you select a face to leave a note on it.
-	import LogoFace from './logo-face.svelte';
+	import { assets } from '$app/paths';
 	let { size = 28 }: { size?: number } = $props();
 </script>
 
-<LogoFace {size} />
+<img src="{assets}/parasocial-icon.png" width={size} height={size} alt="" class="shrink-0" />

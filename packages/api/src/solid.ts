@@ -5,7 +5,8 @@ import { runOp, userError } from "./op";
 import { EntitySet } from "./selection";
 import { Plane, axisVec, vec, type AxisLike } from "./plane";
 import { sketch } from "./sketch";
-import type { ColorSpec, Material } from "./types";
+import type { Appearance, ColorSpec, Material } from "./types";
+import { toFrame, transformFrame, type ConnectorFrame, type FrameSpec } from "./connector";
 
 type EdgesArg = EntitySet | EntitySet[] | string;
 type FacesArg = EntitySet | EntitySet[] | string;
@@ -13,7 +14,7 @@ type OpOpts = { tag?: string };
 
 export class Solid {
   /** @internal */ readonly record: OpRecord;
-  /** @internal */ readonly meta: { color?: ColorSpec; material?: Material };
+  /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame> };
 
   constructor(record: OpRecord, meta: Solid["meta"] = {}) {
     this.record = record;
@@ -226,10 +227,53 @@ export class Solid {
   }
 
   // ---------- appearance ----------
+  /**
+   * Part color: a hex string (`"#4a7bd0"`), or `color.auto()` / `color.rgb(hex)` from the part tools.
+   * A hex with alpha (`"#4a7bd080"`, `"#48f8"`) also sets the opacity.
+   */
   color(c: ColorSpec | string): Solid {
-    const spec: ColorSpec = typeof c === "string" ? { kind: "rgb", hex: c } : c;
-    if (spec.kind === "rgb" && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(spec.hex)) userError(`color "${spec.hex}" must be a hex color like "#4a7bd0"`);
-    return new Solid(this.record, { ...this.meta, color: spec });
+    if (typeof c !== "string") {
+      if (c?.kind === "auto") return new Solid(this.record, { ...this.meta, color: c });
+      if (c?.kind !== "rgb") userError(`color(c): c must be a hex string like "#4a7bd0", color.auto() or color.rgb(hex)`);
+      c = c.hex;
+    }
+    const { hex, alpha } = parseHex(c);
+    const meta = { ...this.meta, color: { kind: "rgb" as const, hex } };
+    return new Solid(this.record, alpha === undefined ? meta : { ...meta, appearance: { ...this.meta.appearance, opacity: alpha } });
+  }
+  /** See-through parts: 1 = opaque (default) … 0 = invisible. Shorthand for `.appearance({ opacity })`. */
+  opacity(opacity: number): Solid {
+    return this.appearance({ opacity });
+  }
+  /**
+   * Color and finish in one call; fields left out keep their current value.
+   * `.appearance({ color: "#9ec5ff", opacity: 0.35, roughness: 0.1 })` reads as tinted glass,
+   * `.appearance({ metalness: 1, roughness: 0.3 })` as machined metal.
+   */
+  appearance(a: Appearance & { color?: ColorSpec | string }): Solid {
+    if (!a || typeof a !== "object") userError(`appearance(a): a must be an object like { opacity: 0.4, roughness: 0.2 }`);
+    const { color, ...rest } = a;
+    const base = color === undefined ? this : this.color(color);
+    const out: Appearance = { ...base.meta.appearance };
+    for (const k of ["opacity", "roughness", "metalness"] as const) {
+      const v = rest[k];
+      if (v === undefined) continue;
+      if (typeof v !== "number" || !(v >= 0 && v <= 1)) userError(`appearance ${k} must be a number from 0 to 1 (got ${JSON.stringify(v)})`);
+      out[k] = v;
+    }
+    for (const k of Object.keys(rest)) if (!["opacity", "roughness", "metalness"].includes(k)) userError(`appearance has no "${k}"; use color, opacity, roughness or metalness`);
+    return new Solid(base.record, { ...base.meta, appearance: out });
+  }
+  /**
+   * Name a frame on this part for assembly joints to attach to: `lid.at("hinge")` in an assembly.
+   * `at` is one face, edge or vertex (a hole's cylindrical face gives its axis, a planar face its
+   * center and normal), a plane, or `{ origin: [x, y, z], axis: "X" }`. Built from geometry, it
+   * follows the part when params change; later moves (translate, rotate, mirror) carry it along.
+   */
+  connector(name: string, at: FrameSpec): Solid {
+    if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) userError(`connector name "${name}" must be an identifier (letters, digits, _ or -)`);
+    const frame = toFrame(at, `connector("${name}")`);
+    return new Solid(this.record, { ...this.meta, connectors: { ...this.meta.connectors, [name]: frame } });
   }
   material(m: Material | string): Solid {
     const mat = typeof m === "string" ? (MATERIALS[m.toLowerCase()] ?? userError(`unknown material "${m}"; use one of ${Object.keys(MATERIALS).join(", ")} or { density }`)) : m;
@@ -323,7 +367,8 @@ function transformOp(s: Solid, type: string, t: Parameters<typeof kTransform>[1]
       };
     },
   });
-  return new Solid(rec, s.meta);
+  const connectors = s.meta.connectors && Object.fromEntries(Object.entries(s.meta.connectors).map(([k, f]) => [k, transformFrame(f, t)]));
+  return new Solid(rec, connectors ? { ...s.meta, connectors } : s.meta);
 }
 
 function patternOp(s: Solid, count: number, trsf: (k: number) => Parameters<typeof kTransform>[1], opts: OpOpts): Solid {
@@ -356,6 +401,15 @@ function explainRadius(what: string, r: number, rec: OpRecord, edges: number[]):
 }
 
 const fmt = (x: number) => String(Math.round(x * 1000) / 1000);
+
+/** "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa" -> six-digit hex and the alpha (0..1), if given. */
+function parseHex(input: string): { hex: string; alpha?: number } {
+  const m = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(input);
+  if (!m) userError(`color "${input}" must be a hex color like "#4a7bd0" (or "#4a7bd080" with alpha)`);
+  let h = m![1].toLowerCase();
+  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
+  return { hex: `#${h.slice(0, 6)}`, alpha: h.length === 8 ? Math.round((parseInt(h.slice(6), 16) / 255) * 1000) / 1000 : undefined };
+}
 
 export const MATERIALS: Record<string, Material> = {
   pla: { name: "PLA", density: 1.24 },

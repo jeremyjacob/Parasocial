@@ -11,5 +11,13 @@ export const MIGRATIONS: readonly (readonly [name: string, sql: string])[] = [
  [
   "0003_oauth_codes.sql",
   "-- OAuth 2.1 (MCP authorization): bind codes/tokens to the redirect URI and resource they were\n-- issued for, and keep the refresh-token family so rotation can revoke a stolen chain.\nALTER TABLE oauth_tokens ADD COLUMN redirect_uri text;\nALTER TABLE oauth_tokens ADD COLUMN resource text;\nALTER TABLE oauth_tokens ADD COLUMN family text;\nCREATE INDEX oauth_tokens_family_idx ON oauth_tokens(family);\n"
+ ],
+ [
+  "0004_document_thumbnails.sql",
+  "-- Rendered thumbnails for the documents list: blob hashes of an iso render in each theme, and the\n-- document version they show (the workspace re-renders when head_version moves past it).\nALTER TABLE documents\n  ADD COLUMN thumb_light   text,\n  ADD COLUMN thumb_dark    text,\n  ADD COLUMN thumb_version integer;\n"
+ ],
+ [
+  "0005_studios.sql",
+  "-- parts/ is now studios/: a studio script exports one or more parts. Moves existing scripts and\n-- the script paths recorded in version snapshots, and re-points the path CHECK.\nALTER TABLE scripts DROP CONSTRAINT scripts_path_check;\n\nUPDATE scripts SET path = 'studios/' || substr(path, length('parts/') + 1) WHERE path LIKE 'parts/%';\n\nUPDATE versions SET snapshot = jsonb_set(snapshot, '{scripts}', (\n  SELECT jsonb_object_agg(CASE WHEN k LIKE 'parts/%' THEN 'studios/' || substr(k, length('parts/') + 1) ELSE k END, v)\n  FROM jsonb_each(snapshot->'scripts') AS e(k, v)\n))\nWHERE EXISTS (SELECT 1 FROM jsonb_object_keys(snapshot->'scripts') AS k WHERE k LIKE 'parts/%');\n\nALTER TABLE scripts ADD CONSTRAINT scripts_path_check\n  CHECK (path ~ '^(studios/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts|lib/([A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts)$');\n"
  ]
 ];

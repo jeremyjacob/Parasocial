@@ -74,6 +74,8 @@
 	];
 
 	const DisplayIcon = $derived(displayIcons[display]);
+	// Vertical cluster sits on the viewport's right edge: tooltips open inward.
+	const tipSide = $derived(orientation === 'vertical' ? 'left' : 'top');
 </script>
 
 <!-- Concentric: radius 10, padding 2 → 28px buttons at radius 8 (the IconButton lg radius). -->
@@ -89,7 +91,7 @@
 >
 	<DropdownMenu items={displayItems} side={orientation === 'vertical' ? 'left' : 'bottom'} align="end">
 		{#snippet trigger(props)}
-			<Tooltip label="Display: {displayNames[display]}">
+			<Tooltip label="Display: {displayNames[display]}" side={tipSide}>
 				{#snippet trigger(tp)}
 					<button
 						{...mergeProps(tp, props)}
@@ -102,11 +104,12 @@
 			</Tooltip>
 		{/snippet}
 	</DropdownMenu>
-	<IconButton label="Section view" shortcut={['S']} active={section} onclick={() => (section = !section)} class="rounded-md">
+	<IconButton label="Section view" shortcut={['S']} tooltipSide={tipSide} active={section} onclick={() => (section = !section)} class="rounded-md">
 		<Scissors />
 	</IconButton>
 	<IconButton
 		label={ortho ? 'Orthographic (switch to perspective)' : 'Perspective (switch to orthographic)'}
+		tooltipSide={tipSide}
 		onclick={() => (ortho = !ortho)}
 		class="rounded-md"
 	>
@@ -116,7 +119,7 @@
 	></span>
 	{#if orientation === 'vertical'}
 		<!-- icon-width control so the vertical cluster stays one icon wide -->
-		<IconButton label="Zoom to fit" shortcut={['F']} tooltipSide="left" onclick={() => onZoomToFit?.()}><Maximize /></IconButton>
+		<IconButton label="Zoom to fit" shortcut={['F']} tooltipSide={tipSide} onclick={() => onZoomToFit?.()}><Maximize /></IconButton>
 	{:else}
 	<DropdownMenu items={zoomItems} side="bottom" align="end">
 			{#snippet trigger(props)}

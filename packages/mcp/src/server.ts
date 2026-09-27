@@ -10,6 +10,7 @@ import { registerTools, type Session } from "./tools";
 import { INSTRUCTIONS } from "./instructions";
 import { createOAuth, type OAuth } from "./oauth";
 import { API_DTS, EXAMPLES } from "./resources";
+import { createNoteEvents } from "./note-events";
 
 export type McpDeps = { db: Db; store: BlobStore; config: { appOrigin: string; secret: string }; pool?: PoolClient };
 
@@ -19,10 +20,11 @@ export function createMcp(deps: McpDeps) {
   const oauth: OAuth = createOAuth({ db: deps.db, config: deps.config });
   const pool = deps.pool ?? new PoolClient();
   const live = new Map<string, Live>();
+  const noteEvents = createNoteEvents(deps.db);
 
   function buildServer(session: Session) {
     const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions: INSTRUCTIONS, capabilities: { tools: {}, resources: {} } });
-    registerTools(server, session, { db: deps.db, pool, store: deps.store, config: deps.config });
+    registerTools(server, session, { db: deps.db, pool, store: deps.store, noteEvents, config: deps.config });
     server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: INSTRUCTIONS, mimeType: "text/markdown" }] }));
     server.registerResource("api-types", "parasocial://api/parasocial.d.ts", { title: "Modeling API types (parasocial)", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
     server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
@@ -64,6 +66,8 @@ export function createMcp(deps: McpDeps) {
       activeConfig: new Map(),
       lastVersion: new Map(),
       calls: [],
+      noteCursors: new Map(),
+      startedAt: Date.now(),
     };
     const server = buildServer(session);
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({

@@ -123,6 +123,122 @@ test.describe("notes", () => {
     await expect(page.getByTestId("notes-panel").getByTestId("note-card")).toContainText("Round this corner off");
   });
 
+  test("pencil: mouse-down draws immediately, clicks persist, and undo/redo works after the composer appears", async ({ page }) => {
+    await page.keyboard.press("p");
+    const p = await viewportPoint(page, ...TOP);
+    await page.mouse.move(p.x, p.y);
+    await page.mouse.down();
+    await expect.poll(() => wsEval<number>(page, "ws.viewer.markup.children.length")).toBe(1);
+    expect(await wsEval<string>(page, "ws.viewer.markup.children[0].userData.id")).toBe("live");
+    await page.mouse.up();
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(1);
+    expect(await wsEval<number>(page, "globalThis.__nc.strokes[0].points.length")).toBe(1);
+    await expect(page.getByTestId("note-composer")).toBeVisible();
+    await expect(page.getByTestId("note-text")).not.toBeFocused();
+
+    await page.keyboard.press("Meta+z");
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(0);
+    await expect.poll(() => wsEval<number>(page, "ws.viewer.markup.children.length")).toBe(0);
+    expect(await wsEval<number>(page, "globalThis.__nc.draftStrokeIDs.length")).toBe(0);
+    await page.keyboard.press("Meta+Shift+z");
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.draftStrokeIDs.length")).toBe(1);
+    await expect.poll(() => wsEval<number>(page, "ws.viewer.markup.children.length")).toBe(1);
+
+    // Posting after undo must not attach a deleted stroke.
+    await page.keyboard.press("Meta+z");
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.draftStrokeIDs.length")).toBe(0);
+    await page.getByTestId("note-text").fill("Keep this face flat");
+    await page.getByTestId("note-post").click();
+    await expect.poll(() => wsEval<number>(page, "ws.notes.length")).toBe(1);
+    expect(await wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(0);
+  });
+
+  test("pencil: preserves the starting point off the model and erasing is undoable", async ({ page }) => {
+    await page.keyboard.press("p");
+    const a = await viewportPoint(page, 0.15, 0.2);
+    const b = await viewportPoint(page, ...TOP);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await expect.poll(() => wsEval<number>(page, "ws.viewer.markup.children.length")).toBe(1);
+    await page.mouse.move(b.x, b.y, { steps: 3 });
+    await page.mouse.up();
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(1);
+    const start = await page.evaluate(() => {
+      const v = (globalThis as any).__viewer;
+      const s = (globalThis as any).__nc.strokes[0];
+      const p = v.camera.position.clone().fromArray(s.points[0]);
+      const rect = document.querySelector('[data-testid="viewport"]')!.getBoundingClientRect();
+      const screen = v.project(v.toWorld(s.part, p));
+      return { x: screen.x + rect.left, y: screen.y + rect.top };
+    });
+    expect(start.x).toBeCloseTo(a.x, 0);
+    expect(start.y).toBeCloseTo(a.y, 0);
+    await page.evaluate(() => { (globalThis as any).__nc.eraser = true; });
+    await page.mouse.click(a.x, a.y);
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.strokes.length")).toBe(0);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.draftStrokeIDs.length")).toBe(1);
+    await page.keyboard.press("Meta+Shift+z");
+    await expect.poll(() => wsEval<number>(page, "globalThis.__nc.draftStrokeIDs.length")).toBe(0);
+  });
+
+  test("notes use cached geometry when the engine is unavailable", async ({ page }) => {
+    await expect.poll(() => page.evaluate(async () => (await (await caches.open('parasocial-derived-v1')).keys()).length)).toBeGreaterThan(0);
+    // Reload with a real startup failure: only the saved mesh and names can render the model.
+    await page.route("http://localhost:5174/**", (route) => route.abort());
+    await page.reload();
+    await expect.poll(() => wsEval<string | null>(page, "ws?.engineError"), { timeout: 40_000 }).toContain("didn't load");
+    await expect.poll(() => wsEval<number>(page, "ws.results.bracket?.names?.face.length ?? 0")).toBeGreaterThan(0);
+    expect(await wsEval<boolean>(page, "ws.kernelReady")).toBe(false);
+
+    await postNote(page, TOP, "Keep the mounting face flat");
+    const note = await wsEval<any>(page, "JSON.parse(JSON.stringify(ws.notes[0]))");
+    expect(note.anchor.targets[0]).toMatchObject({ kind: "face", part: "bracket", name: "bracket/base · cap.end" });
+    expect(note.anchor.snapshot).toBeTruthy();
+    await expect(page.getByTestId("pin")).toHaveCount(1);
+    await expect.poll(async () => (await pins(page))[0]?.orphaned).toBe(false);
+    expect(await wsEval<boolean>(page, "ws.notes[0].orphaned")).toBe(false);
+
+    // No cached result is also not evidence that the note's geometry has disappeared.
+    await page.evaluate(async () => {
+      const ws = (globalThis as any).__ws;
+      ws.results = {};
+      await (globalThis as any).__nc.resolveAll();
+    });
+    expect((await pins(page))[0]).toMatchObject({ orphaned: false, resolution: "unknown" });
+  });
+
+  test("a failed save keeps the note text and can be retried", async ({ page }) => {
+    await page.keyboard.press("c");
+    await clickAt(page, TOP);
+    const input = page.getByTestId("note-text");
+    await input.fill("Do not lose this feedback");
+    await page.route("**/api/blobs?**", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+    await page.getByTestId("note-post").click();
+    await expect(page.getByText("Couldn't save the note. Try again.", { exact: true })).toBeVisible();
+    await expect(input).toHaveValue("Do not lose this feedback");
+    expect(await wsEval<number>(page, "ws.notes.length")).toBe(0);
+
+    await page.unroute("**/api/blobs?**");
+    let uploads = 0;
+    let releaseUpload!: () => void;
+    const pendingUpload = new Promise<void>((resolve) => { releaseUpload = resolve; });
+    await page.route("**/api/blobs?**", async (route) => {
+      uploads++;
+      await pendingUpload;
+      await route.continue();
+    });
+    await page.getByTestId("note-post").click();
+    await expect.poll(() => uploads).toBe(1);
+    await input.press("Enter");
+    await input.press("Enter");
+    releaseUpload();
+    await expect.poll(() => wsEval<number>(page, "ws.notes.length")).toBe(1);
+    await expect(page.getByTestId("note-composer")).toHaveCount(0);
+    await expect(page.getByTestId("notes-panel").getByTestId("note-card")).toContainText("Do not lose this feedback");
+    expect(uploads).toBe(1);
+  });
+
   test("a note re-anchors after a param change", async ({ page }) => {
     await postNote(page, RIGHT, "Check the clearance on this end");
     const name = await wsEval<string>(page, "ws.notes[0].anchor.targets[0].name");

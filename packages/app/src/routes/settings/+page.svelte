@@ -65,7 +65,7 @@
 	<main class="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-6 py-8">
 		<section class={section} data-testid="passkeys">
 			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
-				<KeyRound size={16} class="text-fg-secondary" /><h2 class="text-body font-semibold">Passkeys</h2>
+				<KeyRound size={16} class="text-fg-secondary" /><h2 class="text-section">Passkeys</h2>
 				<Button size="sm" class="ml-auto" onclick={add}><Plus size={14} /> Add passkey</Button>
 			</header>
 			<ul class="divide-y divide-line-subtle">
@@ -84,7 +84,7 @@
 
 		<section class={section} data-testid="connected-agents">
 			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
-				<Bot size={16} class="text-fg-secondary" /><h2 class="text-body font-semibold">Connected agents</h2>
+				<Bot size={16} class="text-fg-secondary" /><h2 class="text-section">Connected agents</h2>
 			</header>
 			<ul class="divide-y divide-line-subtle">
 				{#each data.agents as a (a.id)}
@@ -101,7 +101,7 @@
 
 		{#if data.user?.isAdmin}
 			<section class={section} data-testid="admin">
-				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4"><h2 class="text-body font-semibold">Instance</h2></header>
+				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4"><h2 class="text-section">Instance</h2></header>
 				<div class="flex flex-col gap-4 p-4">
 					<div class="flex items-center gap-3 text-ui">
 						<span class="w-28 text-fg-secondary">Sign-up</span>
