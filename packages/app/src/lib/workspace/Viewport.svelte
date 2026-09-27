@@ -116,8 +116,9 @@
 	// fit once when the first geometry lands
 	let fitted = false;
 	$effect(() => {
-		const n = Object.values(ws.results).filter((r) => !r.empty).length;
-		if (n && viewer && !fitted) {
+		// wait for every part (not just the first to land) so the fit frames the whole model
+		const all = ws.parts.length > 0 && ws.parts.every((p) => ws.results[p] && (!ws.results[p].empty || ws.regen[p] === 'idle'));
+		if (all && viewer && !fitted) {
 			fitted = true;
 			queueMicrotask(() => viewer!.setView('iso', false));
 		}

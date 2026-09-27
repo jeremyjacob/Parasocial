@@ -128,7 +128,7 @@ export class PartObject {
     this.group.name = data.id;
     this.faceMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.62,
+      roughness: 0.42,
       metalness: 0.0,
       polygonOffset: true,
       polygonOffsetFactor: 1,

@@ -42,7 +42,17 @@ export class WorkspaceState {
 	rightTab = $state('properties');
 	tool = $state<Tool>('select');
 	display = $state<'shaded' | 'shaded-edges' | 'wireframe' | 'hidden-line'>('shaded-edges');
-	ortho = $state(false);
+	/** Orthographic projection (O); remembered per browser like the theme. */
+	#ortho = $state(pref('parasocial:ortho', false));
+	get ortho() {
+		return this.#ortho;
+	}
+	set ortho(v: boolean) {
+		this.#ortho = v;
+		try {
+			localStorage.setItem('parasocial:ortho', String(v));
+		} catch {}
+	}
 	filters = $state<('face' | 'edge' | 'vertex' | 'part')[]>(['face', 'edge']);
 	hidden = $state<string[]>([]);
 	isolated = $state<string[]>([]);

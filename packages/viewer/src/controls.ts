@@ -102,6 +102,7 @@ export class CadControls {
     e.stopPropagation();
     this.stopAnim();
     this.gesture = g;
+    this.startButtons = e.buttons;
     this.moved = 0;
     this.last.set(e.clientX, e.clientY);
     if (g === "orbit") {
@@ -131,7 +132,10 @@ export class CadControls {
   }
 
   private moved = 0;
+  private startButtons = 0;
   private onMove = (e: PointerEvent) => {
+    // a chorded left press (arrives as a move with buttons changed) or a lost release ends the gesture
+    if (this.gesture && (this.startButtons & ~e.buttons || (e.buttons & 1 && !(this.startButtons & 1)))) return this.onUp(e);
     const dx = e.clientX - this.last.x,
       dy = e.clientY - this.last.y;
     this.last.set(e.clientX, e.clientY);
@@ -141,9 +145,10 @@ export class CadControls {
   };
 
   private onUp = (e: PointerEvent) => {
-    if (e.button === 2 && this.moved > 3) this.suppressContext = true;
+    if (!this.gesture) return;
+    if ((e.button === 2 || this.startButtons & 2) && this.moved > 3) this.suppressContext = true;
     this.gesture = null;
-    this.el.releasePointerCapture(e.pointerId);
+    if (this.el.hasPointerCapture(e.pointerId)) this.el.releasePointerCapture(e.pointerId);
     this.el.removeEventListener("pointermove", this.onMove);
     this.el.removeEventListener("pointerup", this.onUp);
     this.el.removeEventListener("pointercancel", this.onUp);
@@ -164,13 +169,23 @@ export class CadControls {
       if (e.shiftKey) this.pan(-e.deltaX * scale, -e.deltaY * scale);
       else this.orbit(-e.deltaX * scale * 0.6, -e.deltaY * scale * 0.6, this.target);
     } else {
-      // clamp each event so fast wheels and momentum bursts don't lurch; gentle exponential rate
+      // clamp each event so momentum bursts don't lurch, then accelerate gently while the wheel
+      // keeps turning (consecutive events within ~90 ms ramp up to 2.2×)
       const raw = e.deltaY * scale;
-      const d = isPinch ? THREE.MathUtils.clamp(raw * 0.01, -0.08, 0.08) : THREE.MathUtils.clamp(raw, -50, 50) * 0.0022;
+      const now = performance.now();
+      this.wheelStreak = now - this.lastWheel < 90 && Math.sign(raw) === this.wheelSign ? Math.min(this.wheelStreak + 1, 12) : 0;
+      this.lastWheel = now;
+      this.wheelSign = Math.sign(raw);
+      const accel = 1 + this.wheelStreak * 0.1;
+      const d = isPinch ? THREE.MathUtils.clamp(raw * 0.012, -0.1, 0.1) : THREE.MathUtils.clamp(raw, -100, 100) * 0.0019 * accel;
       this.zoomAt(x, y, Math.exp(d));
     }
     this.pulseMoving();
   };
+
+  private lastWheel = 0;
+  private wheelSign = 0;
+  private wheelStreak = 0;
 
   private pulseMoving() {
     this.host.moving(true);

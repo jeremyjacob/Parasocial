@@ -113,12 +113,20 @@ export class Viewer {
     this.scene.environment = this.envTex;
     this.scene.environmentIntensity = 0.85;
     pmrem.dispose();
-    const key = new THREE.DirectionalLight(0xffffff, 1.1);
-    key.position.set(0.4, -0.6, 1);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a90, 0.35));
-    // light follows the camera for consistent shading while orbiting
-    this.persp.add(key);
-    this.ortho.add(key.clone());
+    // camera-relative rig (Onshape-like): a strong key from upper left, a soft fill from lower
+    // right, sky/ground bounce. Lights and their targets are camera children, so shading stays
+    // consistent while orbiting.
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a92, 0.4));
+    for (const cam of [this.persp, this.ortho]) {
+      const rig = (x: number, y: number, z: number, i: number) => {
+        const l = new THREE.DirectionalLight(0xffffff, i);
+        l.position.set(x, y, z);
+        l.target.position.set(0, 0, -1);
+        cam.add(l, l.target);
+      };
+      rig(-0.55, 0.8, 1, 1.05);
+      rig(0.8, -0.5, 0.4, 0.28);
+    }
     this.scene.add(this.persp, this.ortho);
 
     this.grid = new THREE.Group();
@@ -391,7 +399,7 @@ export class Viewer {
   private applyTheme() {
     const t = this.theme;
     this.scene.background = new THREE.Color(t.background);
-    this.scene.environmentIntensity = t.dark ? 0.6 : 0.72;
+    this.scene.environmentIntensity = t.dark ? 0.34 : 0.4;
     this.container.style.setProperty("--vc-face", t.dark ? "rgba(39,39,42,.92)" : "rgba(255,255,255,.94)");
     this.container.style.setProperty("--vc-face-hover", t.dark ? "#3f3f46" : "#ffffff");
     this.container.style.setProperty("--vc-border", t.dark ? "rgba(255,255,255,.10)" : "rgba(0,0,0,.12)");
@@ -958,11 +966,11 @@ export class Viewer {
       h = this.container.clientHeight;
     // stencil in the composer targets too: the selected-part outline masks with it
     const dpr = this.renderer.getPixelRatio();
-    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true }));
+    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true, samples: 4 }));
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
     this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
-    this.aoPass.blendIntensity = 0.45;
+    this.aoPass.blendIntensity = 0.75;
     c.addPass(this.renderPass);
     c.addPass(this.aoPass);
     c.addPass(new OutputPass());
@@ -1008,7 +1016,7 @@ export class Viewer {
     const t0 = performance.now();
     this.needsRender = false;
     this.viewCube?.update(this.camera);
-    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.useOrtho && !this.section;
+    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.section;
     if (useAO) {
       const c = this.ensureComposer();
       this.renderPass!.camera = this.camera;
