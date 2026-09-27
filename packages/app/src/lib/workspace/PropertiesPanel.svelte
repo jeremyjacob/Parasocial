@@ -75,13 +75,7 @@
 			<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{ws.parts.length}</span></div>
 			<div class={row}><span class="text-fg-secondary">Version</span><span class="tabular-nums">v{ws.doc?.headVersion ?? 0}</span></div>
 		</PropertySection>
-		<PropertySection bodyClass="gap-1" title="Engine">
-			<div class={row}><span class="text-fg-secondary">Kernel</span><span>{ws.kernelReady ? `Ready · ${num(ws.engineInfo?.kernelMs ?? 0, 0)} ms` : ws.engineError ? 'Failed to load' : 'Loading…'}</span></div>
-			{#if ws.engineInfo}
-				<div class={row}><span class="text-fg-secondary">Threads</span><span class="tabular-nums">{ws.engineInfo.threads}</span></div>
-			{/if}
-		</PropertySection>
-		<p class="px-4 py-3 text-label text-fg-tertiary">Select a face, edge or part to see its properties.</p>
+		<p class="px-4 py-3 text-label text-fg-tertiary">Select a face, edge or part.</p>
 	{:else if one && one.kind === ('part' as any)}
 		{@const r = ws.results[one.part]}
 		{#if r}
@@ -90,7 +84,7 @@
 					<span class="text-fg-secondary">Color</span>
 					<span class="flex items-center gap-2"><ColorSwatch color={ws.partColor(one.part, theme.resolved === 'dark')} size={14} /> <span class="text-fg-secondary">{r.color?.kind === 'rgb' ? r.color.hex : 'Auto'}</span></span>
 				</div>
-				<div class={row}><span class="text-fg-secondary">Material</span><span>{r.material?.name ?? (r.material?.density ? `${r.material.density} g/cm³` : 'None (density 1)')}</span></div>
+				<div class={row}><span class="text-fg-secondary">Material</span><span>{r.material?.name ?? (r.material?.density ? `${r.material.density} g/cm³` : 'None')}</span></div>
 				<div class={row}><span class="text-fg-secondary">Script</span><button class="focus-ring flex items-center gap-1 truncate rounded-xs text-left text-accent hover:underline" onclick={() => reveal(r.file)}>{r.file} <ArrowUpRight size={12} /></button></div>
 			</PropertySection>
 			{#if r.mass}
@@ -145,8 +139,8 @@
 				{/if}
 			{/if}
 			<div class="flex items-start gap-1 py-1">
-				<code class="min-w-0 flex-1 rounded-control bg-input px-2 py-1.5 font-mono text-label break-words text-fg-secondary" data-testid="stable-name">{name ?? (ws.kernelReady ? '…' : 'Loading kernel…')}</code>
-				{#if name}<IconButton label="Copy stable name" size="sm" onclick={() => copy(name)}><Copy /></IconButton>{/if}
+				<code class="min-w-0 flex-1 rounded-control bg-input px-2 py-1.5 font-mono text-label break-words text-fg-secondary" data-testid="stable-name">{name ?? (ws.kernelReady ? '…' : 'Loading…')}</code>
+				{#if name}<IconButton label="Copy reference" size="sm" onclick={() => copy(name)}><Copy /></IconButton>{/if}
 			</div>
 		</PropertySection>
 		{#if desc?.neighbors?.length}

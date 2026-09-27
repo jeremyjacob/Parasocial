@@ -24,7 +24,7 @@ export class CompareController {
 		const hit = this.contents.get(id);
 		if (hit) return hit;
 		const res = await fetch(`/api/versions/${encodeURIComponent(id)}`);
-		if (!res.ok) throw new Error(`couldn't load version (${res.status})`);
+		if (!res.ok) throw new Error("Couldn't load this version");
 		const v = (await res.json()) as VersionContents;
 		this.contents.set(id, v);
 		return v;

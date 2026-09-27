@@ -94,7 +94,7 @@
 	</header>
 	{#if note.orphaned}
 		<div class="flex items-center gap-2 border-b border-line-subtle bg-error-subtle px-3 py-2 text-label text-error">
-			<Unlink size={12} /> This note lost its geometry. <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click new geometry…' : 'Re-anchor'}</Button>
+			<Unlink size={12} /> Can't find its geometry. <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click the model…' : 'Reattach'}</Button>
 		</div>
 	{/if}
 	<div class="flex flex-col gap-4 px-3 py-3">
@@ -107,7 +107,7 @@
 				<textarea
 					bind:value={reply}
 					rows="1"
-					placeholder="Reply… @ for params, # for parts"
+					placeholder="Reply…"
 					aria-label="Reply"
 					onkeydown={(e) => (e.key === 'Enter' && (e.metaKey || e.ctrlKey) ? (e.preventDefault(), send()) : e.key === 'Escape' && (e.currentTarget as HTMLElement).blur())}
 					class="field-sizing-content max-h-32 min-h-6 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary"

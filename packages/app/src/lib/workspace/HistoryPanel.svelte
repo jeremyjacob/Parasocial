@@ -24,6 +24,6 @@
 		<button class="focus-ring pointer-events-none absolute top-2 right-2 rounded-xs px-1.5 text-label text-accent opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:underline" onclick={() => onCompare?.(v.id)}>Compare</button>
 		</div>
 	{:else}
-		<div class="px-3 py-6 text-ui text-fg-secondary">No versions yet. Saving a script (<kbd class="font-mono text-label">⌘S</kbd>), an agent write or a param change creates one.</div>
+		<div class="px-3 py-6 text-ui text-fg-secondary">No versions yet.</div>
 	{/each}
 </div>

@@ -79,7 +79,7 @@ export class NotesController {
 			// snapshot of the view (with markup) → upload first, then reference (§3)
 			const blob = await ws.viewer.snapshot('image/webp', 0.85);
 			const up = await fetch(`/api/blobs?document=${encodeURIComponent(ws.documentID)}`, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/webp' } });
-			if (!up.ok) throw new Error(`Couldn't save the note (${up.status})`);
+			if (!up.ok) throw new Error("Couldn't save the note. Try again.");
 			const { hash } = await up.json();
 			const cam = ws.viewer.cameraState();
 			const id = newID();

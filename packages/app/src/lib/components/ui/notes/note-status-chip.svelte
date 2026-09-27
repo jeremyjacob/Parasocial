@@ -13,7 +13,7 @@
 		working: { label: 'Agent working', icon: LoaderCircle, cls: 'bg-accent-subtle text-accent-fg' },
 		review: { label: 'Awaiting review', icon: Eye, cls: 'bg-warning-subtle text-warning' },
 		resolved: { label: 'Resolved', icon: Check, cls: 'bg-ok-subtle text-ok' },
-		orphaned: { label: 'Orphaned', icon: Unlink, cls: 'bg-error-subtle text-error' }
+		orphaned: { label: 'Detached', icon: Unlink, cls: 'bg-error-subtle text-error' }
 	} as const;
 	const m = $derived(meta[status]);
 </script>

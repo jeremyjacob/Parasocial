@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Read-only source view (Code mode's viewer until the Monaco editor lands in M6): line numbers,
+	// Read-only source view: line numbers,
 	// the revealed line highlighted, error markers from regeneration problems.
 	import { tick } from 'svelte';
 	import { X } from '@lucide/svelte';
@@ -46,5 +46,5 @@
 			</div>
 		{/each}
 	</div>
-	<div class="flex h-7 shrink-0 items-center border-t border-line-subtle px-3 text-label text-fg-tertiary">Read-only · editing lands with the Monaco editor (M6)</div>
+	<div class="flex h-7 shrink-0 items-center border-t border-line-subtle px-3 text-label text-fg-tertiary">Read-only</div>
 </div>
