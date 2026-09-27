@@ -370,7 +370,7 @@
 	</div>
 {/if}
 
-<CommandPalette bind:open={paletteOpen} groups={paletteGroups} placeholder="Search actions, views, params, parts…" />
+<CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search actions, views, params, parts…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} />
 <Dialog bind:open={cheatsOpen} title="Keyboard shortcuts" class="max-w-[640px]">
 	<div class="grid grid-cols-2 gap-x-8 gap-y-1" data-testid="cheatsheet">

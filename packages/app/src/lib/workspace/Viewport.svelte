@@ -443,7 +443,7 @@
 				{#each STROKE_COLORS as c (c)}
 					{@const on = nc.penColor === c && !nc.eraser}
 					<button class="focus-ring grid size-8 place-items-center rounded-[var(--toolbar-item-radius)] transition-colors-fast {on ? 'bg-active' : 'hover:bg-hover'}" onclick={() => ((nc.penColor = c), (nc.eraser = false))} aria-label="Pen color {c}" aria-pressed={on}>
-						<span class="size-3.5 rounded-full transition-transform duration-[var(--duration-fast)] ease-out {on ? 'scale-[1.15]' : ''}" style="background:{c}"></span>
+						<span class="size-3.5 rounded-full shadow-[inset_0_0_0_1px_var(--border-default)] transition-transform duration-[var(--duration-fast)] ease-out {on ? 'scale-[1.15]' : ''}" style="background:{c}"></span>
 					</button>
 				{/each}
 				<span class="mx-1 h-5 w-px bg-line" aria-hidden="true"></span>

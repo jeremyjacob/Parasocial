@@ -57,7 +57,7 @@
 					<p>No notes match these filters.</p>
 				{:else}
 					<p>No notes yet. Point at geometry and say what's wrong; agents pick notes up over MCP.</p>
-					<p class="flex items-center gap-1.5 text-label">Press <Kbd keys={['C']} /> and click a face, or <Kbd keys={['P']} /> to sketch over the model.</p>
+					<p class="text-label leading-6 [&_kbd]:mx-0.5">Press <Kbd keys={['C']} /> and click a face, or <Kbd keys={['P']} /> to sketch over the model.</p>
 				{/if}
 			</div>
 		{/each}
