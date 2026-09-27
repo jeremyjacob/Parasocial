@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "parasocial": ["packages/api/src/index.ts"] }
+  },
+  "include": ["examples", "packages/kernel", "packages/naming", "packages/api", "packages/runtime"]
+}

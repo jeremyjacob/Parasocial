@@ -195,3 +195,13 @@ export function distance(a: Shape, b: Shape): Distance {
     return { distance: d.Value(), a: p3(tmp(d.PointOnShape1(1))), b: p3(tmp(d.PointOnShape2(1))) };
   });
 }
+
+/** Distance from a point to a shape (face/edge/vertex/solid). */
+export function pointDistance(shape: Shape, p: Vec3): Distance {
+  const O = oc();
+  return scoped(() => {
+    const v = tmp(new O.BRepBuilderAPI_MakeVertex(tmp(new O.gp_Pnt(p[0], p[1], p[2])))).Vertex();
+    tmp(v);
+    return distance(v, shape);
+  });
+}
