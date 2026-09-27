@@ -88,7 +88,7 @@
 									keywords={[item.label, ...(item.keywords ?? [])]}
 									onSelect={() => run(item)}
 									class={cn(
-										'group/ci flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-ui text-fg outline-none select-none',
+										'group/ci flex h-8 cursor-default items-center gap-2.5 rounded-control px-2.5 text-ui text-fg outline-none select-none transition-colors-fast',
 										'data-[selected]:bg-active'
 									)}
 								>
@@ -122,7 +122,7 @@
 		<Dialog.Portal to={portalTarget()}>
 			<Dialog.Overlay class="animate-fade fixed inset-0 z-50 bg-overlay" />
 			<Dialog.Content
-				class="fixed top-[18vh] left-1/2 z-50 w-[min(560px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-panel bg-elevated shadow-dialog outline-none data-[state=open]:animate-[ps-fade-in_var(--duration-fast)_var(--ease-out)]"
+				class="fixed top-[18vh] left-1/2 z-50 w-[min(560px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-panel bg-elevated shadow-dialog outline-none origin-top data-[state=open]:animate-[ps-palette-in_var(--duration-fast)_var(--ease-out)] data-[state=closed]:animate-[ps-fade-out_100ms_var(--ease-out)]"
 			>
 				<Dialog.Title class="sr-only">Command palette</Dialog.Title>
 				{@render palette()}

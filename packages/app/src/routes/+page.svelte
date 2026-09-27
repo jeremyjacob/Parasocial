@@ -96,7 +96,7 @@
 
 	<main class="mx-auto w-full max-w-[1120px] flex-1 px-6 py-8">
 		{#if docs.length === 0}
-			<section class="flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
+			<section class="animate-enter flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
 				<HeroArt name="hero" fit="contain" class="relative h-[300px] w-full max-w-[640px]" />
 				<h1 class="mt-2 text-heading font-semibold">Create your first document</h1>
 				<p class="mt-1 max-w-[440px] text-body text-fg-secondary">
@@ -107,19 +107,19 @@
 		{:else}
 			<h1 class="mb-4 text-title font-semibold">Documents</h1>
 			<ul class="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4" data-testid="document-list">
-				{#each docs as d (d.id)}
-					<li>
+				{#each docs as d, i (d.id)}
+					<li class="animate-enter" style="--ps-delay: {Math.min(i, 8) * 30}ms">
 						<a
 							href="/d/{d.id}"
 							onpointerenter={warmEngine}
 							onfocus={warmEngine}
-							class="focus-ring group flex flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel shadow-xs transition-shadow-fast hover:shadow-popover"
+							class="focus-ring lift group flex flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel shadow-xs"
 							data-testid="document-card"
 						>
 							<div class="relative grid h-36 place-items-center bg-canvas">
-								<HeroArt name="thumb" fit="contain" class="absolute inset-3" />
+								<HeroArt name="thumb" fit="contain" class="absolute inset-3 transition-transform duration-[var(--duration-slow)] ease-out group-hover:scale-[1.04]" />
 							</div>
-							<div class="flex items-center gap-2 border-t border-line-subtle px-3 py-2.5">
+							<div class="flex h-10 items-center gap-2 border-t border-line-subtle px-3">
 								<FileBox size={14} class="text-fg-tertiary" />
 								<span class="truncate text-ui font-medium">{d.name}</span>
 								<span class="ml-auto shrink-0 text-label text-fg-tertiary tabular-nums">{relativeTime(d.updatedAt)}</span>
@@ -131,21 +131,21 @@
 		{/if}
 
 		{#if examples.length}
-			<section class="mt-12">
+			<section class="animate-enter mt-12" style="--ps-delay: 60ms">
 				<h2 class="mb-1 text-ui font-semibold">Examples</h2>
-				<p class="mb-3 text-ui text-fg-secondary">Open a copy to explore. Each is a few short scripts with params and configurations.</p>
+				<p class="mb-4 text-ui text-fg-secondary">Open a copy to explore. Each is a few short scripts with params and configurations.</p>
 				<ul class="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3" data-testid="examples">
-					{#each examples as ex (ex.slug)}
-						<li>
+					{#each examples as ex, i (ex.slug)}
+						<li class="animate-enter" style="--ps-delay: {Math.min(i, 8) * 30}ms">
 							<button
-								class="focus-ring flex w-full flex-col overflow-hidden rounded-md border border-line-subtle bg-panel text-left transition-shadow-fast hover:shadow-popover disabled:opacity-60"
+								class="focus-ring lift group flex w-full flex-col overflow-hidden rounded-panel border border-line-subtle bg-panel text-left shadow-xs disabled:opacity-60"
 								onpointerenter={warmEngine}
 								onclick={() => openExample(ex)}
 								disabled={!!importing}
 								data-testid="example-{ex.slug}"
 							>
-								<div class="relative h-24 bg-canvas"><HeroArt name={ex.slug} fit="contain" class="absolute inset-2" /></div>
-								<div class="flex items-center gap-1.5 px-3 py-2 text-ui font-medium">
+								<div class="relative h-24 bg-canvas"><HeroArt name={ex.slug} fit="contain" class="absolute inset-2 transition-transform duration-[var(--duration-slow)] ease-out group-hover:scale-[1.05]" /></div>
+								<div class="flex h-10 items-center gap-1.5 border-t border-line-subtle px-3 text-ui font-medium">
 									{#if importing === ex.slug}<LoaderCircle size={12} class="animate-spin" />{/if}
 									{ex.name}
 									<span class="ml-auto text-label font-normal text-fg-tertiary">{ex.scripts.filter((s) => s.path.startsWith('parts/')).length} part{ex.scripts.filter((s) => s.path.startsWith('parts/')).length === 1 ? '' : 's'}</span>

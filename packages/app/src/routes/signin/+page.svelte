@@ -58,7 +58,7 @@
 <main class="relative grid min-h-dvh place-items-center overflow-hidden bg-canvas px-4">
 	<HeroArt class="pointer-events-none absolute inset-0" />
 	<div
-		class="relative w-full max-w-[360px] rounded-dialog border border-line-subtle bg-panel/92 p-6 shadow-dialog backdrop-blur-xl"
+		class="animate-enter relative w-full max-w-[360px] rounded-dialog border border-line-subtle bg-panel/92 p-6 shadow-dialog backdrop-blur-xl [--ps-enter-scale:0.97] [--ps-enter-y:10px]"
 		data-testid="signin-card"
 	>
 		<div class="mb-5 flex items-center gap-2">
@@ -66,6 +66,7 @@
 			<span class="text-title font-semibold">Parasocial</span>
 		</div>
 
+		{#key mode}<div class="animate-[ps-tab-in_var(--duration-base)_var(--ease-out)]">
 		{#if mode === 'signup'}
 			<h1 class="text-heading font-semibold">{data.needsSetup ? 'Set up this instance' : 'Create your account'}</h1>
 			<p class="mt-1 text-body text-fg-secondary">
@@ -107,9 +108,10 @@
 				<p class="mt-4 text-center text-label text-fg-tertiary">Sign-up on this instance is by invite link.</p>
 			{/if}
 		{/if}
+		</div>{/key}
 
 		{#if error}
-			<p class="mt-3 text-ui text-error" role="alert" data-testid="auth-error">{error}</p>
+			<p class="mt-3 animate-[ps-tab-in_var(--duration-fast)_var(--ease-out)] text-ui text-error" role="alert" data-testid="auth-error">{error}</p>
 		{/if}
 	</div>
 </main>
