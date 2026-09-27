@@ -35,7 +35,7 @@
 		);
 	});
 
-	const row = 'grid grid-cols-[88px_minmax(0,1fr)] items-baseline gap-2 py-1 text-ui';
+	const row = 'grid min-h-7 grid-cols-[88px_minmax(0,1fr)] items-center gap-2 text-ui';
 	const vec = (v?: number[]) => (v ? `(${v.map((x) => num(x, 3)).join(', ')})` : '—');
 	const typeName: Record<string, string> = { plane: 'Planar face', cylinder: 'Cylindrical face', cone: 'Conical face', sphere: 'Spherical face', torus: 'Toroidal face', bspline: 'Freeform face', line: 'Line edge', circle: 'Circular edge', ellipse: 'Elliptical edge', bspline_edge: 'Spline edge' };
 
@@ -63,7 +63,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="properties-panel">
 	{#if !sel.length}
-		<PropertySection title="Document">
+		<PropertySection bodyClass="gap-1" title="Document">
 			<label class={row}>
 				<span class="text-fg-secondary">Name</span>
 				<Input size="sm" bind:value={docName} onblur={rename} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()} />
@@ -75,7 +75,7 @@
 			<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{ws.parts.length}</span></div>
 			<div class={row}><span class="text-fg-secondary">Version</span><span class="tabular-nums">v{ws.doc?.headVersion ?? 0}</span></div>
 		</PropertySection>
-		<PropertySection title="Engine">
+		<PropertySection bodyClass="gap-1" title="Engine">
 			<div class={row}><span class="text-fg-secondary">Kernel</span><span>{ws.kernelReady ? `Ready · ${num(ws.engineInfo?.kernelMs ?? 0, 0)} ms` : ws.engineError ? 'Failed to load' : 'Loading…'}</span></div>
 			{#if ws.engineInfo}
 				<div class={row}><span class="text-fg-secondary">Threads</span><span class="tabular-nums">{ws.engineInfo.threads}</span></div>
@@ -85,7 +85,7 @@
 	{:else if one && one.kind === ('part' as any)}
 		{@const r = ws.results[one.part]}
 		{#if r}
-			<PropertySection title={r.name}>
+			<PropertySection bodyClass="gap-1" title={r.name}>
 				<div class={row}>
 					<span class="text-fg-secondary">Color</span>
 					<span class="flex items-center gap-2"><ColorSwatch color={ws.partColor(one.part, theme.resolved === 'dark')} size={14} /> <span class="text-fg-secondary">{r.color?.kind === 'rgb' ? r.color.hex : 'Auto'}</span></span>
@@ -94,7 +94,7 @@
 				<div class={row}><span class="text-fg-secondary">Script</span><button class="focus-ring flex items-center gap-1 truncate rounded-xs text-left text-accent hover:underline" onclick={() => reveal(r.file)}>{r.file} <ArrowUpRight size={12} /></button></div>
 			</PropertySection>
 			{#if r.mass}
-				<PropertySection title="Mass properties">
+				<PropertySection bodyClass="gap-1" title="Mass properties">
 					<div class={row}><span class="text-fg-secondary">Volume</span><span class="tabular-nums">{num(r.mass.volume, 1)} mm³</span></div>
 					<div class={row}><span class="text-fg-secondary">Mass</span><span class="tabular-nums">{num(r.mass.mass, 2)} g</span></div>
 					<div class={row}><span class="text-fg-secondary">Surface</span><span class="tabular-nums">{num(r.mass.area, 1)} mm²</span></div>
@@ -102,7 +102,7 @@
 				</PropertySection>
 			{/if}
 			{#if r.bbox}
-				<PropertySection title="Bounding box">
+				<PropertySection bodyClass="gap-1" title="Bounding box">
 					{@const size = r.bbox.max.map((v, i) => v - r.bbox!.min[i])}
 					<div class={row}><span class="text-fg-secondary">Size</span><span class="tabular-nums">{size.map((v) => num(v, 2)).join(' × ')} mm</span></div>
 				</PropertySection>
@@ -116,7 +116,7 @@
 		{@const f = one.kind === 'face' ? r?.faces[one.index] : null}
 		{@const e = one.kind === 'edge' ? r?.edges[one.index] : null}
 		{@const name = desc?.name ?? r?.names?.[one.kind as 'face' | 'edge']?.[one.index]}
-		<PropertySection title={f ? (typeName[f.surface] ?? 'Face') : e ? (typeName[e.curve === 'bspline' ? 'bspline_edge' : e.curve] ?? 'Edge') : 'Vertex'} meta={r?.name}>
+		<PropertySection bodyClass="gap-1" title={f ? (typeName[f.surface] ?? 'Face') : e ? (typeName[e.curve === 'bspline' ? 'bspline_edge' : e.curve] ?? 'Edge') : 'Vertex'} meta={r?.name}>
 			{#if f}
 				<div class={row}><span class="text-fg-secondary">Area</span><span class="tabular-nums">{num(f.area, 3)} mm²</span></div>
 				{#if f.surface === 'plane'}<div class={row}><span class="text-fg-secondary">Normal</span><span class="tabular-nums">{vec(f.normal)}</span></div>{/if}
@@ -128,7 +128,7 @@
 				{#if e.direction}<div class={row}><span class="text-fg-secondary">Direction</span><span class="tabular-nums">{vec(e.direction)}</span></div>{/if}
 			{/if}
 		</PropertySection>
-		<PropertySection title="Reference">
+		<PropertySection bodyClass="gap-1" title="Reference">
 			{#if desc?.createdBy}
 				{@const cb = desc.createdBy}
 				<div class="py-1 text-ui">
@@ -150,14 +150,14 @@
 			</div>
 		</PropertySection>
 		{#if desc?.neighbors?.length}
-			<PropertySection title="Touches" collapsible open={false} meta={String(desc.neighbors.length)}>
+			<PropertySection bodyClass="gap-1" title="Touches" collapsible open={false} meta={String(desc.neighbors.length)}>
 				<ul class="flex flex-col gap-1">
 					{#each desc.neighbors as n (n)}<li class="truncate font-mono text-label text-fg-secondary" title={n}>{n}</li>{/each}
 				</ul>
 			</PropertySection>
 		{/if}
 	{:else}
-		<PropertySection title="{sel.length} selected">
+		<PropertySection bodyClass="gap-1" title="{sel.length} selected">
 			<p class="text-ui text-fg-secondary">{[...new Set(sel.map((s) => s.kind))].join(', ')} across {new Set(sel.map((s) => s.part)).size} part{new Set(sel.map((s) => s.part)).size === 1 ? '' : 's'}.</p>
 		</PropertySection>
 	{/if}

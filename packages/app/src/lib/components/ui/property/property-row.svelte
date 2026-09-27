@@ -27,14 +27,9 @@
 			layout === 'inline' ? 'h-7' : 'h-4'
 		)}
 	>
-		{#if overridden}
-			<span
-				aria-hidden="true"
-				class="absolute top-1/2 -left-2.5 size-[5px] -translate-y-1/2 rounded-full bg-override"
-			></span>
-			<span class="sr-only">Overridden: </span>
-		{/if}
-		<span class={cn('truncate', overridden && 'text-fg')}>{label}</span>
+		<span aria-hidden="true" class="override-dot" data-on={overridden ? '' : undefined}></span>
+		{#if overridden}<span class="sr-only">Overridden: </span>{/if}
+		<span class={cn('truncate transition-colors duration-[var(--duration-fast)]', overridden && 'text-fg')}>{label}</span>
 	</label>
 {/snippet}
 

@@ -248,7 +248,7 @@
 	<div class={rowLabel ? 'grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2' : 'contents'}>
 	{#if rowLabel}
 		<span
-			class={cn('relative flex h-7 min-w-0 cursor-ew-resize touch-none items-center text-ui select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
+			class={cn('relative flex h-7 min-w-0 cursor-ew-resize touch-none items-center text-ui transition-colors duration-[var(--duration-fast)] select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
 			title={defaultValue !== undefined ? `${rowLabel} · default ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}${source ? ` · ${source}` : ''}` : rowLabel}
 			onpointerdown={onScrubDown}
 			onpointermove={onScrubMove}
@@ -256,7 +256,7 @@
 			onpointercancel={onScrubUp}
 			data-testid="param-label"
 		>
-			{#if overridden}<span aria-hidden="true" class="absolute top-1/2 -left-2.5 size-[5px] -translate-y-1/2 rounded-full bg-override"></span>{/if}
+			<span aria-hidden="true" class="override-dot" data-on={overridden ? '' : undefined}></span>
 			<span class="truncate">{rowLabel}</span>
 		</span>
 	{/if}
@@ -305,7 +305,7 @@
 			{onblur}
 			{onkeydown}
 			class={cn(
-				'h-full w-full min-w-0 flex-1 bg-transparent text-ui text-ellipsis tabular outline-none',
+				'h-full w-full min-w-0 flex-1 bg-transparent text-ui text-ellipsis tabular outline-none transition-colors duration-[var(--duration-fast)]',
 				overridden && !focused ? 'text-override' : 'text-fg'
 			)}
 		/>
