@@ -625,14 +625,14 @@ Places where the implementation departs from, or has to interpret, the plan abov
 - **Configuration changes coalesce with param changes.** §8 coalesces param bursts into one version. Creating, duplicating, renaming and deleting configurations are part of the same param state, so they join the same burst (e.g. "Params: +M3, thickness 3 → 4"). A burst is changes by one author within 10 s, with nothing else committed in between.
 - **Imported notes have no snapshot.** Blobs aren't exported (§3), so `notes.snapshot_hash` is nullable, but only notes arriving through import can have it null. `note.create` still requires an uploaded snapshot.
 
----
-
-*Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/*
-
-## 14. Deviations
-
-Recorded as they happen, with the reason. The sections above stay the target; these explain where the build differs.
+### M0/M1 kernel, naming, runtime
 
 - **Script transpiler: Sucrase instead of esbuild-wasm (§5, §12).** Sucrase is ~0.2 MB versus esbuild-wasm's ~11 MB of WASM, which matters for the "kernel ready < 1.5 s" budget, and it preserves line numbers, so provenance maps stack frames straight back to `parts/*.ts` lines without source maps. Modules are transformed individually and loaded by our own tiny CommonJS loader (fresh cache per regeneration). Sucrase reports some syntax errors at the enclosing arrow function; the loader re-parses the block to find the real line.
 - **Scripts are evaluated in sloppy mode.** JavaScriptCore (Bun) performs proper tail calls in strict mode, which drops helper frames from stack traces. Provenance and auto op ids (`part/helper/type<n>`) depend on those frames, so modules are evaluated without `"use strict"` to get identical results under Bun and Chromium. Writes to the frozen API are then ignored rather than throwing; the API is still frozen.
 - **Seam edges are excluded from edge selections** unless the selector mentions `seam`. A periodic face's seam is a parametrization artifact, not a feature edge; `base.edges("base.side")` shouldn't pick up a bore's seam.
+- **OCCT threads are off by default.** M0 measured the threaded build on the corpus: no speedup (knob 662 ms threaded vs. 585 ms single, flange 205 vs. 184, even with `BOPAlgo` parallel mode). Cross-origin isolation and the threaded build both work (8 threads confirmed), so the engine opts in with `?threads=1`; the default stays single-threaded until a workload benefits.
+- **Engine CSP allows `connect-src 'self'` and `'unsafe-eval'`.** The worker must fetch its own WASM (and a service worker must precache it), and scripts run via `new Function`. `'self'` is the static engine origin, which serves no data and holds no credentials; the app still rejects requests from the engine origin.
+
+---
+
+*Original brainstorm: `idea.md`. Figma UI3 reference: https://www.figma.com/blog/our-approach-to-designing-ui3/*
