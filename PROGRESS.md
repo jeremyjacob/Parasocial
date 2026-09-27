@@ -23,8 +23,11 @@ Living status for resuming after a context reset. PLAN.md is the source of truth
 - **Design system** (subagent, merged): packages/app SvelteKit + Tailwind v4 + bits-ui, tokens light/dark, components, /design showcase, DESIGN.md, screenshots.
 - Examples: bracket, flange (+lib helper), enclosure (body+lid), knob, gasket; corpus parts split, filletchain.
 
+- **M3 workspace** — done: passkey sign-in (one button), documents list (SSR + live Zero), examples import, workspace (viewport w/ selection label, status pill, controls, view cube drag, context menu), parts/scripts/history panels, params (Figma fields, scrub, expressions, configurations, overrides, code-default-changed), properties (doc/part/entity + provenance), ⌘K, shortcuts + cheatsheet, undo/redo (own mutations), cache-first open (Cache Storage), SW WASM precache + brotli, progressive meshing (coarse while scrubbing), clay art.
+- **M4 notes + markup** — done: note mode (C, click or selection), draft composer, snapshot upload → note.create, pins (follow geometry via closest point, occlusion, clustering, ghost when orphaned), resolution on every regen (name → query → nearest → orphaned; engine errors never orphan), threads (mentions, activity log, version links, status, remove/restore, filters), re-anchor, pencil (surface-projected strokes, colors, eraser, crossed entities → targets), compare (snapshot engine, ghost + blend slider, hold B), History view read-only + restore.
+
 ## In progress
-- M3 workspace.
+- M5 MCP (OAuth 2.1 AS, MCP endpoint, tools, engine pool).
 
 ## Blocked / stubs
 - engine-pool container is a stub (M5).
