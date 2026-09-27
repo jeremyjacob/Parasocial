@@ -30,18 +30,18 @@ Living status for resuming after a context reset. PLAN.md is the source of truth
 - **M6 breadth + output** — done: sweep, loft, shell, draft, split, holes (simple/counterbore/countersink), thicken, extrude up-to, rounded rect/polyline, sketch offset/mirror; measure tool (dimension + "note this measurement"); section view; export dialog; Code mode (Monaco lazy + idle prefetch, live preview, ⌘S versions, dirty-buffer banner, markers, geometry↔source).
 - Subagent passes merged: motion + spacing; UI copy; logo ("Face" mark).
 
+- **M7 polish (partial)** — feedback batches: Figma-style documents grid (select/⌘/⇧, double-click opens), default cursor app-wide, logo → home, Onshape-style view cube (bevelled edges/corners, triad, right-drag orbit), orbit pivot at hovered point or model depth, clamped wheel zoom, stable orbit over the poles, fit → iso when already fitted, hatched section caps + remembered settings, grid/origin toggles (G, ⇧G), wider edge pick, denser tessellation, double-click selects part, selected-part outline through other parts, pencil composer debounce, isolate/hide toggles, dark wireframe white.
+- **Tests**: unit + corpus; E2E specs — auth (3), documents (4), workspace (6), a11y (axe WCAG 2.1 AA, light + dark: passing), budgets (§9). Accessibility fixes: tailwind-variants was dropping `text-fg-on-accent` (now shares the merge config), AA text/accent tokens, list rows without nested interactive roles.
+
 ## In progress
-- M7 polish.
+- E2E: notes, code (incl. conflict), MCP agent loop specs (subagent).
+- §9 budgets: hover 7 ms, click→Properties 11–26 ms, cached scrub step 49–62 ms engine+render in isolation — pass. Warm open (3.8 s), kernel repeat (5.5 s) and warm write (1.3 s) fail **under the Vite dev server with other browsers running**; re-measure on a quiet machine against the production build (`vite build` + adapter-bun) before treating as regressions.
 
 ## Blocked / stubs
 - deploy: engine-pool container image not yet written for compose (service runs on host in dev via `bun packages/engine-pool/src/server.ts`); app Dockerfile untested.
 
-## Queued (user requests)
-- **Subagent pass: motion + spacing** — once M4 UI settles: more motion (snappy, utilitarian, polished), spacing/padding refinement across the workspace.
-- **Subagent pass: UI copy** — refine and remove: cut explanatory text, never expose implementation details.
-- **Logo** — subagent designing 5 concepts at /design/logo (running); lead picks one.
-- **Real document thumbnails** (roadmap): render a thumbnail of each document's current geometry (engine render on save/regen, stored as a blob, shown on the documents list instead of the generic clay art).
+## Roadmap (user requests)
+- **Real document thumbnails**: render each document's current geometry (engine render on save/regen, stored as a blob) on the documents list instead of the generic clay art.
 
 ## Next
-- M3: app routes wired to platform, sign-in, documents list, workspace shell with real engine + viewer, params/configs, errors, ⌘K, undo, cache-first open, SW WASM caching.
-- M4 notes/markup/compare/history, M5 MCP, M6 breadth, M7 polish; then full test pass.
+- Finish notes/code/MCP E2E; production-build budget run; deploy images; remaining polish.
