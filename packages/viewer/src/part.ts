@@ -94,6 +94,9 @@ uniform vec3 color;
 void main() {
   #include <clipping_planes_fragment>
   gl_FragColor = vec4(color, 1.0);
+  // same output transform as built-in materials: without it the direct (moving) path shows the
+  // linear colour, darker and redder than the composer path, so the outline flickers on orbit
+  #include <colorspace_fragment>
 }`;
 
 export class PartObject {

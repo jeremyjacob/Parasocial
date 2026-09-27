@@ -44,20 +44,18 @@ export interface PartColor {
 }
 
 /**
- * Curated part palette, assigned round-robin (Onshape style): mid-value, saturated enough to read
- * as material under real lighting. Excludes orange, which is the selection colour.
+ * Curated part palette, assigned round-robin (Onshape style): a constrained set of grays, blues,
+ * sea green and marigold, mid-value so shading reads as material. Excludes orange (selection).
  */
 export const partColors: readonly PartColor[] = [
-	{ id: 'steel', name: 'Steel blue', light: '#4f82bd', dark: '#4a7ab3' },
-	{ id: 'gold', name: 'Gold', light: '#d6b447', dark: '#c6a53f' },
-	{ id: 'sage', name: 'Sage', light: '#5a9a68', dark: '#528e5f' },
-	{ id: 'slate', name: 'Slate', light: '#7b8594', dark: '#707a88' },
-	{ id: 'crimson', name: 'Crimson', light: '#c2506b', dark: '#b24a62' },
-	{ id: 'teal', name: 'Teal', light: '#2f9b98', dark: '#2b8d8a' },
-	{ id: 'violet', name: 'Violet', light: '#7b63c2', dark: '#705ab2' },
-	{ id: 'olive', name: 'Olive', light: '#9ba442', dark: '#8d953c' },
-	{ id: 'ivory', name: 'Ivory', light: '#d9d3c3', dark: '#c6c0b1' },
-	{ id: 'navy', name: 'Navy', light: '#3d5a8c', dark: '#3a5584' }
+	{ id: 'blue', name: 'Blue', light: '#4a78b0', dark: '#4672a8' },
+	{ id: 'graphite', name: 'Graphite', light: '#6f7580', dark: '#686e79' },
+	{ id: 'sea', name: 'Sea green', light: '#3d9a82', dark: '#389079' },
+	{ id: 'marigold', name: 'Marigold', light: '#c9962b', dark: '#bb8b28' },
+	{ id: 'silver', name: 'Silver', light: '#a4aab2', dark: '#969ca4' },
+	{ id: 'slate', name: 'Slate blue', light: '#5d6f98', dark: '#57688f' },
+	{ id: 'teal', name: 'Deep teal', light: '#2f7a7c', dark: '#2c7274' },
+	{ id: 'stone', name: 'Warm gray', light: '#8d857a', dark: '#837b71' }
 ] as const;
 
 /** Round-robin assignment: the nth part in a document gets partColorAt(n). */

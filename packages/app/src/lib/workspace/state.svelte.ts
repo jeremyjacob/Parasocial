@@ -520,7 +520,6 @@ export class WorkspaceState {
 	isolate(part: string | null) {
 		this.isolated = part && !(this.isolated.length === 1 && this.isolated[0] === part) ? [part] : [];
 		this.viewer?.isolate(this.isolated);
-		this.viewer?.fit(undefined, true);
 	}
 
 	/** Section on/off (S). Turning it on restores the last axis, offset and flip used. */
