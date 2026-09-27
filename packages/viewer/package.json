@@ -1,0 +1,17 @@
+{
+  "name": "@parasocial/viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "@parasocial/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0"
+  }
+}

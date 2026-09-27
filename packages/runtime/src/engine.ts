@@ -35,6 +35,8 @@ export type PartResult = {
   faces: FaceMeta[];
   edges: EdgeMeta[];
   vertices: Vec3[];
+  /** face index -> bounding edge indices (for face outlines) */
+  faceEdges: number[][];
   bbox?: { min: Vec3; max: Vec3 };
   mass?: { volume: number; area: number; mass: number; centroid: Vec3 };
   timings: { total: number; script: number; ops: number; mesh: number; cacheHits: number; cacheMisses: number };
@@ -159,6 +161,7 @@ export class Engine {
       faces: [],
       edges: [],
       vertices: [],
+      faceEdges: [],
       timings: { total: 0, script: scriptMs, ops: run?.timings.ops ?? 0, mesh: 0, cacheHits: run?.timings.cacheHits ?? 0, cacheMisses: run?.timings.cacheMisses ?? 0 },
       key: rec?.key,
     };
@@ -181,6 +184,7 @@ export class Engine {
         return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, seam: isSeamEdge(rec!, i) || undefined };
       });
       result.vertices = rec.topo.vertices.items.map((_, i) => vertexOf(rec!, i));
+      result.faceEdges = rec.topo.faceEdges.map((l) => [...l]);
       if (quality === "fine") {
         const m = massProps(rec.shape);
         result.mass = { volume: m.volume, area: m.area, centroid: m.centroid, mass: (m.volume / 1000) * (run?.material?.density ?? 1) };
