@@ -93,6 +93,9 @@ window.addEventListener("message", async (ev) => {
   }
 });
 
+// precache the WASM for repeat visits (§9); failures are harmless
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+
 // start warming immediately (the app starts the iframe on hover, §9); the spare boots after
 current = spawn();
 current.ready.then(() => (spare ??= spawn())).catch(() => {});

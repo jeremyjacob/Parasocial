@@ -44,6 +44,9 @@ export async function buildEngine(outDir = join(here, "../../dist/engine"), opts
     const wasmName = `occt/${h}.${v}.wasm`;
     writeFileSync(join(outDir, jsName), js);
     copyFileSync(join(occtDist, `replicad_${v}.wasm`), join(outDir, wasmName));
+    // precompressed for transfer (~5.7 MB brotli vs 23 MB raw)
+    const { brotliCompressSync, constants } = await import("node:zlib");
+    writeFileSync(join(outDir, wasmName + ".br"), brotliCompressSync(wasm, { params: { [constants.BROTLI_PARAM_QUALITY]: 9 } }));
     assets[v] = jsName;
     assets[v + "Wasm"] = wasmName;
     if (v === "single") wasmBytes = wasm.byteLength;

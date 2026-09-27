@@ -37,6 +37,23 @@ export function engineHeaders(allowedParents: string[], ext: string, immutable: 
   return h;
 }
 
+/**
+ * Service worker on the engine origin (§9 Loading): precaches the content-hashed OCCT glue and
+ * WASM so a repeat visit never downloads them again; cache-first for /occt/*.
+ */
+export function serviceWorker(a: EngineAssets): string {
+  const files = [a.glueSingle, a.wasmSingle, "/worker.js", "/page.js"];
+  return `const CACHE = "ps-engine-${a.build}";
+const PRECACHE = ${JSON.stringify(files)};
+self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting())); });
+self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith("ps-engine-") && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
+self.addEventListener("fetch", (e) => {
+  const u = new URL(e.request.url);
+  if (u.origin !== location.origin || !(u.pathname.startsWith("/occt/") || u.pathname === "/worker.js" || u.pathname === "/page.js")) return;
+  e.respondWith(caches.open(CACHE).then(async (c) => (await c.match(e.request)) ?? fetch(e.request).then((r) => { if (r.ok && u.pathname.startsWith("/occt/")) c.put(e.request, r.clone()); return r; })));
+});`;
+}
+
 export async function serveEngine(o: EngineServerOptions) {
   const assets = o.assets ?? (await buildEngine());
   const config = `window.ENGINE_CONFIG=${JSON.stringify({ allowedParents: o.allowedParents, timeoutMs: o.timeoutMs ?? 10000, assets: { glueSingle: assets.glueSingle, glueMulti: assets.glueMulti, wasmSingle: assets.wasmSingle, wasmMulti: assets.wasmMulti, build: assets.build } })};`;
@@ -47,11 +64,15 @@ export async function serveEngine(o: EngineServerOptions) {
       const url = new URL(req.url);
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 });
       let path = url.pathname === "/" ? "/index.html" : url.pathname;
+      if (path === "/sw.js") return new Response(serviceWorker(assets), { headers: { "Content-Type": "text/javascript", "Service-Worker-Allowed": "/", ...engineHeaders(o.allowedParents, ".js", false) } });
       if (path === "/config.js") return new Response(config, { headers: { "Content-Type": "text/javascript", ...engineHeaders(o.allowedParents, ".js", false) } });
       if (path.includes("..")) return new Response("bad path", { status: 400 });
       const file = join(assets.dir, path);
       if (!existsSync(file)) return new Response("not found", { status: 404 });
       const ext = extname(file);
+      if (ext === ".wasm" && (req.headers.get("accept-encoding") ?? "").includes("br") && existsSync(file + ".br")) {
+        return new Response(Bun.file(file + ".br"), { headers: { "Content-Type": TYPES[ext], "Content-Encoding": "br", Vary: "Accept-Encoding", ...engineHeaders(o.allowedParents, ext, true) } });
+      }
       return new Response(Bun.file(file), { headers: { "Content-Type": TYPES[ext] ?? "application/octet-stream", ...engineHeaders(o.allowedParents, ext, path.startsWith("/occt/")) } });
     },
   });
