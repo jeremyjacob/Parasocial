@@ -79,3 +79,36 @@ test("STEP and STL export", async () => {
   const stl = exportSTL(pr.shape);
   expect(stl.byteLength).toBeGreaterThan(84);
 });
+
+test("sweep, loft, shell, draft, thicken, split, offset", async () => {
+  const k = await import("../src");
+  const circle = (r: number, z: number) => k.wireFromEdges([k.circleEdge([0, 0, z], [0, 0, 1], r)]);
+  // sweep a circle along a bent path
+  const path = k.wireFromEdges([k.lineEdge([0, 0, 0], [0, 0, 20]), k.arcEdge3([0, 0, 20], [5, 0, 25], [10, 0, 30])]);
+  const sw = k.sweep(k.faceFromWires(circle(2, 0)).shape, path);
+  expect(k.isValid(sw.shape)).toBe(true);
+  expect(k.massProps(sw.shape).volume).toBeGreaterThan(Math.PI * 4 * 20);
+  // loft circle -> smaller circle
+  const lo = k.loft([circle(10, 0), circle(5, 20)]);
+  expect(k.massProps(lo.shape).volume).toBeCloseTo((Math.PI * 20 * (100 + 50 + 25)) / 3, 0);
+  // shell a box open at the top
+  const { face } = rectFace(20, 20);
+  const pr = k.prism(face, [0, 0, 10]);
+  const top = k.topology(pr.shape).faces.items.find((f: any) => k.faceInfo(f).center[2] > 9.9);
+  const sh = k.shell(pr.shape, [top], 1);
+  expect(k.massProps(sh.shape).volume).toBeCloseTo(20 * 20 * 10 - 18 * 18 * 9, 0);
+  // draft the four sides by 5°
+  const pr2 = k.prism(rectFace(20, 20).face, [0, 0, 10]);
+  const sides = k.topology(pr2.shape).faces.items.filter((f: any) => Math.abs(k.faceInfo(f).normal[2]) < 0.01);
+  const dr = k.draft(pr2.shape, sides, [0, 0, 1], (5 * Math.PI) / 180, [0, 0, 0], [0, 0, 1]);
+  expect(k.massProps(dr.shape).volume).toBeLessThan(4000);
+  // split by a plane
+  const sp = k.split(pr.shape, [k.planeFace([10, 10, 5], [0, 0, 1], 100)]);
+  expect(k.explore(sp.shape, "solid").size).toBe(2);
+  // offset a face outline
+  const off = k.offsetFace(rectFace(10, 10).face, 2);
+  expect(k.faceInfo(off.shape).area).toBeGreaterThan(14 * 14 - 4);
+  // thicken a face
+  const th = k.thicken(rectFace(10, 10).face, 2);
+  expect(k.massProps(th.shape).volume).toBeCloseTo(200, 0);
+});

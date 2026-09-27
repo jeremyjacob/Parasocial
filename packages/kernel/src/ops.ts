@@ -270,3 +270,122 @@ function safe<T>(fn: () => T, fallback: T): T {
     return fallback;
   }
 }
+
+// ---------- M6: sweep, loft, shell, draft, thicken, split, offset ----------
+
+const list = (shapes: Shape[]) => {
+  const O = oc();
+  const l = tmp(new O.NCollection_List_TopoDS_Shape());
+  for (const x of shapes) l.Append(x);
+  return l;
+};
+
+/** Sweep a profile (face or wire) along a path wire. */
+export function sweep(profile: Shape, path: Shape): Built {
+  const O = oc();
+  return guard("sweep", () => scoped(() => {
+    // the two-argument form uses a corrected Frenet trihedron
+    const mk = new O.BRepOffsetAPI_MakePipe(O.TopoDS.Wire(path), profile);
+    mk.Build(progress());
+    if (!mk.IsDone()) throw new KernelError("sweep failed: check the profile sits at the start of the path and the path has no sharp kinks");
+    return { shape: downcast(mk.Shape()), maker: mk, caps: { start: mk.FirstShape(), end: mk.LastShape() } };
+  }));
+}
+
+/** Loft through section wires (first to last). */
+export function loft(sections: Shape[], opts: { solid?: boolean; ruled?: boolean } = {}): Built {
+  const O = oc();
+  return guard("loft", () => scoped(() => {
+    if (sections.length < 2) throw new KernelError("loft needs at least two sections");
+    const mk = new O.BRepOffsetAPI_ThruSections(opts.solid ?? true, opts.ruled ?? false, 1e-6);
+    for (const w of sections) mk.AddWire(O.TopoDS.Wire(w));
+    mk.CheckCompatibility(true);
+    mk.Build(progress());
+    if (!mk.IsDone()) throw new KernelError("loft failed: sections must be closed and compatible (same number of segments helps)");
+    return { shape: downcast(mk.Shape()), maker: mk, caps: { start: mk.FirstShape(), end: mk.LastShape() } };
+  }));
+}
+
+/** Hollow a solid, removing `openFaces`, walls of `thickness` (negative = inward, the default). */
+export function shell(solid: Shape, openFaces: Shape[], thickness: number): Built {
+  const O = oc();
+  return guard("shell", () => scoped(() => {
+    const mk = new O.BRepOffsetAPI_MakeThickSolid();
+    mk.MakeThickSolidByJoin(solid, list(openFaces), -Math.abs(thickness), 1e-3, O.BRepOffset_Mode.BRepOffset_Skin, false, false, O.GeomAbs_JoinType.GeomAbs_Arc, false, progress());
+    if (!mk.IsDone()) throw new KernelError(`shell failed: thickness ${Math.abs(thickness)} may be too large for the part's features`);
+    return { shape: downcast(mk.Shape()), maker: mk };
+  }));
+}
+
+/** Thicken a face/shell into a solid. */
+export function thicken(shape: Shape, thickness: number): Built {
+  const O = oc();
+  return guard("thicken", () => scoped(() => {
+    const mk = new O.BRepOffsetAPI_MakeThickSolid();
+    mk.MakeThickSolidBySimple(shape, thickness);
+    if (!mk.IsDone()) throw new KernelError("thicken failed");
+    return { shape: downcast(mk.Shape()), maker: mk };
+  }));
+}
+
+/** Taper faces by `angleRad` about a neutral plane, pulling along `dir`. */
+export function draft(solid: Shape, faces: Shape[], pull: Vec3, angleRad: number, planeOrigin: Vec3, planeNormal: Vec3): Built {
+  const O = oc();
+  return guard("draft", () => scoped(() => {
+    const mk = new O.BRepOffsetAPI_DraftAngle(solid);
+    const pln = tmp(new O.gp_Pln(pnt(planeOrigin), dir(planeNormal)));
+    for (const f of faces) {
+      mk.Add(O.TopoDS.Face(f), dir(pull), angleRad, pln, true);
+      if (!mk.AddDone()) {
+        mk.delete();
+        throw new KernelError("draft failed on a face: drafted faces must be planar, cylindrical or conical and not parallel to the pull direction");
+      }
+    }
+    mk.Build(progress());
+    if (!mk.IsDone()) throw new KernelError("draft failed");
+    return { shape: downcast(mk.Shape()), maker: mk };
+  }));
+}
+
+/** Split a shape by tools (solids, faces or planes-as-faces); the result is a compound of pieces. */
+export function split(shape: Shape, tools: Shape[]): Built {
+  const O = oc();
+  return guard("split", () => scoped(() => {
+    const mk = new O.BRepAlgoAPI_Splitter();
+    mk.SetArguments(list([shape]));
+    mk.SetTools(list(tools));
+    mk.Build(progress());
+    if (!mk.IsDone() || mk.HasErrors()) throw new KernelError("split failed");
+    return { shape: downcast(mk.Shape()), maker: mk };
+  }));
+}
+
+/** Offset a planar face's outline by `d` (positive grows); inner loops become holes. */
+export function offsetFace(face: Shape, d: number): Built {
+  const O = oc();
+  return guard("offset", () => scoped(() => {
+    const mk = tmp(new O.BRepOffsetAPI_MakeOffset(O.TopoDS.Face(face), O.GeomAbs_JoinType.GeomAbs_Arc, false));
+    mk.Perform(d, 0);
+    if (!mk.IsDone()) throw new KernelError("offset failed");
+    const wires = explore(mk.Shape(), "wire").items;
+    if (!wires.length) throw new KernelError(`offset ${d} collapsed the profile`);
+    const area = (w: Shape) => {
+      const f = faceFromWires(w);
+      f.maker?.delete?.();
+      const p = tmp(new O.GProp_GProps());
+      O.BRepGProp.SurfaceProperties(f.shape, p, false, false);
+      return p.Mass();
+    };
+    const sorted = [...wires].sort((a, b) => area(b) - area(a));
+    return faceFromWires(sorted[0], sorted.slice(1));
+  }));
+}
+
+/** A large planar face (for splitting by a plane). */
+export function planeFace(origin: Vec3, normal: Vec3, size: number): Shape {
+  const O = oc();
+  return scoped(() => {
+    const pl = tmp(new O.gp_Pln(pnt(origin), dir(normal)));
+    return tmp(new O.BRepBuilderAPI_MakeFace(pl, -size, size, -size, size)).Face();
+  });
+}
