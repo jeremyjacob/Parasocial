@@ -68,6 +68,8 @@ export class WorkspaceState {
 	undoStack = $state.raw<Undo[]>([]);
 	redoStack = $state.raw<Undo[]>([]);
 
+	private presenceID = newID();
+	private presenceTimer: any = null;
 	private sentScripts = new Map<string, string>();
 	private sentOverrides = new Map<string, string>();
 	private docSent = false;
@@ -117,6 +119,7 @@ export class WorkspaceState {
 
 	setActiveConfig(id: string | null) {
 		this.activeConfigID = id;
+		this.publishPresence();
 		try {
 			localStorage.setItem(`parasocial:config:${this.documentID}`, id ?? 'default');
 		} catch {}
@@ -389,6 +392,26 @@ export class WorkspaceState {
 		}
 		this.selection = next;
 		this.viewer?.setSelection(next);
+		this.publishPresence();
+	}
+
+	/** Share the selection (by stable name) and active configuration, so agents can get_selection. */
+	publishPresence() {
+		clearTimeout(this.presenceTimer);
+		this.presenceTimer = setTimeout(async () => {
+			const sel = this.selection;
+			const entries: { kind: 'face' | 'edge' | 'vertex' | 'part'; name: string; part: string }[] = [];
+			for (const r of sel.slice(0, 200)) {
+				if ((r.kind as string) === 'part') entries.push({ kind: 'part', name: r.part, part: r.part });
+				else {
+					let name = this.results[r.part]?.names?.[r.kind as 'face' | 'edge']?.[r.index];
+					if (!name && this.engine && this.kernelReady) name = (await this.engine.describe(r.part, r.kind, r.index).catch(() => null))?.name;
+					if (name) entries.push({ kind: r.kind, name, part: r.part });
+				}
+			}
+			if (sel !== this.selection) return;
+			this.zero.mutate(mutators.presence.set({ id: this.presenceID, documentID: this.documentID, selection: entries, activeConfigurationID: this.activeConfigID }));
+		}, 250);
 	}
 
 	clearSelection() {
