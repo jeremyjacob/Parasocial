@@ -556,7 +556,7 @@
 	</div>
 
 	{#if ws.mode === 'model'}
-		<div class="absolute top-[108px] right-[22px] z-10">
+		<div class="absolute top-[120px] right-[48px] z-10">
 			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:filters={() => ws.filters, (v) => (ws.filters = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
