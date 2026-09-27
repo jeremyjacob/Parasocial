@@ -3,6 +3,10 @@
 import { test, expect, openExample, viewportPoint, wsEval } from "./fixtures";
 import type { Page } from "@playwright/test";
 
+// measure on the real GPU: headless Chromium defaults to SwiftShader (software), which makes every
+// GPU-bound frame (AO, MSAA) look 10× slower than on a user's machine
+test.use({ launchOptions: { args: ["--use-angle=metal", "--ignore-gpu-blocklist"] } });
+
 const report = (name: string, ms: number, budget: number) => console.log(`budget ${name}: ${ms.toFixed(1)} ms (budget ${budget} ms)`);
 
 const bboxWidth = (page: Page) => wsEval<number>(page, "ws.results.bracket.bbox.max[0] - ws.results.bracket.bbox.min[0]");

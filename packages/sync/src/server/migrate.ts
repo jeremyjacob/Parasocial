@@ -1,5 +1,6 @@
 /**
- * Tiny migration runner. Applies `packages/sync/migrations/*.sql` in filename
+ * Tiny migration runner. Applies the migrations embedded from `packages/sync/migrations/*.sql`
+ * (see scripts/gen-migrations.ts; a bundled server has no .sql files on disk) in filename
  * order, each in its own transaction, recording applied names in
  * `schema_migrations`. A Postgres advisory lock keeps concurrent app replicas
  * from racing at boot.
@@ -10,25 +11,26 @@ import postgres from "postgres";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MIGRATIONS } from "./migrations.gen";
 
 export const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations", import.meta.url));
 const LOCK_ID = 0x7061_7261; // "para"
 
 export async function migrate(
   sql: postgres.Sql,
-  dir: string = MIGRATIONS_DIR,
+  /** Read .sql files from this directory instead of the embedded copy (tests, tooling). */
+  dir?: string,
   log: (msg: string) => void = () => {},
 ): Promise<string[]> {
-  const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
+  const migrations = dir ? await readMigrations(dir) : MIGRATIONS;
   const applied: string[] = [];
   await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(${LOCK_ID})`;
     await tx`CREATE TABLE IF NOT EXISTS schema_migrations (
       name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`;
     const done = new Set((await tx`SELECT name FROM schema_migrations`).map((r) => r.name as string));
-    for (const file of files) {
+    for (const [file, text] of migrations) {
       if (done.has(file)) continue;
-      const text = await Bun.file(join(dir, file)).text();
       await tx.unsafe(text);
       await tx`INSERT INTO schema_migrations (name) VALUES (${file})`;
       applied.push(file);
@@ -36,6 +38,11 @@ export async function migrate(
     }
   });
   return applied;
+}
+
+export async function readMigrations(dir: string = MIGRATIONS_DIR): Promise<(readonly [string, string])[]> {
+  const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
+  return Promise.all(files.map(async (f) => [f, await Bun.file(join(dir, f)).text()] as const));
 }
 
 if (import.meta.main) {

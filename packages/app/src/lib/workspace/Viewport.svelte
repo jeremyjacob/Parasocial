@@ -77,7 +77,7 @@
 		host.addEventListener('contextmenu', onContextCapture, { capture: true });
 		host.addEventListener('pointerup', onRightUp);
 		// the cube sits left of the view controls (top-right, 32px wide + 12px inset)
-		viewer = new Viewer(host, { theme: viewerTheme(dark), viewCubeInset: { top: 10, right: 50 } });
+		viewer = new Viewer(host, { theme: viewerTheme(dark), viewCubeInset: { top: 4, right: 8 } });
 		// a remount (HMR) takes over the previous viewer's meshes and camera
 		if (ws.attachViewer(viewer)) fitted = true;
 		(window as any).__viewer = viewer; // test hook
@@ -117,6 +117,7 @@
 		viewer?.setDisplayMode(m === 'shaded-edges' ? 'shadedEdges' : m === 'hidden-line' ? 'hiddenLine' : m);
 	});
 	$effect(() => viewer?.setProjection(ws.ortho));
+	$effect(() => viewer?.setInteracting(ws.scrubbing || ws.typing));
 	$effect(() => {
 		if (viewer) viewer.filter = { face: ws.filters.includes('face'), edge: ws.filters.includes('edge'), vertex: ws.filters.includes('vertex'), part: ws.filters.includes('part') };
 	});
@@ -540,7 +541,7 @@
 	</div>
 
 	{#if ws.mode === 'model'}
-		<div class="absolute top-3 right-3 z-10">
+		<div class="absolute top-[120px] right-[33px] z-10">
 			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:filters={() => ws.filters, (v) => (ws.filters = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}

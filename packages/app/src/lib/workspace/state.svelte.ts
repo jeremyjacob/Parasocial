@@ -3,14 +3,14 @@
 // straight from the engine to the viewer; Svelte only sees lightweight metadata.
 import { untrack } from 'svelte';
 import type { Viewer, EntityRef } from '@parasocial/viewer';
-
-type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 import { mutators, captureInverse, captureInverseAll, type AnyMR, type ParasocialZero, type Script, type Configuration, type ParamOverride, type Version, type Note, type AgentSession, type Document as DocRow } from '@parasocial/sync';
 import type { PartResult, EngineInfo } from '@parasocial/runtime/protocol';
 import { packResult, unpackResult, derivedKey, type CachedPart } from '@parasocial/runtime/pack';
 import type { EngineClient } from '@parasocial/runtime/browser/client';
 import { partColorAt } from '$lib/styles/tokens';
 import { newID } from '$lib/zero';
+
+type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 
 export type Tool = 'select' | 'note' | 'pencil' | 'measure';
 export type PartMeta = Omit<PartResult, 'mesh'> & { names?: { face: string[]; edge: string[] }; fromCache?: boolean };

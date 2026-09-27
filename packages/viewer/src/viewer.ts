@@ -1041,7 +1041,7 @@ export class Viewer {
     this.needsRender = false;
     this.viewCube?.update(this.camera);
     this.syncHelpers();
-    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && this.parts.size > 0 && !this.section;
+    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && !this.interacting && this.parts.size > 0 && !this.section;
     if (useAO) {
       const c = this.ensureComposer();
       this.renderPass!.camera = this.camera;
@@ -1054,6 +1054,14 @@ export class Viewer {
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
     this.emit("rendered", null);
+  }
+
+  private interacting = false;
+  /** Scrubbing or typing: skip AO like a camera move, restore it with the settled result. */
+  setInteracting(on: boolean) {
+    if (on === this.interacting) return;
+    this.interacting = on;
+    if (!on) this.requestRender();
   }
 
   /** Ground grid and origin triad visibility. */

@@ -11,7 +11,9 @@
     "test": "bun test packages/kernel packages/naming packages/api packages/runtime tests/corpus",
     "corpus": "bun test tests/corpus",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "bun scripts/dev.ts"
+    "dev": "bun scripts/dev.ts",
+    "prod-local": "bun --cwd packages/app run build && bun scripts/prod-local.ts",
+    "gen:migrations": "bun scripts/gen-migrations.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
