@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { dev } from '$app/environment';
 	import { Crosshair, Copy, EyeOff, Focus, Code2, MessageCircle, Ruler, Layers, Plus, Bot, Box, X, FlipVertical2 } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
@@ -72,6 +73,22 @@
 		viewer.setPreselect(ws.hover);
 	}
 
+	// dev-only FPS readout: frames actually rendered (the viewer renders on demand, so idle reads 0)
+	let fps = $state<{ fps: number; ms: number } | null>(null);
+	let stopFps: (() => void) | undefined;
+	function trackFps(v: Viewer) {
+		let n = 0,
+			t = performance.now();
+		const off = v.on('rendered', () => n++);
+		const id = setInterval(() => {
+			const now = performance.now();
+			fps = { fps: Math.round((n * 1000) / (now - t)), ms: v.stats.lastFrameMs };
+			n = 0;
+			t = now;
+		}, 500);
+		return () => (off(), clearInterval(id));
+	}
+
 	onMount(() => {
 		window.addEventListener('keydown', onTab);
 		host.addEventListener('contextmenu', onContextCapture, { capture: true });
@@ -83,11 +100,13 @@
 		(window as any).__viewer = viewer; // test hook
 		// no hover preselect while the camera is moving (orbit, pan, zoom, view cube)
 		viewer.on('moving', (on: boolean) => ((camMoving = on), on && onLeave()));
+		if (dev) stopFps = trackFps(viewer);
 		// re-apply any results that arrived before the viewer existed
 		ws.sync();
 	});
 	onDestroy(() => {
 		clearTimeout(hoverTimer);
+		stopFps?.();
 		window.removeEventListener('keydown', onTab);
 		ws.detachViewer();
 		viewer?.dispose();
@@ -117,10 +136,6 @@
 		viewer?.setDisplayMode(m === 'shaded-edges' ? 'shadedEdges' : m === 'hidden-line' ? 'hiddenLine' : m);
 	});
 	$effect(() => viewer?.setProjection(ws.ortho));
-	$effect(() => viewer?.setInteracting(ws.scrubbing || ws.typing));
-	$effect(() => {
-		if (viewer) viewer.filter = { face: ws.filters.includes('face'), edge: ws.filters.includes('edge'), vertex: ws.filters.includes('vertex'), part: ws.filters.includes('part') };
-	});
 	// fit once when the first geometry lands
 	let fitted = false;
 	$effect(() => {
@@ -542,7 +557,7 @@
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[120px] right-[33px] z-10">
-			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:filters={() => ws.filters, (v) => (ws.filters = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
+			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
 
@@ -620,6 +635,12 @@
 	{#if nc.draft && nc.composerShown}
 		<div class="absolute z-20" in:rise={{ y: 4, scale: 0.96, origin: 'top left' }} out:fadeOut style="left:{Math.min(nc.draft.screen.x + 12, (host?.clientWidth ?? 800) - 292)}px;top:{Math.max(8, Math.min(nc.draft.screen.y - 20, (host?.clientHeight ?? 600) - 140))}px">
 			<NoteComposer {ws} {nc} />
+		</div>
+	{/if}
+
+	{#if dev && fps}
+		<div class="pointer-events-none absolute bottom-3 left-3 z-10 rounded-sm bg-elevated/80 px-1.5 py-0.5 font-mono text-label text-fg-tertiary tabular-nums" data-testid="fps">
+			{fps.fps} fps · {fps.ms.toFixed(1)} ms
 		</div>
 	{/if}
 

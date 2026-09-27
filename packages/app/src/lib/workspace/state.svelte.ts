@@ -55,7 +55,6 @@ export class WorkspaceState {
 			localStorage.setItem('parasocial:ortho', String(v));
 		} catch {}
 	}
-	filters = $state<('face' | 'edge' | 'vertex' | 'part')[]>(['face', 'edge']);
 	hidden = $state<string[]>([]);
 	isolated = $state<string[]>([]);
 	openScript = $state<string | null>(null);

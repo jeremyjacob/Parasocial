@@ -1,6 +1,5 @@
 <script lang="ts" module>
 	export type DisplayMode = 'shaded' | 'shaded-edges' | 'wireframe' | 'hidden-line';
-	export type SelectionFilter = 'face' | 'edge' | 'vertex' | 'part';
 </script>
 
 <script lang="ts">
@@ -11,7 +10,6 @@
 		Grid3x3,
 		Square,
 		SquareDashed,
-		Filter,
 		ChevronDown,
 		Maximize
 	} from '@lucide/svelte';
@@ -27,7 +25,6 @@
 		grid?: boolean;
 		origin?: boolean;
 		ortho?: boolean;
-		filters?: SelectionFilter[];
 		zoom?: number;
 		orientation?: 'horizontal' | 'vertical';
 		class?: string;
@@ -39,7 +36,6 @@
 		grid = $bindable(true),
 		origin = $bindable(true),
 		ortho = $bindable(false),
-		filters = $bindable(['face', 'edge', 'vertex', 'part']),
 		zoom = $bindable(100),
 		orientation = 'horizontal',
 		class: className,
@@ -68,18 +64,6 @@
 		{ type: 'checkbox', label: 'Origin', checked: origin, shortcut: ['shift', 'G'], keepOpen: true, onCheckedChange: (v: boolean) => (origin = v) }
 	]);
 
-	const filterNames: Record<SelectionFilter, string> = { face: 'Faces', edge: 'Edges', vertex: 'Vertices', part: 'Parts' };
-	const filterItems = $derived<MenuEntry[]>([
-		{ type: 'label', label: 'Selectable' },
-		...(Object.keys(filterNames) as SelectionFilter[]).map((f) => ({
-			type: 'checkbox' as const,
-			label: filterNames[f],
-			checked: filters.includes(f),
-			keepOpen: true,
-			onCheckedChange: (v: boolean) => (filters = v ? [...filters, f] : filters.filter((x) => x !== f))
-		}))
-	]);
-
 	const zoomItems: MenuEntry[] = [
 		{ label: 'Zoom to fit', icon: Maximize, shortcut: ['F'], onSelect: () => onZoomToFit?.() },
 		{ label: 'Zoom to selection', shortcut: ['shift', 'F'] },
@@ -90,7 +74,6 @@
 	];
 
 	const DisplayIcon = $derived(displayIcons[display]);
-	const filtered = $derived(filters.length < 4);
 </script>
 
 <!-- Concentric: radius 10, padding 2 → 28px buttons at radius 8 (the IconButton lg radius). -->
@@ -129,25 +112,6 @@
 	>
 		{#if ortho}<Square />{:else}<Box />{/if}
 	</IconButton>
-	<DropdownMenu items={filterItems} side={orientation === 'vertical' ? 'left' : 'bottom'} align="end">
-		{#snippet trigger(props)}
-			<Tooltip label="Selection filter">
-				{#snippet trigger(tp)}
-					<button
-						{...mergeProps(tp, props)}
-						aria-label="Selection filter"
-						class={cn(
-							'relative inline-flex size-7 items-center justify-center rounded-md transition-colors-fast hover:bg-hover hover:text-fg focus-ring data-[state=open]:bg-active',
-							filtered ? 'text-accent-fg' : 'text-fg-secondary'
-						)}
-					>
-						<Filter />
-						{#if filtered}<span class="absolute top-1 right-1 size-1.5 rounded-full bg-accent"></span>{/if}
-					</button>
-				{/snippet}
-			</Tooltip>
-		{/snippet}
-	</DropdownMenu>
 	<span class={cn('bg-line', orientation === 'vertical' ? 'my-0.5 h-px w-5' : 'mx-0.5 h-4 w-px')} aria-hidden="true"
 	></span>
 	{#if orientation === 'vertical'}

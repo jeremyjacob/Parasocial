@@ -11,10 +11,8 @@ import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
 import { InfiniteGrid } from "./grid";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
-import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { HaloPass } from "./halo";
 
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean };
 
@@ -41,9 +39,8 @@ type Highlight = { refs: EntityRef[] };
 const SELECTED_TINT = 0.75;
 /** Origin axis lines, shared with the view cube's triad so the two match. */
 const AXIS_OPACITY = 0.375;
-/** Render layers for the post-AO helper pass: faces for depth, then grid + axes. */
+/** Faces-only render layer: the first phase of the AO frame (see renderShaded). */
 const FACE_LAYER = 2;
-const HELPER_LAYER = 1;
 
 export class Viewer {
   readonly renderer: THREE.WebGLRenderer;
@@ -86,9 +83,8 @@ export class Viewer {
   stats = { frames: 0, lastFrameMs: 0, lastPickMs: 0 };
   /** Subtle ambient occlusion, dropped while the camera moves (§9). */
   ao = true;
-  private composer: EffectComposer | null = null;
-  private renderPass: RenderPass | null = null;
   private aoPass: GTAOPass | null = null;
+  private haloPass: HaloPass | null = null;
   private moving = false;
   private aoEnabledByDepth = true;
 
@@ -129,12 +125,17 @@ export class Viewer {
     // camera-relative rig (Onshape-like): a strong key from upper left, a soft fill from lower
     // right, sky/ground bounce. Lights and their targets are camera children, so shading stays
     // consistent while orbiting.
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a92, 0.4));
+    // lights are filtered by camera layers: they must also live on FACE_LAYER, or the faces-only
+    // phase of the shaded frame renders unlit
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a92, 0.4);
+    hemi.layers.enable(FACE_LAYER);
+    this.scene.add(hemi);
     for (const cam of [this.persp, this.ortho]) {
       const rig = (x: number, y: number, z: number, i: number) => {
         const l = new THREE.DirectionalLight(0xffffff, i);
         l.position.set(x, y, z);
         l.target.position.set(0, 0, -1);
+        l.layers.enable(FACE_LAYER);
         cam.add(l, l.target);
       };
       rig(-0.55, 0.8, 1, 1.05);
@@ -144,7 +145,6 @@ export class Viewer {
 
     this.grid = new THREE.Group();
     this.grid.add(this.groundGrid.mesh);
-    this.groundGrid.mesh.layers.enable(HELPER_LAYER);
     this.triad = new THREE.Group();
     this.scene.add(this.grid, this.triad, this.markup);
     this.markup.renderOrder = 4;
@@ -966,7 +966,8 @@ export class Viewer {
       h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
     this.renderer.getDrawingBufferSize(this.resolution);
-    this.composer?.setSize(w, h);
+    this.aoPass?.setSize(w, h);
+    this.haloPass?.setSize(w, h);
     this.syncCameras();
     this.renderNow();
   }
@@ -980,58 +981,62 @@ export class Viewer {
     if (this.needsRender || animating) this.renderNow();
   };
 
-  private ensureComposer() {
-    if (this.composer) return this.composer;
-    const w = this.container.clientWidth,
-      h = this.container.clientHeight;
-    // stencil in the composer targets too: the selected-part outline masks with it
-    const dpr = this.renderer.getPixelRatio();
-    // 32-bit float depth like the canvas: three's default for render targets is 24-bit fixed, which
-    // with reversed-Z loses the precision the depth-biased lines rely on (they then win over faces)
-    const depthTexture = new THREE.DepthTexture(w * dpr, h * dpr, THREE.FloatType);
-    depthTexture.format = THREE.DepthStencilFormat;
-    const c = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(w * dpr, h * dpr, { type: THREE.HalfFloatType, stencilBuffer: true, samples: 4, depthTexture }));
-    this.renderPass = new RenderPass(this.scene, this.camera);
+  /**
+   * AO + depth halo, cheap enough to run every frame (orbiting included, like Onshape): no
+   * full-resolution intermediate target. GTAO computes normals/depth/AO at CSS-pixel resolution
+   * from the faces alone; the halo pass multiplies AO × halo straight onto the canvas.
+   */
+  private ensureShading() {
+    if (this.aoPass) return;
+    const w = Math.max(1, this.container.clientWidth),
+      h = Math.max(1, this.container.clientHeight);
     this.aoPass = new GTAOPass(this.scene, this.camera, w, h);
-    this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1, samples: 16 });
-    this.aoPass.blendIntensity = 0.75;
-    // GTAO's own normal/depth pass only skips lines; keep the ground grid quad out of it too
-    const aoRender = this.aoPass.render.bind(this.aoPass);
-    this.aoPass.render = (...a: Parameters<GTAOPass["render"]>) => {
-      const g = this.groundGrid.mesh.visible;
-      this.groundGrid.mesh.visible = false;
-      aoRender(...a);
-      this.groundGrid.mesh.visible = g;
-    };
-    c.addPass(this.renderPass);
-    c.addPass(this.aoPass);
-    c.addPass(new OutputPass());
-    c.setPixelRatio(this.renderer.getPixelRatio());
-    c.setSize(w, h);
-    this.composer = c;
-    return c;
+    this.aoPass.output = GTAOPass.OUTPUT.Off; // compute only; the halo pass composites
+    // float depth: GTAO's default 24-bit buffer can't resolve reversed-Z at range, and the
+    // quantization reads as occlusion on flat surfaces (a uniform grey wash instead of contact AO)
+    this.aoPass.depthTexture.type = THREE.FloatType;
+    // the sample count stays fixed so nothing recompiles mid-orbit
+    this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1, thickness: 1, scale: 1.3, samples: 12 });
+    this.haloPass = new HaloPass(this.camera, () => this.aoPass!.depthTexture, () => this.aoPass!.pdRenderTarget.texture);
+    this.haloPass.setSize(w, h); // same CSS-pixel grid as the depth it samples
   }
 
-  private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide });
-
-  /** Draw the grid and axes over the composited frame, depth-tested against the parts' faces. */
-  private renderHelpersOver() {
+  /**
+   * The shaded frame: 1) faces, 2) AO buffers from the faces, 3) AO × halo multiplied onto them,
+   * 4) everything else (edges, silhouettes, overlays, grid, axes, markup) over that, depth-tested
+   * against the faces. Lines and helpers are never darkened and blend exactly as in a plain render.
+   */
+  private renderShaded() {
+    this.ensureShading();
     const r = this.renderer,
-      cam = this.camera;
-    const autoClear = r.autoClear,
-      bg = this.scene.background,
-      layers = cam.layers.mask;
-    r.autoClear = false;
-    this.scene.background = null;
-    r.clearDepth();
-    // depth-only prepass of the faces (layer FACE_LAYER), then the helpers (HELPER_LAYER)
+      cam = this.camera,
+      ao = this.aoPass!,
+      halo = this.haloPass!;
+    (ao as any).camera = cam;
+    halo.camera = cam;
+    // scale the AO radius and the halo's overlap gap with the model
+    const radius = this.bounds().getBoundingSphere(new THREE.Sphere()).radius || 10;
+    ao.updateGtaoMaterial({ radius: radius * 0.08 });
+    halo.threshold = radius * 0.02;
+    halo.range = radius * 0.5;
+    const layers = cam.layers.mask,
+      autoClear = r.autoClear,
+      bg = this.scene.background;
+    r.setRenderTarget(null);
     cam.layers.set(FACE_LAYER);
-    this.scene.overrideMaterial = this.depthOnly;
     r.render(this.scene, cam);
-    this.scene.overrideMaterial = null;
-    cam.layers.set(HELPER_LAYER);
-    r.render(this.scene, cam);
+    ao.render(r, null as any, null as any, 0, false);
     cam.layers.mask = layers;
+    // from here on everything draws over the faces: no clears (the full-screen quad and the scene
+    // render would otherwise wipe them), and back on the canvas (GTAO leaves its target bound)
+    r.autoClear = false;
+    r.setRenderTarget(null);
+    halo.render(r);
+    const faces = [...this.parts.values()].map((p) => [p.faceMesh, p.faceMesh.visible] as const);
+    this.scene.background = null;
+    for (const [m] of faces) m.visible = false;
+    r.render(this.scene, cam);
+    for (const [m, v] of faces) m.visible = v;
     this.scene.background = bg;
     r.autoClear = autoClear;
   }
@@ -1073,36 +1078,13 @@ export class Viewer {
     this.needsRender = false;
     this.viewCube?.update(this.camera);
     this.syncHelpers();
-    const useAO = this.ao && this.aoEnabledByDepth && !this.moving && !this.interacting && this.parts.size > 0 && !this.section;
+    const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section;
     if (useAO) {
-      const c = this.ensureComposer();
-      this.renderPass!.camera = this.camera;
-      (this.aoPass as any).camera = this.camera;
-      // scale the AO radius with the model
-      const r = this.bounds().getBoundingSphere(new THREE.Sphere()).radius || 10;
-      this.aoPass!.updateGtaoMaterial({ radius: r * 0.08 });
-      // helpers (ground grid, origin axes) go straight onto the canvas after the AO composite, so
-      // they blend in the same space as the direct path (the composer blends in linear, which made
-      // translucent lines brighter and more opaque at rest than while orbiting)
-      const gv = this.grid.visible,
-        tv = this.triad.visible;
-      this.grid.visible = this.triad.visible = false;
-      c.render();
-      this.grid.visible = gv;
-      this.triad.visible = tv;
-      if (gv || tv) this.renderHelpersOver();
+      this.renderShaded();
     } else this.renderer.render(this.scene, this.camera);
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
     this.emit("rendered", null);
-  }
-
-  private interacting = false;
-  /** Scrubbing or typing: skip AO like a camera move, restore it with the settled result. */
-  setInteracting(on: boolean) {
-    if (on === this.interacting) return;
-    this.interacting = on;
-    if (!on) this.requestRender();
   }
 
   /** Ground grid and origin triad visibility. */
@@ -1134,7 +1116,6 @@ export class Viewer {
       const m = withDepthBias(new LineMaterial({ color: new THREE.Color(c), linewidth: 2, resolution: this.resolution, worldUnits: false, transparent: true, opacity: AXIS_OPACITY, depthWrite: false }), 0.0004) as LineMaterial;
       const l = new Line2(g, m);
       l.frustumCulled = false;
-      l.layers.enable(HELPER_LAYER);
       return l;
     };
     for (const [d, c] of [[[1, 0, 0], t.axisX], [[0, 1, 0], t.axisY], [[0, 0, 1], t.axisZ]] as [number[], string][])
@@ -1165,6 +1146,8 @@ export class Viewer {
     this.groundGrid.dispose();
     for (const p of this.parts.values()) p.dispose();
     this.pickTarget.dispose();
+    this.aoPass?.dispose();
+    this.haloPass?.dispose();
     this.envTex?.dispose();
     this.renderer.dispose();
     this.canvas.remove();

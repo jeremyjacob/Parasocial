@@ -16,7 +16,18 @@ void main() {
   // relative to a center snapped to the coarsest decade, so fract() keeps its precision far out
   vLocal = w.xy - uCenter;
   gl_Position = projectionMatrix * viewMatrix * w;
+  // push the grid a fixed fraction of its distance away from the camera, so faces lying in the
+  // ground plane always win the depth test instead of z-fighting with it (a world-space offset
+  // is lost to depth precision once the camera backs off)
+  #if defined( USE_REVERSED_DEPTH_BUFFER )
+  gl_Position.z *= 1.0 - GRID_DEPTH_PUSH;
+  #elif !defined( USE_LOGARITHMIC_DEPTH_BUFFER )
+  gl_Position.z += GRID_DEPTH_PUSH * 0.25 * gl_Position.w;
+  #endif
   #include <logdepthbuf_vertex>
+  #ifdef USE_LOGARITHMIC_DEPTH_BUFFER
+  vFragDepth *= 1.0 + GRID_DEPTH_PUSH;
+  #endif
 }`;
 
 const fragmentShader = /* glsl */ `
@@ -59,6 +70,7 @@ export class InfiniteGrid {
     this.mat = new THREE.ShaderMaterial({
       vertexShader,
       fragmentShader,
+      defines: { GRID_DEPTH_PUSH: "0.002" },
       uniforms: {
         uCenter: { value: new THREE.Vector2() },
         uStep: { value: 1 },
