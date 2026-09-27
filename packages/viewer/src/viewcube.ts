@@ -1,7 +1,7 @@
-// View cube: a crisp CSS 3D chamfered cube synced to the camera, in the style of Onshape's.
-// Six face panels, twelve bevelled edge strips and eight corner triangles are each their own
-// hit region: left-click one to go to that view (face = axis, edge = sum of two face normals,
-// corner = sum of three). Right-drag orbits. A small XYZ triad sits on the origin corner.
+// View cube: a crisp CSS 3D cube synced to the camera, in the style of Onshape's.
+// Six rounded, semi-transparent face panels plus eight round corner targets are each their own
+// hit region: left-click one to go to that view (face = axis, corner = normalized sum of its
+// three face normals). Right-drag orbits. A small XYZ triad sits on the origin corner.
 // DOM-only, so it's sharp at any DPR and costs nothing to render.
 import * as THREE from "three";
 
@@ -37,25 +37,38 @@ const FRAMES: Record<string, [THREE.Vector3, THREE.Vector3]> = {
   bottom: [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, -1, 0)],
 };
 
-// Geometry (px). The container is 100px; the farthest thing from the center is the triad
-// origin at the virtual cube corner, √3·HALF ≈ 43px, so every orientation stays in bounds.
-const SIZE = 50;
+// Geometry (px). The farthest thing from the center is a corner target: its center sits
+// √3·(HALF − CORNER_INSET) ≈ 44px out and it's CORNER/2 wide, so ≈ 51px. The container is
+// BOX = 112px (56px half-extent), so every orientation stays in bounds.
+const SIZE = 58;
 const HALF = SIZE / 2;
-/** Chamfer: how far the bevel cuts into each face from the edge. */
-const BEVEL = 7;
-const PANEL = SIZE - 2 * BEVEL;
+const BOX = 112;
+/** Face panels stop just short of the edges so the rounded tiles read as separate targets. */
+const GAP = 0.25;
+const PANEL = SIZE - 2 * GAP;
+/** Corner targets: diameter, and how far their centers are pulled in from the true corner. */
+const CORNER = 13;
+const CORNER_INSET = 3.5;
 /** Triad axis length from the origin corner, and label offset past the tip. */
-const AXIS = 24;
+const AXIS = 26;
 const AXIS_LABEL = 6;
-/** Pull the cube back so perspective never magnifies it past the container. */
-const DEPTH = 48;
+/** Perspective distance, and how far the cube is pushed back so the nearest point sits at z≈0
+ *  (perspective then only ever shrinks, never magnifies past the container). */
+const PERSPECTIVE = 900;
+const DEPTH = Math.ceil(HALF * Math.sqrt(3));
+/** Right-drag orbit gain: the cube is small, so a pixel on it should turn the view further
+ *  than a pixel on the canvas does. */
+const DRAG_GAIN = 2.5;
 
 type Piece = { el: HTMLElement; n: THREE.Vector3 };
+type Corner = { el: HTMLElement; p: THREE.Vector3; n: THREE.Vector3 };
 
 export class ViewCube {
   readonly el: HTMLDivElement;
   private cube: HTMLDivElement;
+  private overlay: HTMLDivElement;
   private pieces: Piece[] = [];
+  private corners: Corner[] = [];
   private labels: { el: HTMLElement; p: THREE.Vector3 }[] = [];
   private rot = new THREE.Matrix4();
   private tmp = new THREE.Vector3();
@@ -66,10 +79,11 @@ export class ViewCube {
   ) {
     const el = document.createElement("div");
     el.className = "ps-viewcube";
-    el.innerHTML = `<div class="ps-viewcube-scene"><div class="ps-viewcube-cube"></div></div>`;
+    el.innerHTML = `<div class="ps-viewcube-scene"><div class="ps-viewcube-cube"></div></div><div class="ps-viewcube-corners"></div>`;
     parent.appendChild(el);
     this.el = el;
     this.cube = el.querySelector(".ps-viewcube-cube")!;
+    this.overlay = el.querySelector(".ps-viewcube-corners")!;
     this.build();
 
     // right-drag orbits; left-click picks a view
@@ -93,7 +107,7 @@ export class ViewCube {
       }
       drag.x = e.clientX;
       drag.y = e.clientY;
-      this.onDrag?.(dx, dy, "move");
+      this.onDrag?.(dx * DRAG_GAIN, dy * DRAG_GAIN, "move");
     });
     const end = (e: PointerEvent) => {
       if (!drag || e.pointerId !== drag.id) return;
@@ -117,78 +131,37 @@ export class ViewCube {
   }
 
   private build() {
-    const add = (html: string, n: THREE.Vector3) => {
-      const t = document.createElement("template");
-      t.innerHTML = html;
-      const node = t.content.firstElementChild as HTMLElement;
-      this.cube.appendChild(node);
-      this.pieces.push({ el: node, n: n.clone().normalize() });
-    };
     const dir = (v: THREE.Vector3) => `${Math.round(v.x)},${Math.round(v.y)},${Math.round(v.z)}`;
 
-    // faces
+    // faces: rounded tiles on the cube's six planes; back faces are culled
     for (const name of Object.keys(FRAMES)) {
       const [u, v] = FRAMES[name];
       const n = VIEW_DIRS[name];
       const c = n.clone().multiplyScalar(HALF);
-      add(
-        `<div class="ps-vc-piece ps-vc-face" data-dir="${dir(n)}" role="button" aria-label="${LABELS[name]} view" style="width:${PANEL}px;height:${PANEL}px;transform:${place(c, u, v, PANEL, PANEL)}"><span>${LABELS[name]}</span></div>`,
-        n,
-      );
+      const t = document.createElement("template");
+      t.innerHTML = `<div class="ps-vc-face" data-dir="${dir(n)}" role="button" aria-label="${LABELS[name]} view" style="width:${PANEL}px;height:${PANEL}px;transform:${place(c, u, v, PANEL, PANEL)}"><span>${LABELS[name]}</span></div>`;
+      const node = t.content.firstElementChild as HTMLElement;
+      this.cube.appendChild(node);
+      this.pieces.push({ el: node, n: n.clone() });
     }
 
-    const axes = [0, 1, 2].map((i) => new THREE.Vector3().setComponent(i, 1));
-    // edges: one per pair of perpendicular face normals
-    const len = PANEL + 1; // overlap panels slightly so seams don't show through
-    const wid = BEVEL * Math.SQRT2 + 1;
-    for (let a = 0; a < 3; a++)
-      for (let b = a + 1; b < 3; b++)
-        for (const sa of [1, -1])
-          for (const sb of [1, -1]) {
-            const n1 = axes[a].clone().multiplyScalar(sa),
-              n2 = axes[b].clone().multiplyScalar(sb);
-            const sum = n1.clone().add(n2);
-            const n = sum.clone().normalize();
-            const c = sum.clone().multiplyScalar(HALF - BEVEL / 2);
-            const u = n1.clone().cross(n2).normalize();
-            const v = n.clone().cross(u);
-            add(
-              `<div class="ps-vc-piece ps-vc-edge" data-dir="${dir(sum)}" role="button" aria-label="Edge view" style="width:${len}px;height:${wid}px;transform:${place(c, u, v, len, wid)}"></div>`,
-              n,
-            );
-          }
-
-    // corners: equilateral triangles cutting off each cube corner
-    const side = BEVEL * Math.SQRT2;
-    const tri = (side * Math.sqrt(3)) / 2;
+    // corners: round targets in a flat overlay, positioned by projecting each corner in update().
+    // Kept out of the 3D scene so they never slice into the face tiles and always read round.
     for (const sx of [1, -1])
       for (const sy of [1, -1])
         for (const sz of [1, -1]) {
           const s = new THREE.Vector3(sx, sy, sz);
-          const n = s.clone().normalize();
-          // triangle vertices: pull the corner in along one axis at a time
-          const vs = [0, 1, 2].map((i) => {
-            const p = s.clone().multiplyScalar(HALF - BEVEL);
-            return p.setComponent(i, s.getComponent(i) * HALF);
-          });
-          // base from vs[1] to vs[2], apex vs[0]; orient so the apex is "up" and u × v = n
-          let [apex, b0, b1] = vs;
-          let u = b1.clone().sub(b0).normalize();
-          let v = n.clone().cross(u);
-          if (apex.clone().sub(b0).dot(v) < 0) {
-            [b0, b1] = [b1, b0];
-            u.negate();
-            v = n.clone().cross(u);
-          }
-          const c = b0.clone().add(b1).multiplyScalar(0.5).addScaledVector(v, tri / 2);
-          const pad = 0.6; // grow a touch to cover seams
-          add(
-            `<div class="ps-vc-piece ps-vc-corner" data-dir="${dir(s)}" role="button" aria-label="Corner view" style="width:${side + 2 * pad}px;height:${tri + pad}px;transform:${place(c.addScaledVector(v, -pad / 2), u, v, side + 2 * pad, tri + pad)}"></div>`,
-            n,
-          );
+          const node = document.createElement("div");
+          node.className = "ps-vc-corner";
+          node.dataset.dir = dir(s);
+          node.setAttribute("role", "button");
+          node.setAttribute("aria-label", "Corner view");
+          this.overlay.appendChild(node);
+          this.corners.push({ el: node, p: s.clone().multiplyScalar(HALF - CORNER_INSET), n: s.clone().normalize() });
         }
 
     // triad: X/Y/Z from the origin corner (min x, y, z), along the cube's edges
+    const axes = [0, 1, 2].map((i) => new THREE.Vector3().setComponent(i, 1));
     const o = new THREE.Vector3(-HALF, -HALF, -HALF);
     const names = ["x", "y", "z"];
     for (let i = 0; i < 3; i++) {
@@ -196,13 +169,11 @@ export class ViewCube {
       // two perpendicular strips form a "+" cross-section, so the line reads from any angle
       const others = axes.filter((_, j) => j !== i);
       for (const w of others) {
-        const u = a.clone();
-        const v = w.clone(); // strip lies in the plane of a and w
         const c = o.clone().addScaledVector(a, AXIS / 2);
         const node = document.createElement("i");
         node.className = `ps-vc-axis ps-vc-${names[i]}`;
         node.style.width = `${AXIS}px`;
-        node.style.transform = place(c, u, v, AXIS, 1.5);
+        node.style.transform = place(c, a.clone(), w.clone(), AXIS, 1.5);
         this.cube.appendChild(node);
       }
       const lab = document.createElement("b");
@@ -227,11 +198,25 @@ export class ViewCube {
     const invStr = `matrix3d(${inv.map(fmt).join(",")})`;
     for (const l of this.labels)
       l.el.style.transform = `translate3d(${fmt(l.p.x)}px,${fmt(-l.p.y)}px,${fmt(l.p.z)}px) ${invStr} translate(-50%,-50%)`;
-    // simple key light from the upper left, in camera space, for a soft bevelled read
+    // simple key light from the upper left, in camera space, for a soft shaded read
     for (const p of this.pieces) {
       const n = this.tmp.copy(p.n).transformDirection(m);
       const ndl = Math.max(0, n.x * LIGHT.x + n.y * LIGHT.y + n.z * LIGHT.z);
       p.el.style.setProperty("--vc-shade", fmt(1 - ndl));
+    }
+    // corners: project with the same perspective as the scene; show only those on the near
+    // side or the silhouette, fading out as they turn away, nearest on top
+    for (const c of this.corners) {
+      const nz = this.tmp.copy(c.n).transformDirection(m).z;
+      const q = this.tmp.copy(c.p).applyMatrix4(m);
+      const k = PERSPECTIVE / (PERSPECTIVE - (q.z - DEPTH));
+      const vis = THREE.MathUtils.clamp((nz + 0.45) / 0.2, 0, 1);
+      const s = c.el.style;
+      s.transform = `translate(${fmt(q.x * k)}px,${fmt(-q.y * k)}px) translate(-50%,-50%) scale(${fmt(k)})`;
+      s.opacity = fmt(vis);
+      s.visibility = vis > 0.05 ? "" : "hidden";
+      s.zIndex = String(Math.round(100 + q.z));
+      s.setProperty("--vc-shade", fmt(1 - Math.max(0, nz)));
     }
   }
 
@@ -264,28 +249,30 @@ function injectStyles() {
   injected = true;
   const st = document.createElement("style");
   st.textContent = `
-.ps-viewcube{position:absolute;width:100px;height:100px;user-select:none;-webkit-user-select:none;touch-action:none;cursor:default;
-  --vc-acc:var(--vc-accent,#2f7bf6)}
-.ps-viewcube-scene{position:absolute;inset:0;perspective:900px;perspective-origin:50% 50%}
+.ps-viewcube{position:absolute;width:${BOX}px;height:${BOX}px;user-select:none;-webkit-user-select:none;touch-action:none;cursor:default;
+  --vc-acc:var(--vc-accent,#2f7bf6);
+  /* the themed face color, thinned so the model behind reads through */
+  --vc-glass:color-mix(in srgb,var(--vc-face,rgba(255,255,255,.94)) 80%,transparent);
+  --vc-glass-hover:color-mix(in srgb,color-mix(in srgb,var(--vc-acc) 24%,var(--vc-face-hover,#fff)) 88%,transparent)}
+.ps-viewcube-scene{position:absolute;inset:0;perspective:${PERSPECTIVE}px;perspective-origin:50% 50%}
 .ps-viewcube-cube{position:absolute;left:50%;top:50%;width:0;height:0;transform-style:preserve-3d}
-.ps-vc-piece{position:absolute;left:0;top:0;box-sizing:border-box;transform-origin:0 0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
-  --vc-bg:var(--vc-face,rgba(255,255,255,.94));
-  /* the themed face color is translucent; stack it so the cube reads solid and the triad
-     doesn't show through */
-  background:linear-gradient(var(--vc-bg),var(--vc-bg)),linear-gradient(var(--vc-bg),var(--vc-bg)),var(--vc-bg);transition:color .1s ease-out}
-.ps-vc-piece::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:#000;opacity:calc(var(--vc-shade,0) * .16)}
-.ps-vc-face{display:grid;place-items:center;border-radius:3px;box-shadow:inset 0 0 0 1px var(--vc-border,rgba(0,0,0,.12));
-  font:500 9px/1 var(--font-sans,system-ui,sans-serif);letter-spacing:.01em;color:var(--vc-fg,#71717a)}
+.ps-vc-face{position:absolute;left:0;top:0;box-sizing:border-box;transform-origin:0 0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
+  display:grid;place-items:center;border-radius:10px;background:var(--vc-glass);
+  box-shadow:inset 0 0 0 1px var(--vc-border,rgba(0,0,0,.12));
+  font:550 10px/1 var(--font-sans,system-ui,sans-serif);letter-spacing:.01em;color:var(--vc-fg,#71717a);transition:color .1s ease-out,background-color .1s ease-out}
+.ps-vc-face::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:#000;opacity:calc(var(--vc-shade,0) * .12)}
 .ps-vc-face span{pointer-events:none;position:relative;z-index:1}
-.ps-vc-edge{box-shadow:inset 0 0 0 .5px var(--vc-border,rgba(0,0,0,.12))}
-.ps-vc-corner{clip-path:polygon(50% 0,100% 100%,0 100%)}
-.ps-vc-edge::after,.ps-vc-corner::after{opacity:calc(.05 + var(--vc-shade,0) * .16)}
-.ps-vc-piece:hover{--vc-bg:color-mix(in srgb,var(--vc-acc) 22%,var(--vc-face-hover,#fff));color:var(--vc-fg-hover,#18181b)}
-.ps-vc-face:hover{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--vc-acc) 55%,transparent)}
+.ps-vc-face:hover{background:var(--vc-glass-hover);color:var(--vc-fg-hover,#18181b);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--vc-acc) 60%,transparent)}
+.ps-viewcube-corners{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}
+.ps-vc-corner{position:absolute;left:0;top:0;width:${CORNER}px;height:${CORNER}px;box-sizing:border-box;border-radius:50%;pointer-events:auto;
+  background:color-mix(in srgb,var(--vc-face,rgba(255,255,255,.94)) 92%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--vc-fg,#71717a) 45%,transparent),0 .5px 1.5px rgba(0,0,0,.18);transition:background-color .1s ease-out}
+.ps-vc-corner::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:#000;opacity:calc(.04 + var(--vc-shade,0) * .1)}
+.ps-vc-corner:hover{background:color-mix(in srgb,var(--vc-acc) 55%,var(--vc-face-hover,#fff));box-shadow:inset 0 0 0 1px var(--vc-acc),0 .5px 2px rgba(0,0,0,.25)}
 .ps-vc-axis{position:absolute;left:0;top:0;height:1.5px;transform-origin:0 0;border-radius:1px;pointer-events:none;background:currentColor}
-.ps-vc-alabel{position:absolute;left:0;top:0;pointer-events:none;font:600 8px/1 var(--font-sans,system-ui,sans-serif);transform-origin:0 0}
+.ps-vc-alabel{position:absolute;left:0;top:0;pointer-events:none;font:650 8px/1 var(--font-sans,system-ui,sans-serif);transform-origin:0 0}
 .ps-vc-x{color:#e5484d}.ps-vc-y{color:#30a46c}.ps-vc-z{color:#3e7bf6}
-@media (prefers-reduced-motion: reduce){.ps-vc-piece{transition:none}}
+@media (prefers-reduced-motion: reduce){.ps-vc-face,.ps-vc-corner{transition:none}}
 `;
   document.head.appendChild(st);
 }
