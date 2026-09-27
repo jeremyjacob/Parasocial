@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<!--
+			Pre-paint theme: resolve the stored preference (light | dark | system) before first paint so
+			there is no flash. Must stay inline and tiny. Keep the storage key in sync with theme.svelte.ts.
+		-->
+		<script>
+			(function () {
+				var pref = 'system';
+				try {
+					pref = localStorage.getItem('parasocial:theme') || 'system';
+				} catch (e) {}
+				var dark =
+					pref === 'dark' ||
+					(pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+				var root = document.documentElement;
+				root.setAttribute('data-theme', dark ? 'dark' : 'light');
+				root.setAttribute('data-theme-pref', pref);
+			})();
+		</script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

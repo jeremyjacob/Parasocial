@@ -1,0 +1,4 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter/wght.css';
+@import './lib/styles/tokens.css';
+@import './lib/styles/base.css';
