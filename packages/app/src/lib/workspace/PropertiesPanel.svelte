@@ -163,18 +163,24 @@
 			{/if}
 		{/if}
 		<PropertySection bodyClass="gap-0.5" title="Document">
-			<label class={row}>
-				<span class="text-fg-secondary">Name</span>
-				<Input size="sm" bind:value={docName} onblur={rename} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()} />
-			</label>
-			<div class={row}>
-				<span class="text-fg-secondary">Units</span>
-				<Select size="sm" items={[{ value: 'mm', label: 'Millimeters' }, { value: 'in', label: 'Inches' }]} value={ws.doc?.units ?? 'mm'} onValueChange={(v) => ws.zero.mutate(mutators.document.updateSettings({ id: ws.documentID, units: v } as any))} />
-			</div>
-			<div class={row} title={agentAuto?.autoHandoff && agentAuto.runAs !== ws.userID ? "Hand every open note to the agent (runs on a teammate's provider)" : 'Hand every open note to the agent'}>
-				<label for="agent-pickup" class="text-fg-secondary">Agent pickup</label>
-				<Switch id="agent-pickup" bind:checked={autoHandoff} onCheckedChange={setAutoHandoff} class="h-6" />
-			</div>
+			{#if ws.readOnly}
+				<div class={row}><span class="text-fg-secondary">Name</span><span class="truncate">{ws.doc?.name}</span></div>
+				<div class={row}><span class="text-fg-secondary">Units</span><span>{ws.doc?.units === 'in' ? 'Inches' : 'Millimeters'}</span></div>
+				<div class={row}><span class="text-fg-secondary">Access</span><span>View only</span></div>
+			{:else}
+				<label class={row}>
+					<span class="text-fg-secondary">Name</span>
+					<Input size="sm" bind:value={docName} onblur={rename} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()} />
+				</label>
+				<div class={row}>
+					<span class="text-fg-secondary">Units</span>
+					<Select size="sm" items={[{ value: 'mm', label: 'Millimeters' }, { value: 'in', label: 'Inches' }]} value={ws.doc?.units ?? 'mm'} onValueChange={(v) => ws.zero.mutate(mutators.document.updateSettings({ id: ws.documentID, units: v } as any))} />
+				</div>
+				<div class={row} title={agentAuto?.autoHandoff && agentAuto.runAs !== ws.userID ? "Hand every open note to the agent (runs on a teammate's provider)" : 'Hand every open note to the agent'}>
+					<label for="agent-pickup" class="text-fg-secondary">Agent pickup</label>
+					<Switch id="agent-pickup" bind:checked={autoHandoff} onCheckedChange={setAutoHandoff} class="h-6" />
+				</div>
+			{/if}
 			<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{ws.parts.length}</span></div>
 			<div class={row}><span class="text-fg-secondary">Version</span><span class="tabular-nums">v{ws.doc?.headVersion ?? 0}</span></div>
 		</PropertySection>

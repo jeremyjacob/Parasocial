@@ -31,6 +31,8 @@ export class WorkspaceState {
 	readonly documentID: string;
 	readonly zero: ParasocialZero;
 	readonly userID: string;
+	/** Opened through a view-only link: nothing is written (Zero mutations are no-ops). */
+	readonly readOnly: boolean;
 	userName = '';
 	/** this user has a built-in agent provider set up (Settings) */
 	agentConfigured = $state(false);
@@ -136,9 +138,10 @@ export class WorkspaceState {
 	private docSent = false;
 	private cacheFirstDone = false;
 
-	constructor(o: { documentID: string; zero: ParasocialZero; userID: string }) {
+	constructor(o: { documentID: string; zero: ParasocialZero; userID: string; readOnly?: boolean }) {
 		this.documentID = o.documentID;
-		this.zero = o.zero;
+		this.readOnly = !!o.readOnly;
+		this.zero = this.readOnly ? readOnlyZero(o.zero) : o.zero;
 		this.userID = o.userID;
 		try {
 			const saved = localStorage.getItem(`parasocial:config:${o.documentID}`);
@@ -660,6 +663,7 @@ export class WorkspaceState {
 	}
 
 	async mutate(mr: AnyMR, label: string) {
+		if (this.readOnly) return this.zero.mutate(mr as any);
 		const read = ((q: any) => this.zero.run(q)) as any;
 		const inverse = await captureInverse(read, mr).catch(() => null);
 		const res = this.zero.mutate(mr as any);
@@ -715,6 +719,8 @@ export class WorkspaceState {
 	}
 
 	async setParam(part: string, name: string, expression: string, value: number | string, opts: { codeDefault?: string; rebase?: boolean } = {}) {
+		// view only: a param tweak previews locally and is never saved
+		if (this.readOnly) return void (this.live = { ...this.live, [part]: { ...(this.live[part] ?? {}), [name]: value } });
 		const configurationID = await this.ensureConfiguration();
 		const { [name]: _, ...restLive } = this.live[part] ?? {};
 		this.live = { ...this.live, [part]: restLive };
@@ -724,11 +730,16 @@ export class WorkspaceState {
 	}
 
 	async resetParam(part: string, name: string) {
+		if (this.readOnly) {
+			const { [name]: _, ...rest } = this.live[part] ?? {};
+			return void (this.live = { ...this.live, [part]: rest });
+		}
 		if (!this.activeConfigID) return;
 		return this.mutate(mutators.param.reset({ documentID: this.documentID, configurationID: this.activeConfigID, part, name } as any), `Reset ${name}`);
 	}
 
 	async resetAll(part?: string) {
+		if (this.readOnly) return void (this.live = part ? { ...this.live, [part]: {} } : {});
 		if (!this.activeConfigID) return;
 		return this.mutate(mutators.param.resetAll({ documentID: this.documentID, configurationID: this.activeConfigID, part }), part ? `Reset ${part}` : 'Reset all');
 	}
@@ -934,7 +945,7 @@ export class WorkspaceState {
 	refreshThumbnail() {
 		clearTimeout(this.#thumbTimer);
 		const d = this.doc;
-		if (!d || !this.viewer || this.#thumbBusy) return;
+		if (!d || !this.viewer || this.#thumbBusy || this.readOnly) return;
 		if (d.thumbLight && (d.thumbVersion ?? -1) >= d.headVersion) return;
 		const settled =
 			this.parts.length > 0 &&
@@ -988,6 +999,21 @@ export class WorkspaceState {
 	untracked<T>(fn: () => T): T {
 		return untrack(fn);
 	}
+}
+
+/**
+ * Zero for a view-only workspace: queries as usual, every mutation a no-op (so a local tweak, like
+ * dragging an assembly joint, stays local, and a save reports why it didn't happen).
+ */
+function readOnlyZero(zero: ParasocialZero): ParasocialZero {
+	const skipped = () => ({ client: Promise.resolve(), server: Promise.resolve({ type: 'error', error: { type: 'app', message: 'This document is view only' } }) });
+	return new Proxy(zero, {
+		get(target, key) {
+			if (key === 'mutate') return skipped;
+			const v = Reflect.get(target, key, target);
+			return typeof v === 'function' ? v.bind(target) : v;
+		}
+	});
 }
 
 function emptyMeta(part: string): PartMeta {

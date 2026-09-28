@@ -13,6 +13,8 @@
 		tool?: Tool;
 		/** Tools that are unavailable, with the reason shown in the tooltip. */
 		disabled?: Partial<Record<Tool, string>>;
+		/** The tools to offer (default all), e.g. no note or pencil for a view-only document. */
+		only?: Tool[];
 		/** Bind V / C / P / M globally (ignored while typing in a field). */
 		hotkeys?: boolean;
 		/** Extra trailing content after a divider (e.g. an "Unsaved preview" chip). */
@@ -20,15 +22,16 @@
 		class?: string;
 		onToolChange?: (t: Tool) => void;
 	};
-	let { tool = $bindable('select'), disabled = {}, hotkeys = false, trailing, class: className, onToolChange }: Props =
+	let { tool = $bindable('select'), disabled = {}, only, hotkeys = false, trailing, class: className, onToolChange }: Props =
 		$props();
 
-	const tools: { id: Tool; label: string; key: string; icon: LucideIcon }[] = [
+	const allTools: { id: Tool; label: string; key: string; icon: LucideIcon }[] = [
 		{ id: 'select', label: 'Select', key: 'V', icon: MousePointer2 },
 		{ id: 'note', label: 'Note', key: 'C', icon: MessageCircle },
 		{ id: 'pencil', label: 'Pencil', key: 'P', icon: Pencil },
 		{ id: 'measure', label: 'Measure', key: 'M', icon: Ruler }
 	];
+	const tools = $derived(only ? allTools.filter((t) => only.includes(t.id)) : allTools);
 
 	const activeIndex = $derived(tools.findIndex((x) => x.id === tool && !disabled[x.id]));
 

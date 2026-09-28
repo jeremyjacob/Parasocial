@@ -41,3 +41,12 @@ export function newID(): string {
 }
 
 export const SHA256_RE = /^[0-9a-f]{64}$/;
+
+/** View-only share link tokens: 128+ random bits, base64url. */
+export const SHARE_TOKEN_RE = /^[A-Za-z0-9_-]{22,64}$/;
+
+/** A fresh share link token (16 random bytes, base64url). */
+export function newShareToken(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}

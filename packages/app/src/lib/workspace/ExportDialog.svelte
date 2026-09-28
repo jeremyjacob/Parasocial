@@ -9,7 +9,7 @@
 	import { sourcePart } from '@parasocial/runtime/protocol';
 
 	/** `target`: the parts to export when the dialog opens (a part, a studio's parts, the selection); empty = the studio in the viewport. */
-	let { ws, open = $bindable(false), target = [], onZip }: { ws: WorkspaceState; open?: boolean; target?: string[]; onZip: () => Promise<void> } = $props();
+	let { ws, open = $bindable(false), target = [], onZip }: { ws: WorkspaceState; open?: boolean; target?: string[]; /** Whole-document zip; members only. */ onZip?: () => Promise<void> } = $props();
 	let what = $state('parts');
 	let scope = $state('all');
 	type Format = 'step' | 'stl' | '3mf';
@@ -75,7 +75,7 @@
 	async function go() {
 		busy = true;
 		try {
-			if (what === 'document') await onZip();
+			if (what === 'document') await onZip?.();
 			else {
 				const bytes = await ws.engine!.exportParts($state.snapshot(chosen), format);
 				const name = baseName(chosen).replace(/[^\w .()-]+/g, '-').replace(/\s+/g, ' ').trim() || 'parts';
@@ -93,7 +93,7 @@
 
 <Dialog bind:open title="Export">
 	<div class="flex flex-col gap-3" data-testid="export-dialog">
-		<SegmentedControl bind:value={what} items={[{ value: 'parts', text: 'Geometry' }, { value: 'document', text: 'Document' }]} />
+		{#if onZip}<SegmentedControl bind:value={what} items={[{ value: 'parts', text: 'Geometry' }, { value: 'document', text: 'Document' }]} />{/if}
 		{#if what === 'parts'}
 			<div class="grid grid-cols-[1fr_auto] gap-2">
 				<Select items={items.map(({ value, label }) => ({ value, label }))} bind:value={scope} aria-label="Parts to export" />

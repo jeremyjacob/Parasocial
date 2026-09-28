@@ -3,12 +3,16 @@
  * the client names a query + args, zero-cache calls the app's /query endpoint,
  * and the server re-evaluates the same definition with the *authenticated*
  * context. Every query here filters through `document_members`, so a
- * non-member gets an empty result no matter what args they send.
+ * non-member gets an empty result no matter what args they send. The one
+ * exception is a view-only share link: the queries a read-only viewer needs
+ * (the document, its scripts and configurations) also take the link's `share`
+ * token and match a document whose `share_token` equals it.
  */
 import { defineQueries, defineQuery } from "@rocicorp/zero";
 import { z } from "zod";
 import { zql } from "./schema.ts";
 import type { MutatorContext } from "./types.ts";
+import { SHARE_TOKEN_RE } from "./util.ts";
 
 type Ctx = MutatorContext | undefined;
 // User ids are UUIDs, never empty, so "" matches nobody. (No NUL bytes: Postgres rejects them in text.)
@@ -16,6 +20,10 @@ const NOBODY = "";
 const uid = (ctx: Ctx) => ctx?.userID ?? NOBODY;
 
 const docArgs = z.object({ documentID: z.string() });
+/** A document query a share link holder may run too. */
+const sharedDocArgs = docArgs.extend({ share: z.string().optional() });
+/** Tokens are long random strings, so NOBODY never matches one (and a null share_token matches nothing). */
+const shareOf = (share: string | undefined) => (share && SHARE_TOKEN_RE.test(share) ? share : NOBODY);
 
 /** documents the current user is a member of */
 const memberDocs = (ctx: Ctx) =>
@@ -26,6 +34,10 @@ const memberDoc = (ctx: Ctx, documentID: string) => memberDocs(ctx).where("id", 
 
 const inMemberDoc = (ctx: Ctx) => (d: ReturnType<typeof zql.documents.where>) =>
   d.whereExists("members", (m) => m.where("userID", uid(ctx)));
+
+/** documents the current user is a member of, or the one the share token opens */
+const inReadableDoc = (ctx: Ctx, share: string | undefined) => (d: ReturnType<typeof zql.documents.where>) =>
+  d.where(({ or, exists, cmp }) => or(exists("members", (m) => m.where("userID", uid(ctx))), cmp("shareToken", shareOf(share))));
 
 export const queries = defineQueries({
   me: defineQuery(({ ctx }: { ctx: Ctx }) => zql.users.where("id", uid(ctx)).one()),
@@ -39,12 +51,16 @@ export const queries = defineQueries({
         .related("members", (m) => m.related("user"))
         .one(),
     ),
+    /** The document a view-only link opens. No members: a link holder doesn't see who's in it. */
+    shared: defineQuery(z.object({ documentID: z.string(), share: z.string() }), ({ args }) =>
+      zql.documents.where("id", args.documentID).where("shareToken", shareOf(args.share)).one(),
+    ),
   },
 
-  scripts: defineQuery(docArgs, ({ args, ctx }) =>
+  scripts: defineQuery(sharedDocArgs, ({ args, ctx }) =>
     zql.scripts
       .where("documentID", args.documentID)
-      .whereExists("document", inMemberDoc(ctx))
+      .whereExists("document", inReadableDoc(ctx, args.share))
       .orderBy("path", "asc"),
   ),
 
@@ -58,18 +74,18 @@ export const queries = defineQueries({
       .orderBy("number", "desc"),
   ),
 
-  configurations: defineQuery(docArgs, ({ args, ctx }) =>
+  configurations: defineQuery(sharedDocArgs, ({ args, ctx }) =>
     zql.configurations
       .where("documentID", args.documentID)
-      .whereExists("document", inMemberDoc(ctx))
+      .whereExists("document", inReadableDoc(ctx, args.share))
       .related("overrides")
       .orderBy("createdAt", "asc"),
   ),
 
-  paramOverrides: defineQuery(docArgs, ({ args, ctx }) =>
+  paramOverrides: defineQuery(sharedDocArgs, ({ args, ctx }) =>
     zql.paramOverrides
       .where("documentID", args.documentID)
-      .whereExists("document", inMemberDoc(ctx)),
+      .whereExists("document", inReadableDoc(ctx, args.share)),
   ),
 
   notes: defineQuery(

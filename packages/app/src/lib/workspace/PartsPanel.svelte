@@ -88,6 +88,12 @@
 	function menuFor(id: string, name: string, file: string, siblings: number): MenuEntry[] {
 		// an instance is removed by editing its assembly, not by deleting a studio
 		const instance = sourcePart(id) !== id;
+		if (ws.readOnly)
+			return [
+				{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
+				{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
+				{ label: 'Open code', icon: Code2, onSelect: () => openScript(ws.scriptOf(sourcePart(id))) }
+			];
 		return [
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote([id]) },
 			{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
@@ -99,6 +105,11 @@
 	}
 
 	function studioMenu(file: string, name: string, ids: string[]): MenuEntry[] {
+		if (ws.readOnly)
+			return [
+				{ label: 'Open code', icon: Code2, onSelect: () => openScript(file) },
+				{ label: 'Export…', icon: Download, onSelect: () => onExport(ids) }
+			];
 		return [
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddStudioNote(file) },
 			{ label: 'Open code', icon: Code2, onSelect: () => openScript(file) },
@@ -123,7 +134,7 @@
 	</div>
 	<div class="flex h-10 items-center pt-1 pr-2 pl-4">
 		<h2 class="text-section text-fg">Studios</h2>
-		<IconButton label="Add studio" size="sm" class="ml-auto" onclick={onAddStudio}><Plus /></IconButton>
+		{#if !ws.readOnly}<IconButton label="Add studio" size="sm" class="ml-auto" onclick={onAddStudio}><Plus /></IconButton>{/if}
 	</div>
 	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio">
 		{#each tree as g (g.file)}

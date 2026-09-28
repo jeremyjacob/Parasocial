@@ -56,6 +56,8 @@ const documents = table("documents")
     thumbLight: string().from("thumb_light").optional(),
     thumbDark: string().from("thumb_dark").optional(),
     thumbVersion: number().from("thumb_version").optional(),
+    /** View-only link token (/s/:token), null when link sharing is off. */
+    shareToken: string().from("share_token").optional(),
     createdAt: number().from("created_at"),
     updatedAt: number().from("updated_at"),
   })

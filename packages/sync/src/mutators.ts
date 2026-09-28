@@ -39,7 +39,7 @@ import type {
   VersionKind,
   VersionSnapshot,
 } from "./types.ts";
-import { newID, sha256Hex, SHA256_RE, validateScriptPath } from "./util.ts";
+import { newID, sha256Hex, SHA256_RE, SHARE_TOKEN_RE, validateScriptPath } from "./util.ts";
 
 type Tx = Transaction;
 type Ctx = MutatorContext | undefined;
@@ -677,6 +677,21 @@ export const mutators = defineMutators({
           if (rows.length < new Set([args.light, args.dark]).size) fail("blob_missing", "Upload the thumbnail before referencing it");
         }
         await tx.mutate.documents.update({ id: args.id, thumbLight: args.light, thumbDark: args.dark, thumbVersion: args.version });
+      },
+    ),
+
+    /**
+     * Turns the view-only link on (a fresh token, made by the caller like any id), or off (null).
+     * A new token revokes the previous link. Not an edit: no version, updatedAt stays.
+     */
+    setShareToken: defineMutator(
+      z.object({ id, token: z.string().regex(SHARE_TOKEN_RE).nullable() }),
+      async ({ tx, ctx, args }) => {
+        const c = await authorize(tx, ctx, args.id, "editor");
+        if (c.agentSessionID) fail("forbidden", "Only people can change link sharing");
+        const doc = await need(tx, await tx.run(zql.documents.where("id", args.id).one()), "Document");
+        if (!doc) return;
+        await tx.mutate.documents.update({ id: args.id, shareToken: args.token });
       },
     ),
 

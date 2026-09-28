@@ -108,13 +108,18 @@
 <div class="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="params-panel">
 	<PropertySection title="Configuration">
 		{#snippet actions()}
-			<DropdownMenu items={configMenu} align="end">
-				{#snippet trigger(props)}
-					<IconButton {...props} label="Configuration actions" size="sm"><MoreHorizontal /></IconButton>
-				{/snippet}
-			</DropdownMenu>
+			{#if !ws.readOnly}
+				<DropdownMenu items={configMenu} align="end">
+					{#snippet trigger(props)}
+						<IconButton {...props} label="Configuration actions" size="sm"><MoreHorizontal /></IconButton>
+					{/snippet}
+				</DropdownMenu>
+			{/if}
 		{/snippet}
 		<Select items={configItems} value={ws.activeConfigID ?? 'default'} onValueChange={(v) => ws.setActiveConfig(v === 'default' ? null : v)} icon={SlidersHorizontal} aria-label="Active configuration" />
+		{#if ws.readOnly}
+			<p class="mt-2 text-label text-fg-tertiary" data-testid="params-view-only">View only: try values here. They aren't saved.</p>
+		{/if}
 	</PropertySection>
 
 	{#each groups as g (g.part)}
@@ -181,7 +186,7 @@
 		</div>
 	{/each}
 
-	{#if ws.activeConfig?.overrides.length}
+	{#if ws.activeConfig?.overrides.length && !ws.readOnly}
 		<div class="mt-auto flex h-10 shrink-0 items-center gap-2 border-t border-line-subtle px-4 text-label text-fg-secondary">
 			<span class="size-1.5 rounded-full bg-override"></span>
 			<span class="tabular-nums">{ws.activeConfig.overrides.length} override{ws.activeConfig.overrides.length === 1 ? '' : 's'} in {ws.activeConfig.name}</span>

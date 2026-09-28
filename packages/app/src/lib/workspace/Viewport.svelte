@@ -791,7 +791,7 @@
 					</div>
 				{/if}
 			{/each}
-			{#if ws.selection.length === 2 && shown}
+			{#if ws.selection.length === 2 && shown && !ws.readOnly}
 				<div class="mt-1 border-t border-line-subtle pt-1">
 					<Button size="sm" variant="ghost" class="w-full justify-start" onclick={noteMeasurement}><MessageCircle size={14} /> Note</Button>
 				</div>
@@ -799,7 +799,11 @@
 		</div>
 	{/if}
 
-	{#if empty}
+	{#if empty && ws.readOnly}
+		<div class="{scrim} z-10" data-testid="empty-document">
+			<EmptyState size="panel" class="animate-enter" title="No parts yet" />
+		</div>
+	{:else if empty}
 		<div class="{scrim} z-10" data-testid="empty-document">
 			<EmptyState size="panel" class="animate-enter gap-5" title="No parts yet" description={ws.agentReady ? undefined : 'Connect a coding agent or add an API key for the built-in agent, then describe what to build.'}>
 				{#snippet action()}
@@ -844,6 +848,6 @@
 				<button class="focus-ring h-8 rounded-[var(--toolbar-item-radius)] px-2.5 text-ui font-medium transition-colors-fast {nc.eraser ? 'bg-active text-fg' : 'text-fg-secondary hover:bg-hover hover:text-fg'}" onclick={() => (nc.eraser = !nc.eraser)} aria-pressed={nc.eraser}>Eraser</button>
 			</div>
 		{/if}
-		<FloatingToolbar bind:tool={ws.tool} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to draw' } : {}} />
+		<FloatingToolbar bind:tool={ws.tool} only={ws.readOnly ? ['select', 'measure'] : undefined} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to draw' } : {}} />
 	</div>
 </ContextMenu>

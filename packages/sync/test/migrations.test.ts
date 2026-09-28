@@ -31,7 +31,7 @@ test("0005 moves parts/ scripts and version snapshots to studios/; 0006 resolves
 
     await sql`INSERT INTO notes (id, document_id, anchor, status) VALUES ('n', 'd', '{}', 'AwaitingReview')`;
 
-    expect(await migrate(sql)).toEqual(["0005_studios.sql", "0006_drop_awaiting_review.sql"]);
+    expect(await migrate(sql)).toEqual(["0005_studios.sql", "0006_drop_awaiting_review.sql", "0007_builtin_agent.sql", "0008_share_links.sql"]);
     expect((await sql`SELECT status FROM notes`)[0]!.status).toBe("Resolved");
     expect((await sql`SELECT path FROM scripts ORDER BY path`).map((r) => r.path)).toEqual(["lib/holes.ts", "studios/case.ts"]);
     const [v] = await sql`SELECT snapshot FROM versions`;

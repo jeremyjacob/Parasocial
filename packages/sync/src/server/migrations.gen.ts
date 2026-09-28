@@ -27,5 +27,9 @@ export const MIGRATIONS: readonly (readonly [name: string, sql: string])[] = [
  [
   "0007_builtin_agent.sql",
   "-- Built-in agent: runs inside the app server on the user's own model provider, and works notes\n-- handed to it (one at a time per document) through the same tools and mutators as MCP agents.\n\n-- server-only. One provider per user; the key is sealed with APP_SECRET (AES-GCM) and never\n-- leaves the server.\nCREATE TABLE user_agent_settings (\n  user_id       text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,\n  provider      text NOT NULL CHECK (provider IN ('anthropic', 'openai', 'google', 'openai-compatible')),\n  model         text NOT NULL CHECK (length(model) BETWEEN 1 AND 200),\n  base_url      text,\n  api_key_enc   text,                              -- base64(iv || ciphertext)\n  api_key_hint  text,                              -- last 4 characters, for display\n  updated_at    timestamptz NOT NULL DEFAULT now()\n);\n\n-- Sessions the app runs itself (not an MCP connection).\nALTER TABLE agent_sessions ADD COLUMN builtin boolean NOT NULL DEFAULT false;\n\n-- Handed to the built-in agent by this user (it runs on their provider). Kept until a human takes\n-- the note back, so a follow-up reply puts the agent back to work. agent_assigned_at counts as\n-- human activity: handing a note over again re-runs it.\nALTER TABLE notes ADD COLUMN agent_assigned_by text REFERENCES users(id) ON DELETE SET NULL;\nALTER TABLE notes ADD COLUMN agent_assigned_at timestamptz;\n"
+ ],
+ [
+  "0008_share_links.sql",
+  "-- View-only share links: anyone holding the token can open the document read-only (the model,\n-- its studios' code and configurations; not notes, history or who's in it), signed in or not.\n-- Null when link sharing is off; replacing the token revokes the old link.\nALTER TABLE documents ADD COLUMN share_token text UNIQUE;\n"
  ]
 ];

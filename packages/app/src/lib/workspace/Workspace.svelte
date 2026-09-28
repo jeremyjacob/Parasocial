@@ -2,7 +2,7 @@
 	import { cn } from '$lib/utils';
 	import { onMount } from 'svelte';
 	import {
-		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Scissors, ArrowLeft
+		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Scissors, ArrowLeft, Link2, LogIn
 	} from '@lucide/svelte';
 	import { useQuery } from '@parasocial/sync/svelte';
 	import { queries, mutators, type ParasocialZero } from '@parasocial/sync';
@@ -34,6 +34,7 @@
 	import CodeEditor from './CodeEditor.svelte';
 	import { prefetchMonaco } from './monaco';
 	import ConnectAgentDialog from './ConnectAgentDialog.svelte';
+	import ShareDialog from './ShareDialog.svelte';
 	import NewStudioDialog from './NewStudioDialog.svelte';
 	import ExportDialog from './ExportDialog.svelte';
 	import PreferencesDialog from './PreferencesDialog.svelte';
@@ -44,10 +45,26 @@
 	import { clockTime } from '$lib/format';
 	import { rise, reveal } from '$lib/styles/motion';
 
-	let { documentID, zero, user, agentConfigured = false, mcpConnected = false }: { documentID: string; zero: ParasocialZero; user: { userID: string; name: string }; agentConfigured?: boolean; mcpConnected?: boolean } = $props();
+	let {
+		documentID,
+		zero,
+		user,
+		share,
+		agentConfigured = false,
+		mcpConnected = false
+	}: {
+		documentID: string;
+		zero: ParasocialZero;
+		/** null: signed out (only through a share link) */
+		user: { userID: string; name: string } | null;
+		/** Opened through this view-only link (/s/:token): read-only, no notes, history or presence. */
+		share?: string;
+		agentConfigured?: boolean;
+		mcpConnected?: boolean;
+	} = $props();
 
-	const ws = new WorkspaceState({ documentID, zero, userID: user.userID });
-	ws.userName = user.name;
+	const ws = new WorkspaceState({ documentID, zero, userID: user?.userID ?? '', readOnly: !!share });
+	ws.userName = user?.name ?? '';
 	ws.agentConfigured = agentConfigured;
 	ws.mcpConnected = mcpConnected;
 	// follows the layout data, so a key saved from the setup dialog (invalidateAll) shows up here
@@ -57,9 +74,9 @@
 	});
 	(globalThis as any).__ws = ws; // test hook
 
-	const docQ = useQuery(() => queries.documents.byID({ documentID }));
-	const scriptsQ = useQuery(() => queries.scripts({ documentID }));
-	const configsQ = useQuery(() => queries.configurations({ documentID }));
+	const docQ = useQuery(() => (share ? queries.documents.shared({ documentID, share }) : queries.documents.byID({ documentID })));
+	const scriptsQ = useQuery(() => queries.scripts({ documentID, share }));
+	const configsQ = useQuery(() => queries.configurations({ documentID, share }));
 	const versionsQ = useQuery(() => queries.versions({ documentID }));
 	const notesQ = useQuery(() => queries.notes({ documentID }));
 	const agentsQ = useQuery(() => queries.agentSessions({ documentID }));
@@ -92,7 +109,7 @@
 
 	// Retain the last activity after leaving; MCP treats freshness as a hint, not an open-tab guarantee.
 	$effect(() => {
-		if (!ws.synced || !ws.doc) return;
+		if (!ws.synced || !ws.doc || ws.readOnly) return;
 		const touch = () => ws.touchPresence();
 		touch();
 		const heartbeat = setInterval(touch, 30_000);
@@ -176,6 +193,7 @@
 		renameOpen = false;
 	}
 	let connectOpen = $state(false);
+	let shareOpen = $state(false);
 	let exportOpen = $state(false);
 	/** Parts the export dialog opens with (empty: all). */
 	let exportTarget = $state<string[]>([]);
@@ -281,7 +299,9 @@
 		toast(l ? `Redid ${l[0].toLowerCase()}${l.slice(1)}` : 'Nothing to redo');
 	}
 
-	const commands: Command[] = [
+	/** What a view-only visitor can't do. */
+	const EDIT_COMMANDS = new Set(['tool.note', 'tool.pencil', 'asm.reset', 'doc.save', 'doc.addStudio', 'doc.share', 'agent.connect']);
+	const allCommands: Command[] = [
 		{ id: 'tool.select', label: 'Select', group: 'Tools', keys: ['V'], icon: MousePointer2, run: () => (ws.tool = 'select') },
 		{ id: 'tool.note', label: 'Note', group: 'Tools', keys: ['C'], icon: MessageCircle, run: noteTool },
 		{ id: 'tool.pencil', label: 'Pencil', group: 'Tools', keys: ['P'], icon: Pencil, run: () => (ws.dirty.length ? toast('Save to add notes') : (ws.tool = 'pencil')) },
@@ -314,6 +334,7 @@
 		{ id: 'doc.save', label: 'Save script', group: 'Document', keys: ['mod', 'S'], run: async () => { for (const p of ws.dirty) { const err = await ws.saveBuffer(p); if (err) toast.error(err); } } },
 		{ id: 'doc.export', label: 'Export…', group: 'Document', keys: ['mod', 'E'], icon: Download, run: exportSelection },
 		{ id: 'doc.addStudio', label: 'Add a studio', group: 'Document', icon: Plus, run: addStudio },
+		{ id: 'doc.share', label: 'Share…', group: 'Document', icon: Link2, run: () => (shareOpen = true) },
 		{ id: 'agent.connect', label: 'Connect an agent', group: 'Document', icon: Bot, run: () => (connectOpen = true) },
 		{ id: 'app.palette', label: 'Command palette', group: 'Help', keys: ['mod', 'K'], run: () => (paletteOpen = true) },
 		{ id: 'app.cheatsheet', label: 'Keyboard shortcuts', group: 'Help', keys: ['?'], icon: Keyboard, run: () => (cheatsOpen = true) },
@@ -321,6 +342,7 @@
 		{ id: 'app.theme', label: 'Toggle theme', group: 'Help', icon: theme.resolved === 'dark' ? Sun : Moon, run: () => theme.set(theme.resolved === 'dark' ? 'light' : 'dark') },
 		{ id: 'app.documents', label: 'All documents', group: 'Help', icon: ArrowLeft, run: () => (location.href = '/') }
 	];
+	const commands = ws.readOnly ? allCommands.filter((c) => !EDIT_COMMANDS.has(c.id)) : allCommands;
 	let custom = $state(loadCustomKeys());
 	const keyOf = (c: Command) => custom[c.id] ?? c.keys;
 	const byCombo = $derived(new Map(commands.filter((c) => keyOf(c)).map((c) => [comboOfKeys(keyOf(c)!), c])));
@@ -351,7 +373,7 @@
 		const appUndo = numeric || (e.target as HTMLElement | null)?.hasAttribute?.('data-app-undo');
 		if (isTyping(e) && combo.includes('+z') && !appUndo) return;
 		if (numeric && combo.includes('+z')) (e.target as HTMLElement).blur();
-		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || prefsOpen || exportOpen || newStudioOpen)) return;
+		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || shareOpen || prefsOpen || exportOpen || newStudioOpen)) return;
 		e.preventDefault();
 		cmd.run();
 	}
@@ -399,8 +421,9 @@
 		await ws.zero.mutate(mutators.document.delete({ id: documentID })).client;
 		location.href = '/';
 	}
-	const docMenu = $derived<MenuEntry[]>([
+	const docMenu = $derived<MenuEntry[]>(ws.readOnly ? [{ label: 'Export…', icon: Download, shortcut: ['mod', 'E'], onSelect: exportSelection }] : [
 		{ label: 'Rename…', icon: Pencil, onSelect: () => ((renameName = ws.doc?.name ?? ''), (renameOpen = true)) },
+		{ label: 'Share…', icon: Link2, onSelect: () => (shareOpen = true) },
 		{ label: 'Export…', icon: Download, shortcut: ['mod', 'E'], onSelect: exportSelection },
 		{ type: 'separator' },
 		{
@@ -418,13 +441,14 @@
 	const leftTabs = $derived([
 		{ value: 'parts', label: 'Studios' },
 		{ value: 'scripts', label: 'Scripts' },
-		{ value: 'history', label: 'History' }
+		...(ws.readOnly ? [] : [{ value: 'history', label: 'History' }])
 	]);
 	const rightTabs = $derived([
 		{ value: 'properties', label: 'Properties' },
 		{ value: 'params', label: 'Params' },
-		{ value: 'notes', label: 'Notes', count: ws.notes.filter((n) => n.status !== 'Resolved' && !n.removedAt).length || undefined }
+		...(ws.readOnly ? [] : [{ value: 'notes', label: 'Notes', count: ws.notes.filter((n) => n.status !== 'Resolved' && !n.removedAt).length || undefined }])
 	]);
+	const signInHref = $derived(`/signin?next=${encodeURIComponent(share ? `/s/${share}` : `/d/${documentID}`)}`);
 </script>
 
 <svelte:window onkeydown={onKey} onkeyup={onKeyUp} />
@@ -433,17 +457,24 @@
 {#if notFound}
 	<div class="grid h-dvh place-items-center bg-canvas">
 		<div class="animate-enter flex flex-col items-center gap-3 text-center">
-			<p class="text-title font-heading font-medium">Document not found</p>
-			<p class="text-ui text-fg-secondary">It may have been deleted, or you don't have access.</p>
-			<Button href="/" onclick={() => (location.href = '/')}>All documents</Button>
+			{#if share}
+				<p class="text-title font-heading font-medium">This link doesn't work anymore</p>
+				<p class="text-ui text-fg-secondary">Link sharing may have been turned off. Ask for a new link.</p>
+			{:else}
+				<p class="text-title font-heading font-medium">Document not found</p>
+				<p class="text-ui text-fg-secondary">It may have been deleted, or you don't have access.</p>
+			{/if}
+			{#if user}<Button href="/" onclick={() => (location.href = '/')}>All documents</Button>{/if}
 		</div>
 	</div>
 {:else}
 	<div class={cn('grid h-dvh bg-app text-fg', uiHidden ? 'grid-rows-[minmax(0,1fr)]' : 'grid-rows-[auto_minmax(0,1fr)]')} data-testid="workspace">
 		{#if !uiHidden}
-		<TopBar document={ws.doc?.name ?? ''} bind:mode={ws.mode} agents={agentPeople} user={{ name: user.name, kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
+		<TopBar document={ws.doc?.name ?? ''} bind:mode={ws.mode} agents={agentPeople} user={{ name: user?.name ?? '', kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
 			{#snippet presence()}
-				{#if agentPeople.length}
+				{#if ws.readOnly}
+					<span class="mr-2 flex items-center gap-1.5 text-label text-fg-secondary" data-testid="view-only"><Eye size={14} /> View only</span>
+				{:else if agentPeople.length}
 					<Tooltip label={liveAgents.map((a) => `${a.clientName}${a.label ? ` (${a.label})` : ''}: ${a.status}`).join('\n')}>
 						{#snippet trigger(props)}
 							<button {...props} type="button" class="focus-ring mr-1 flex items-center gap-1.5 rounded-md py-0.5 pr-1.5 pl-0.5 hover:bg-hover active:bg-active" onclick={(e) => { (props.onclick as ((e: MouseEvent) => void) | undefined)?.(e); connectOpen = true; }} aria-label="Connect an agent" data-testid="agent-presence">
@@ -456,12 +487,21 @@
 					<Button variant="ghost" size="sm" class="mr-1 text-fg-secondary" onclick={() => (connectOpen = true)} data-testid="connect-agent-button"><Bot size={14} /> Connect agent</Button>
 				{/if}
 			{/snippet}
+			{#snippet actions()}
+				{#if !ws.readOnly}
+					<Button size="sm" class="ml-1" onclick={() => (shareOpen = true)} data-testid="share-button"><Link2 size={14} /> Share</Button>
+				{/if}
+			{/snippet}
 			{#snippet account()}
-				<DropdownMenu items={accountMenu} align="end">
-					{#snippet trigger(props)}
-						<button {...props} class="focus-ring ml-1.5 rounded-full" aria-label="Account"><Avatar name={user.name} kind="human" size={28} /></button>
-					{/snippet}
-				</DropdownMenu>
+				{#if user}
+					<DropdownMenu items={accountMenu} align="end">
+						{#snippet trigger(props)}
+							<button {...props} class="focus-ring ml-1.5 rounded-full" aria-label="Account"><Avatar name={user.name} kind="human" size={28} /></button>
+						{/snippet}
+					</DropdownMenu>
+				{:else}
+					<Button size="sm" variant="primary" class="ml-1.5" href={signInHref} data-testid="share-sign-in"><LogIn size={14} /> Sign in</Button>
+				{/if}
 			{/snippet}
 		</TopBar>
 		{/if}
@@ -484,7 +524,7 @@
 
 			<main class="flex min-h-0 min-w-0">
 				{#if ws.mode === 'code'}
-					{#if cmp.viewScripts}<CodeView {ws} viewScripts={cmp.viewScripts} />{:else}<CodeEditor {ws} />{/if}
+					{#if cmp.viewScripts}<CodeView {ws} viewScripts={cmp.viewScripts} />{:else if ws.readOnly}<CodeView {ws} />{:else}<CodeEditor {ws} />{/if}
 				{/if}
 				<div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
 					{#if cmp.viewing}
@@ -520,7 +560,8 @@
 <ConnectAgentDialog bind:open={connectOpen} {documentID} documentName={ws.doc?.name} />
 <NewStudioDialog bind:open={newStudioOpen} onPrompt={promptStudio} onBlank={async () => void (await createStudio())} onConnect={() => (connectOpen = true)} />
 <PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} bind:scroll={trackpadScroll} bind:additiveSelection={ws.additiveSelection} />
-<ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={async () => void (await exportZip())} />
+<ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={ws.readOnly ? undefined : async () => void (await exportZip())} />
+{#if !ws.readOnly}<ShareDialog bind:open={shareOpen} {ws} />{/if}
 <ConfirmDialog bind:open={deleteOpen} title={`Delete “${ws.doc?.name}”?`} description="This can't be undone." onconfirm={deleteDocument} />
 <Dialog bind:open={renameOpen} title="Rename document">
 	<form id="rename-doc" onsubmit={rename} class="flex flex-col gap-1.5">

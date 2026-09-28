@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { mutators } from "../src/mutators.ts";
 import { queries } from "../src/queries.ts";
 import { zql } from "../src/schema.ts";
-import { createPlatform, FsBlobStore, type Platform } from "../src/server/index.ts";
+import { createPlatform, FsBlobStore, runMutator, type Platform } from "../src/server/index.ts";
+import { newShareToken } from "../src/util.ts";
 import { createTestDb, createUser, newDoc, run, type TestDb } from "./helpers.ts";
 import { SoftAuthenticator } from "./soft-authenticator.ts";
 
@@ -166,6 +167,59 @@ describe("synced queries (permissions)", () => {
       expect(await q.presence()).toEqual([]);
       expect(await q.notes()).toEqual([]);
     }
+  });
+
+  test("a share link opens the document, its scripts and configurations read-only", async () => {
+    const ada = await createUser(db, "A");
+    const bob = await createUser(db, "B");
+    const doc = await newDoc(db, ada);
+    const other = await newDoc(db, ada, "Other");
+    await run(db, mutators.script.write({ documentID: doc, path: "studios/a.ts", content: "a", baseVersion: null }), { userID: ada });
+    await run(db, mutators.configuration.create({ id: crypto.randomUUID(), documentID: doc, name: "M3", overrides: [{ part: "studios/a.ts", name: "t", expression: "1", value: 1 }] }), { userID: ada });
+    const token = newShareToken();
+
+    const as = (userID: string | undefined, share: string | undefined, documentID = doc) => {
+      const ctx = userID ? { userID } : undefined;
+      return {
+        shared: () => db.zql.run(queries.documents.shared.fn({ ctx, args: { documentID, share: share ?? "" } })),
+        scripts: () => db.zql.run(queries.scripts.fn({ ctx, args: { documentID, share } })),
+        configurations: () => db.zql.run(queries.configurations.fn({ ctx, args: { documentID, share } })),
+        overrides: () => db.zql.run(queries.paramOverrides.fn({ ctx, args: { documentID, share } })),
+        notes: () => db.zql.run(queries.notes.fn({ ctx, args: { documentID } })),
+      };
+    };
+
+    // off: the token opens nothing
+    expect(await as(undefined, token).shared()).toBeUndefined();
+    expect(await as(undefined, token).scripts()).toEqual([]);
+
+    // viewers can't turn it on; editors can
+    expect((await runMutator(db, mutators.document.setShareToken({ id: doc, token }), { userID: bob })).ok).toBe(false);
+    await expect(runMutator(db, mutators.document.setShareToken({ id: doc, token: "short" }), { userID: ada })).rejects.toThrow();
+    await run(db, mutators.document.setShareToken({ id: doc, token }), { userID: ada });
+
+    for (const who of [bob, undefined]) {
+      const q = as(who, token);
+      expect((await q.shared())?.name).toBe("Bracket");
+      expect(await q.scripts()).toHaveLength(1);
+      expect((await q.configurations())[0]!.overrides).toHaveLength(1);
+      expect(await q.overrides()).toHaveLength(1);
+      expect(await q.notes()).toEqual([]); // notes stay members-only
+      // the token opens only its own document, and a wrong or missing token opens nothing
+      expect(await as(who, token, other).shared()).toBeUndefined();
+      expect(await as(who, token, other).scripts()).toEqual([]);
+      expect(await as(who, newShareToken()).scripts()).toEqual([]);
+      expect(await as(who, undefined).scripts()).toEqual([]);
+      expect(await as(who, "").shared()).toBeUndefined();
+    }
+
+    // members see their document without a token
+    expect(await as(ada, undefined).scripts()).toHaveLength(1);
+
+    // off again: the old link stops working
+    await run(db, mutators.document.setShareToken({ id: doc, token: null }), { userID: ada });
+    expect(await as(undefined, token).shared()).toBeUndefined();
+    expect(await as(undefined, token).scripts()).toEqual([]);
   });
 
   test("the query endpoint transforms named queries", async () => {
