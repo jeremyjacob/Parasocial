@@ -1,0 +1,122 @@
+# Parasocial on Coolify (Docker Compose build pack, compose location /deploy/coolify.yml).
+# Coolify runs compose with the repo root as the project directory, so paths are repo-relative.
+# Its Traefik proxy replaces deploy/Caddyfile; domains are set per service in Coolify:
+#
+#   app          https://$DOMAIN:3000, https://$ENGINE_HOST:5174   (UI/API/MCP + engine origin)
+#   zero-cache   https://$DOMAIN/zero:4848                          (Zero websocket)
+#
+# The app sets COOP/COEP itself (hooks.server.ts) and the engine origin sets its own headers
+# and CSP (packages/runtime/src/server/serve.ts), so the proxy needs no header config.
+# Secrets are Coolify environment variables (see deploy/.env.example for what each does).
+
+x-db-url: &db-url postgres://parasocial:${POSTGRES_PASSWORD}@postgres:5432/parasocial
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+    environment:
+      POSTGRES_USER: parasocial
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: parasocial
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parasocial -d parasocial"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Applies packages/sync/migrations before zero-cache boots (it needs the parasocial_zero publication).
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/migrate.Dockerfile
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    exclude_from_hc: true
+
+  zero-cache:
+    # Must match the @rocicorp/zero version pinned in packages/sync/package.json.
+    image: rocicorp/zero:1.9.0
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      ZERO_UPSTREAM_DB: *db-url
+      ZERO_CVR_DB: *db-url
+      ZERO_CHANGE_DB: *db-url
+      ZERO_REPLICA_FILE: /data/zero.db
+      ZERO_APP_PUBLICATIONS: parasocial_zero
+      ZERO_PORT: "4848"
+      ZERO_MUTATE_URL: http://app:3000/api/zero/mutate
+      ZERO_QUERY_URL: http://app:3000/api/zero/query
+      ZERO_MUTATE_FORWARD_COOKIES: "true"
+      ZERO_QUERY_FORWARD_COOKIES: "true"
+      ZERO_MUTATE_API_KEY: ${ZERO_API_KEY}
+      ZERO_QUERY_API_KEY: ${ZERO_API_KEY}
+      ZERO_ENABLE_CRUD_MUTATIONS: "false"
+      ZERO_ADMIN_PASSWORD: ${ZERO_ADMIN_PASSWORD}
+      ZERO_LOG_LEVEL: info
+    volumes:
+      - zero-replica:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4848/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # SvelteKit (UI, mutators, passkeys, blobs, MCP, built-in agent) + the engine origin.
+  # Needs egress: the built-in agent calls model providers.
+  app:
+    build:
+      context: .
+      dockerfile: deploy/app.Dockerfile
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      DOMAIN: ${DOMAIN}
+      APP_ORIGIN: https://${DOMAIN}
+      ENGINE_ORIGIN: https://${ENGINE_HOST}
+      ORIGIN: https://${DOMAIN} # SvelteKit adapter
+      PORT: "3000"
+      APP_SECRET: ${APP_SECRET}
+      DATABASE_URL: *db-url
+      ZERO_API_KEY: ${ZERO_API_KEY}
+      ENGINE_POOL_URL: http://engine-pool:4000
+      POOL_TOKEN: ${POOL_TOKEN}
+      BLOB_DIR: /data/blobs
+    volumes:
+      - blobs:/data/blobs
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/').then(r=>process.exit(r.status<500?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # One Deno process per active document running user code for MCP / agent tool calls; Deno's
+  # permissions are the sandbox (read-only engine build, no network). One document at a time on a small box.
+  engine-pool:
+    build:
+      context: .
+      dockerfile: deploy/engine-pool.Dockerfile
+    environment:
+      POOL_TOKEN: ${POOL_TOKEN}
+      POOL_MAX_DOCS: ${POOL_MAX_DOCS:-1}
+      POOL_IDLE_MS: "300000"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  zero-replica:
+  blobs:

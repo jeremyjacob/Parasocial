@@ -103,6 +103,6 @@ export async function serveEngine(o: EngineServerOptions & { watch?: boolean }) 
 if (import.meta.main) {
   const port = Number(process.env.ENGINE_PORT ?? 5181);
   const parents = (process.env.APP_ORIGINS ?? "http://localhost:5173").split(",");
-  const s = await serveEngine({ port, allowedParents: parents, watch: process.env.ENGINE_WATCH === "1" });
+  const s = await serveEngine({ port, hostname: process.env.ENGINE_HOSTNAME, allowedParents: parents, watch: process.env.ENGINE_WATCH === "1" });
   console.log(`engine origin on http://localhost:${s.port} (parents: ${parents.join(", ")})`);
 }

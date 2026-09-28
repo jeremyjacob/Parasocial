@@ -1,3 +1,4 @@
 **
 !packages/sync/migrations/**
 !packages/sync/src/server/migrate.ts
+!packages/sync/src/server/migrations.gen.ts

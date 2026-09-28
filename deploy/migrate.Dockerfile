@@ -6,6 +6,6 @@ RUN echo '{"name":"migrate","private":true,"type":"module"}' > package.json \
   && bun add --exact postgres@3.4.7 \
   && rm -rf ~/.bun/install/cache
 COPY packages/sync/migrations ./migrations
-COPY packages/sync/src/server/migrate.ts ./src/server/migrate.ts
+COPY packages/sync/src/server/migrate.ts packages/sync/src/server/migrations.gen.ts ./src/server/
 USER bun
 CMD ["bun", "src/server/migrate.ts"]

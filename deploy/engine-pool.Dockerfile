@@ -7,8 +7,9 @@
 
 FROM oven/bun:1.4.2 AS deps
 WORKDIR /repo
-COPY package.json bun.lock ./
+COPY package.json bun.lock tsconfig.base.json ./
 COPY packages ./packages
+COPY tests/package.json ./tests/package.json
 RUN bun install --frozen-lockfile
 
 FROM denoland/deno:bin-2.9.1 AS deno
