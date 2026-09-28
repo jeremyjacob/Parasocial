@@ -109,7 +109,7 @@ export class NotesController {
 			const id = await this.create(d.targets, text, this.draftStrokeIDs);
 			this.draft = null;
 			this.active = id;
-			if (this.ws.tool === 'note') this.ws.tool = 'select';
+			if (this.ws.tool === 'note' || this.ws.tool === 'pencil') this.ws.tool = 'select';
 			return true;
 		} catch (e) {
 			toast.error((e as Error).message);
@@ -201,7 +201,7 @@ export class NotesController {
 		return this.ws.mutate(mutators.note.reply({ id: newID(), noteID, text } as any), 'Reply');
 	}
 	setStatus(noteID: string, status: Note['status']) {
-		return this.ws.mutate(mutators.note.setStatus({ noteID, status } as any), status === 'Resolved' ? 'Resolve note' : 'Reopen note');
+		return this.ws.mutate(mutators.note.setStatus({ noteID, status } as any), status === 'Resolved' ? 'Mark note done' : 'Reopen note');
 	}
 	remove(noteID: string) {
 		return this.ws.mutate(mutators.note.remove({ noteID }), 'Remove note');

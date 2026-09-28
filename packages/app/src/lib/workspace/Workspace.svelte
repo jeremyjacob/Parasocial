@@ -40,6 +40,7 @@
 	import { NotesController } from './notes.svelte';
 	import { CompareController } from './compare.svelte';
 	import CompareBar from './CompareBar.svelte';
+	import ResizeHandle from './ResizeHandle.svelte';
 	import { clockTime } from '$lib/format';
 	import { rise, reveal } from '$lib/styles/motion';
 
@@ -204,6 +205,16 @@
 		} catch {}
 		ws.viewer?.setNavPreset(n as any);
 		ws.viewer?.setTrackpadScroll(sc as any);
+	});
+	// sidebar widths: null = the responsive default
+	const storedWidth = (k: string) => ((n) => (Number.isFinite(n) && n > 0 ? n : null))(Number(stored(k)));
+	let leftWidth = $state(storedWidth('parasocial:left-width'));
+	let rightWidth = $state(storedWidth('parasocial:right-width'));
+	$effect(() => {
+		const entries = [['parasocial:left-width', leftWidth], ['parasocial:right-width', rightWidth]] as const;
+		try {
+			for (const [k, w] of entries) w == null ? localStorage.removeItem(k) : localStorage.setItem(k, String(w));
+		} catch {}
 	});
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
@@ -455,8 +466,12 @@
 		</TopBar>
 		{/if}
 
-		<div class={cn('grid min-h-0', uiHidden ? 'grid-cols-1' : 'grid-cols-[240px_minmax(0,1fr)_256px] 2xl:grid-cols-[240px_minmax(0,1fr)_288px]')}>
-			<aside class={cn('flex min-h-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
+		<div
+			class={cn('grid min-h-0', uiHidden ? 'grid-cols-1' : 'grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,256px)] 2xl:grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,288px)]')}
+			style:--left-w={leftWidth ? `${leftWidth}px` : undefined}
+			style:--right-w={rightWidth ? `${rightWidth}px` : undefined}
+		>
+			<aside class={cn('relative flex min-h-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
 				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} onAddStudioNote={(file) => nc.startFromStudio(file)} onAddNote={(parts) => noteTool(parts.map((part) => ({ part, kind: 'part' as any, index: 0 })))} />
@@ -464,6 +479,7 @@
 						{:else}<HistoryPanel {ws} onOpen={(id) => cmp.view(id)} onCompare={(id) => cmp.open(id)} viewing={cmp.viewing} />{/if}
 					{/snippet}
 				</Tabs>
+				<ResizeHandle side="left" bind:width={leftWidth} label="Resize document panel" />
 			</aside>
 
 			<main class="flex min-h-0 min-w-0">
@@ -486,7 +502,7 @@
 				</div>
 			</main>
 
-			<aside class={cn('flex min-h-0 flex-col border-l border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Inspector">
+			<aside class={cn('relative flex min-h-0 flex-col border-l border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Inspector">
 				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'properties'}<PropertiesPanel {ws} />
@@ -494,6 +510,7 @@
 						{:else}<NotesPanel {ws} {nc} onfocus={(id) => openNote(id, true)} onversion={openVersion} />{/if}
 					{/snippet}
 				</Tabs>
+				<ResizeHandle side="right" bind:width={rightWidth} label="Resize inspector panel" />
 			</aside>
 		</div>
 	</div>

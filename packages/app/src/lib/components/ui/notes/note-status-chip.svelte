@@ -11,7 +11,7 @@
 	const meta = {
 		open: { label: 'Open', icon: Circle, cls: 'text-fg-secondary shadow-[inset_0_0_0_1px_var(--border-default)]' },
 		working: { label: 'Agent working', icon: LoaderCircle, cls: 'bg-accent-subtle text-accent-fg' },
-		resolved: { label: 'Resolved', icon: Check, cls: 'bg-ok-subtle text-ok' },
+		resolved: { label: 'Done', icon: Check, cls: 'bg-ok-subtle text-ok' },
 		orphaned: { label: 'Detached', icon: Unlink, cls: 'bg-error-subtle text-error' }
 	} as const;
 	const m = $derived(meta[status]);

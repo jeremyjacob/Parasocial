@@ -124,10 +124,10 @@
 					class="focus-ring inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-ok-subtle pr-2 pl-1.5 text-label font-medium whitespace-nowrap text-ok transition-[filter] duration-[var(--duration-fast)] hover:brightness-95"
 					onclick={() => nc.setStatus(note.id, 'Open')}
 					aria-label="Reopen"
-					title="Reopen"><Check size={12} strokeWidth={2} /> Resolved</button
+					title="Reopen"><Check size={12} strokeWidth={2} /> Done</button
 				>
 			{:else}
-				<IconButton label="Resolve" size="sm" onclick={() => nc.setStatus(note.id, 'Resolved')} data-testid="note-resolve"><Check /></IconButton>
+				<IconButton label="Mark done" size="sm" onclick={() => nc.setStatus(note.id, 'Resolved')} data-testid="note-resolve"><Check /></IconButton>
 			{/if}
 		{/if}
 		<DropdownMenu items={menu} align="end">

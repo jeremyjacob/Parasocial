@@ -12,7 +12,7 @@
 	const statusItems = [
 		{ value: 'all', label: 'All' },
 		{ value: 'open', label: 'Open' },
-		{ value: 'resolved', label: 'Resolved' },
+		{ value: 'resolved', label: 'Done' },
 		{ value: 'removed', label: 'Removed' }
 	];
 	const authors = $derived([...new Set(ws.notes.map((n) => ((n as any).authorAgent ? (n as any).authorAgent.clientName : ((n as any).authorUser?.name ?? 'You'))))]);
