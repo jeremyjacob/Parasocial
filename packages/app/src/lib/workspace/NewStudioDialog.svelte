@@ -53,7 +53,7 @@
 	}
 
 	function onkey(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) submit(e);
+		if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) submit(e);
 	}
 
 	function useIdea(idea: string) {
@@ -77,8 +77,7 @@
 				data-testid="new-studio-prompt"
 			></textarea>
 			<div class="flex h-5 items-center justify-end gap-3 text-caption text-fg-tertiary" aria-hidden="true">
-				<span class="flex items-center gap-1"><Kbd keys={['enter']} /> build</span>
-				<span class="flex items-center gap-1"><Kbd keys={['shift', 'enter']} /> new line</span>
+				<span class="flex items-center gap-1"><Kbd keys={['mod', 'enter']} /> build</span>
 			</div>
 		</div>
 		<div class="flex flex-wrap items-center gap-1.5" aria-label="Ideas">
