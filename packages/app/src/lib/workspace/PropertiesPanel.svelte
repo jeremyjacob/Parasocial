@@ -6,6 +6,7 @@
 	import { IconButton } from '$lib/components/ui/button';
 	import { ColorSwatch } from '$lib/components/ui/color-swatch';
 	import { NumberField } from '$lib/components/ui/number-field';
+	import { Switch } from '$lib/components/ui/switch';
 	import { toast } from '$lib/components/ui/toast';
 	import { mutators } from '@parasocial/sync';
 	import { sourcePart, type AssemblyJoint, type EntityDescription } from '@parasocial/runtime/protocol';
@@ -37,6 +38,21 @@
 	});
 
 	const row = 'grid min-h-6 grid-cols-[88px_minmax(0,1fr)] items-center gap-2 text-ui';
+
+	// auto hand-off: open notes go to the built-in agent, on the provider of whoever switched it on
+	const agentAuto = $derived((ws.doc?.settings as { agent?: { autoHandoff?: boolean; runAs?: string } } | undefined)?.agent);
+	let autoHandoff = $state(false);
+	$effect(() => {
+		autoHandoff = !!agentAuto?.autoHandoff;
+	});
+	function setAutoHandoff(enabled: boolean) {
+		if (enabled && !ws.agentConfigured) {
+			autoHandoff = false;
+			toast.error('Add an API key to use the built-in agent', { action: { label: 'Settings', onClick: () => (location.href = '/settings#agent') } });
+			return;
+		}
+		ws.zero.mutate(mutators.document.setAgentAutoHandoff({ id: ws.documentID, enabled }));
+	}
 	const vec = (v?: number[]) => (v ? `(${v.map((x) => num(x, 3)).join(', ')})` : '—');
 	const typeName: Record<string, string> = { plane: 'Planar face', cylinder: 'Cylindrical face', cone: 'Conical face', sphere: 'Spherical face', torus: 'Toroidal face', bspline: 'Freeform face', line: 'Line edge', circle: 'Circular edge', ellipse: 'Elliptical edge', bspline_edge: 'Spline edge' };
 
@@ -154,6 +170,10 @@
 			<div class={row}>
 				<span class="text-fg-secondary">Units</span>
 				<Select size="sm" items={[{ value: 'mm', label: 'Millimeters' }, { value: 'in', label: 'Inches' }]} value={ws.doc?.units ?? 'mm'} onValueChange={(v) => ws.zero.mutate(mutators.document.updateSettings({ id: ws.documentID, units: v } as any))} />
+			</div>
+			<div class={row} title={agentAuto?.autoHandoff && agentAuto.runAs !== ws.userID ? "Hand every open note to the agent (runs on a teammate's provider)" : 'Hand every open note to the agent'}>
+				<label for="agent-pickup" class="text-fg-secondary">Agent pickup</label>
+				<Switch id="agent-pickup" bind:checked={autoHandoff} onCheckedChange={setAutoHandoff} class="h-6" />
 			</div>
 			<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{ws.parts.length}</span></div>
 			<div class={row}><span class="text-fg-secondary">Version</span><span class="tabular-nums">v{ws.doc?.headVersion ?? 0}</span></div>

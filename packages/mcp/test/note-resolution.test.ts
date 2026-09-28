@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -64,6 +64,64 @@ test("MCP resolves silently or with an optional reply; unfinished work stays ope
       expect(await note()).toMatchObject({ status: status ?? "Resolved", claimed_by: null });
     }
   } finally {
+    await client.close();
+    await server.close();
+    await db.drop();
+  }
+}, 30_000);
+
+test("studio notes persist, filter and resolve without geometry, including after studio deletion", async () => {
+  const db = await createTestDb();
+  const server = new McpServer({ name: "test", version: "1" });
+  const client = new Client({ name: "test", version: "1" });
+  const pool = new PoolClient();
+  const engine = spyOn(pool, "run").mockRejectedValue(new Error("Studio targets must not use geometry resolution"));
+  try {
+    const userID = await createUser(db);
+    const documentID = await newDoc(db, userID);
+    const agentID = await createAgentSession(db, userID);
+    const studio = "studios/model.ts";
+    await run(db, mutators.script.write({ documentID, path: studio, content: "export const rear = {}; export const front = {};", baseVersion: null }), { userID });
+    const id = crypto.randomUUID();
+    const snapshot = await sha256Hex("studio snapshot");
+    await db.sql`INSERT INTO blobs (hash, size, content_type) VALUES (${snapshot}, 15, 'image/png')`;
+    const anchor = {
+      targets: [{ kind: "studio" as const, studio, name: "Model", point: [5, 10, 15] as [number, number, number] }],
+      camera: { position: [10, 10, 10] as [number, number, number], target: [0, 0, 0] as [number, number, number], up: [0, 0, 1] as [number, number, number], fov: 45, ortho: false },
+      version: "v1", configuration: "Default", snapshot,
+    };
+    await run(db, mutators.note.create({ id, documentID, text: "Simplify this studio", anchor }), { userID });
+    expect((await db.sql`SELECT anchor FROM notes WHERE id = ${id}`)[0].anchor.targets).toEqual(anchor.targets);
+    registerTools(server, {
+      id: agentID, userID, clientID: "test", clientName: "test", defaultDocument: documentID,
+      activeConfig: new Map(), lastVersion: new Map(), calls: [], noteCursors: new Map(), startedAt: Date.now(),
+    }, { db, pool, store: new FsBlobStore(tmpdir()), noteEvents: createNoteEvents(db), config: { appOrigin: "http://localhost", secret: "test" } });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).not.toBe(true);
+      return JSON.parse((result.content as { type: string; text: string }[]).find((c) => c.type === "text")!.text);
+    };
+    expect((await call("get_note", { id })).targets).toEqual([{ ...anchor.targets[0], status: "name" }]);
+    expect((await call("list_notes", { studio })).notes.map((n: any) => n.id)).toEqual([id]);
+    expect((await call("list_notes", { studio: "studios/other.ts" })).notes).toEqual([]);
+    expect((await call("list_notes", { part: "model:rear" })).notes).toEqual([]);
+
+    await run(db, mutators.script.write({ documentID, path: studio, content: "export const replacement = {};", baseVersion: 1 }), { userID });
+    expect((await call("get_note", { id })).targets[0]).toMatchObject({ studio, status: "name" });
+    await run(db, mutators.script.delete({ documentID, path: studio, baseVersion: 2 }), { userID });
+    expect((await call("get_note", { id })).targets[0]).toMatchObject({ studio, status: "orphaned" });
+    await run(db, mutators.script.write({ documentID, path: studio, content: "export default {};", baseVersion: null }), { userID });
+    expect((await call("get_note", { id })).targets[0]).toMatchObject({ studio, status: "name" });
+
+    const { snapshot: _, ...withoutSnapshot } = anchor;
+    await run(db, mutators.note.reanchor({ noteID: id, anchor: { ...withoutSnapshot, targets: [{ ...anchor.targets[0], point: [1, 2, 3] }] } }), { userID });
+    expect((await call("get_note", { id })).targets[0].point).toEqual([1, 2, 3]);
+    expect(engine).not.toHaveBeenCalled();
+  } finally {
+    engine.mockRestore();
     await client.close();
     await server.close();
     await db.drop();

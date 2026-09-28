@@ -23,8 +23,8 @@
 	const RANK: Record<Status, number> = { ok: 0, pending: 1, warning: 2, error: 3 };
 	const LABEL: Record<Status, string> = { ok: 'OK', pending: 'Pending', warning: 'Warning', error: 'Error' };
 
-	const agentBusy = (file: string, id: string) =>
-		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ((a.detail as any)?.path === file || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.kind === 'studio' ? t.studio === file : t.part === id)));
+	const agentBusy = (file: string, id: string, sourceFile = file) =>
+		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ([file, sourceFile].includes((a.detail as any)?.path) || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.kind === 'studio' ? t.studio === file : t.part === id)));
 
 	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? id;
 
@@ -40,12 +40,12 @@
 				const err = r?.problems.some((p) => p.severity === 'error');
 				const warn = r?.problems.some((p) => p.severity === 'warning');
 				const status: Status = ws.regen[src] === 'running' && !r ? 'pending' : err ? 'error' : warn ? 'warning' : 'ok';
-				return { id, name: r?.name ?? partName(id), status, busy: ws.regen[src] === 'running' || agentBusy(ws.scriptOf(src), id) };
+				return { id, name: r?.name ?? partName(id), status, busy: ws.regen[src] === 'running' || agentBusy(file, id, ws.scriptOf(src)) };
 			});
 			// a studio's name matching shows all its parts; otherwise only the matching parts
 			const all = !q || name.toLowerCase().includes(q);
 			const shown = all ? rows : rows.filter((r) => r.name.toLowerCase().includes(q) || r.id.includes(q));
-			if (!shown.length) return [];
+			if (!all && !shown.length) return [];
 			const status = rows.reduce<Status>((s, r) => (RANK[r.status] > RANK[s] ? r.status : s), asmError ? 'error' : 'ok');
 			return [{ file, name, asm: assemblies.length > 0, rows: shown, ids, status, busy: rows.some((r) => r.busy) }];
 		});

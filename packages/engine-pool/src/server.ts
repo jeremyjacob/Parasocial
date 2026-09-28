@@ -1,11 +1,10 @@
-// Engine pool (§3): headless Chromium running the same engine build as the browser, for MCP
-// calls (write results, render, measure, describe…). One browser process per active document
-// (pinned while active, so its per-op cache stays warm); idle documents are recycled. Pages
-// have no network access beyond this server. MCP never depends on a browser tab being open.
-import { chromium, type Browser, type Page } from "playwright";
+// Engine pool (§3): runs the same engine build as the browser for MCP calls (write results,
+// render, measure, describe…). One Deno process per active document (pinned while active, so
+// its per-op cache stays warm); idle documents are recycled. Each process may only read the
+// engine build: no network, env, writes or subprocesses. MCP never depends on a browser tab being open.
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import type { Subprocess } from "bun";
 import { buildEngine, type EngineAssets } from "@parasocial/runtime/server/build";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -13,22 +12,19 @@ const PORT = Number(process.env.POOL_PORT ?? 5190);
 const MAX_DOCS = Number(process.env.POOL_MAX_DOCS ?? 4);
 const IDLE_MS = Number(process.env.POOL_IDLE_MS ?? 10 * 60_000);
 const TIMEOUT_MS = Number(process.env.POOL_REGEN_TIMEOUT_MS ?? 10_000);
-const ORIGIN = `http://127.0.0.1:${PORT}`;
+const DENO = process.env.DENO_BIN ?? "deno";
 
-type Slot = { browser: Browser; page: Page; lastUsed: number; busy: Promise<unknown>; scripts: Map<string, string>; overrides: string; units: string };
+type Slot = { proc: Subprocess<"pipe", "pipe", "inherit">; send: (m: { req?: unknown; render?: unknown }) => Promise<any>; lastUsed: number; busy: Promise<unknown>; scripts: Map<string, string>; overrides: string; units: string };
 const slots = new Map<string, Slot>();
 
 let assets: EngineAssets;
-let pageJs = "";
 
 async function build() {
   assets = await buildEngine(join(here, "../dist/engine"));
-  const res = await Bun.build({ entrypoints: [join(here, "page.ts")], target: "browser", format: "esm", minify: true });
-  if (!res.success) throw new AggregateError(res.logs, "pool page build failed");
-  pageJs = await res.outputs[0].text();
+  // the host sits next to the engine build: its read permission covers both
+  const res = await Bun.build({ entrypoints: [join(here, "host.ts")], outdir: assets.dir, target: "browser", format: "esm", minify: true, naming: "host.js" });
+  if (!res.success) throw new AggregateError(res.logs, "pool host build failed");
 }
-
-const iso = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" };
 
 async function open(documentID: string): Promise<Slot> {
   // evict idle / least recently used documents
@@ -37,23 +33,65 @@ async function open(documentID: string): Promise<Slot> {
     const lru = [...slots].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
     if (lru) await close(lru[0]);
   }
-  const browser = await chromium.launch({ args: ["--js-flags=--max-old-space-size=2048", "--disable-dev-shm-usage"] });
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } });
-  // no egress: only this server is reachable
-  await page.route("**/*", (route) => (route.request().url().startsWith(ORIGIN) ? route.continue() : route.abort()));
-  page.on("pageerror", (e) => console.error(`[pool ${documentID.slice(0, 8)}] ${e.message}`));
-  await page.goto(`${ORIGIN}/page.html`);
-  await page.evaluate(() => (globalThis as any).poolReady);
-  const slot: Slot = { browser, page, lastUsed: Date.now(), busy: Promise.resolve(), scripts: new Map(), overrides: "", units: "" };
+  const config = { assets: { glueSingle: assets.glueSingle, wasmSingle: assets.wasmSingle, build: assets.build }, timeoutMs: TIMEOUT_MS };
+  const proc = Bun.spawn(
+    [DENO, "run", "--no-prompt", "--no-config", "--no-lock", "--no-remote", "--no-npm", `--allow-read=${assets.dir}`, "--v8-flags=--max-old-space-size=2048", join(assets.dir, "host.js"), JSON.stringify(config)],
+    // nothing from the server's environment (secrets) reaches the host
+    { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", NO_COLOR: "1", DENO_NO_UPDATE_CHECK: "1" } },
+  );
+  const waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  let nextId = 1;
+  let started!: (v: unknown) => void, failed!: (e: Error) => void;
+  const ready = new Promise((res, rej) => ((started = res), (failed = rej)));
+  (async () => {
+    const dec = new TextDecoder();
+    let buf = "";
+    for await (const chunk of proc.stdout) {
+      buf += dec.decode(chunk, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const m = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if ("ready" in m) started(m.ready);
+        else if ("fatal" in m) failed(new Error(`engine host: ${m.fatal}`));
+        else {
+          const { id, ...result } = m;
+          waiting.get(id)?.resolve(result);
+          waiting.delete(id);
+        }
+      }
+    }
+  })().finally(() => {
+    const e = new Error(`engine host for ${documentID.slice(0, 8)} exited`);
+    failed(e);
+    for (const w of waiting.values()) w.reject(e);
+    waiting.clear();
+    if (slots.get(documentID) === slot) slots.delete(documentID);
+  });
+  const send = (m: { req?: unknown; render?: unknown }) =>
+    new Promise<any>((resolve, reject) => {
+      const id = nextId++;
+      waiting.set(id, { resolve, reject });
+      proc.stdin.write(JSON.stringify({ id, ...m }) + "\n");
+      proc.stdin.flush();
+    });
+  const slot: Slot = { proc, send, lastUsed: Date.now(), busy: Promise.resolve(), scripts: new Map(), overrides: "", units: "" };
   slots.set(documentID, slot);
-  browser.on("disconnected", () => slots.get(documentID) === slot && slots.delete(documentID));
+  try {
+    await ready;
+  } catch (e) {
+    await close(documentID);
+    throw e;
+  }
   return slot;
 }
 
 async function close(id: string) {
   const s = slots.get(id);
   slots.delete(id);
-  await s?.browser.close().catch(() => {});
+  if (!s) return;
+  s.proc.kill();
+  await s.proc.exited.catch(() => {});
 }
 
 export type JobRequest = {
@@ -68,8 +106,7 @@ async function runJob(job: JobRequest) {
   let slot = slots.get(job.document) ?? (await open(job.document));
   slot.lastUsed = Date.now();
   const run = slot.busy.then(async () => {
-    const page = slot.page;
-    const rpc = (req: unknown) => page.evaluate((r) => (globalThis as any).rpc(r), req as any);
+    const rpc = (req: unknown) => slot.send({ req });
     // sync the document incrementally so the per-op cache survives across calls
     const overrides = JSON.stringify(job.overrides ?? {});
     const units = job.units ?? "mm";
@@ -90,10 +127,8 @@ async function runJob(job: JobRequest) {
     }
     const results: unknown[] = [];
     for (const op of job.ops) {
-      if (op.op === "render") {
-        const url: string = await page.evaluate((o) => (globalThis as any).render(o), op as any);
-        results.push({ ok: true, value: { png: url.slice(url.indexOf(",") + 1) } });
-      } else results.push(await rpc(op));
+      if (op.op === "render") results.push(await slot.send({ render: op }));
+      else results.push(await rpc(op));
     }
     return results;
   });
@@ -101,16 +136,20 @@ async function runJob(job: JobRequest) {
   try {
     return await run;
   } catch (e) {
-    // the page or browser died: drop it; the next job starts fresh
+    // the host died: drop it; the next job starts fresh
     await close(job.document);
     throw e;
   }
 }
 
 if (import.meta.main) {
+  if (!Bun.which(DENO)) {
+    console.error(`engine pool: Deno not found ("${DENO}"). Install it (https://deno.com) or set DENO_BIN.`);
+    process.exit(1);
+  }
   await build();
   if (process.env.POOL_WATCH === "1") {
-    // dev: rebuild the engine + page when their sources change, and drop stale browsers
+    // dev: rebuild the engine + host when their sources change, and drop stale hosts
     const { watch } = await import("node:fs");
     let timer: any;
     for (const pkg of ["runtime/src", "kernel/src", "naming/src", "api/src", "viewer/src", "engine-pool/src"])
@@ -133,14 +172,6 @@ if (import.meta.main) {
     async fetch(req) {
       const u = new URL(req.url);
       if (u.pathname === "/health") return Response.json({ ok: true, documents: slots.size, build: assets.build });
-      if (u.pathname === "/page.html")
-        return new Response(`<!doctype html><html><head><meta charset="utf-8"><script>window.POOL=${JSON.stringify({ assets: { glueSingle: "/engine" + assets.glueSingle, wasmSingle: "/engine" + assets.wasmSingle, glueMulti: "/engine" + assets.glueMulti, wasmMulti: "/engine" + assets.wasmMulti, build: assets.build }, timeoutMs: TIMEOUT_MS })}</script><script type="module" src="/page.js"></script></head><body style="margin:0"></body></html>`, { headers: { "Content-Type": "text/html", ...iso } });
-      if (u.pathname === "/page.js") return new Response(pageJs, { headers: { "Content-Type": "text/javascript", ...iso } });
-      if (u.pathname.startsWith("/engine/")) {
-        const f = join(assets.dir, u.pathname.slice(8));
-        if (!f.startsWith(assets.dir) || !existsSync(f)) return new Response("not found", { status: 404 });
-        return new Response(Bun.file(f), { headers: { "Content-Type": f.endsWith(".wasm") ? "application/wasm" : "text/javascript", ...iso } });
-      }
       if (u.pathname === "/v1/jobs" && req.method === "POST") {
         if (process.env.POOL_TOKEN && req.headers.get("authorization") !== `Bearer ${process.env.POOL_TOKEN}`) return new Response("unauthorized", { status: 401 });
         try {

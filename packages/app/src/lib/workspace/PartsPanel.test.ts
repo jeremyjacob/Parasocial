@@ -10,12 +10,12 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function setup() {
+function setup(ids = ['base', 'lid', 'handle']) {
 	localStorage.clear();
 	const ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: {} as ParasocialZero });
 	vi.spyOn(ws, 'publishPresence').mockImplementation(() => {});
 	vi.spyOn(ws, 'partTree', 'get').mockReturnValue([
-		{ file: 'studios/model.ts', name: 'Model', parts: [], assemblies: [], instances: [], ids: ['base', 'lid', 'handle'] }
+		{ file: 'studios/model.ts', name: 'Model', parts: [], assemblies: [], instances: [], ids }
 	]);
 	const onExport = vi.fn();
 	const onAddNote = vi.fn();
@@ -54,8 +54,8 @@ describe('parts context-menu export', () => {
 	});
 });
 
-it('adds one studio target from the studio menu instead of expanding its parts', async () => {
-	const { onAddNote, onAddStudioNote, getByText, getByRole } = setup();
+it.each([{ label: 'exported parts', ids: ['base', 'lid', 'handle'] }, { label: 'no parts', ids: [] }])('adds one studio target from the studio menu with $label', async ({ ids }) => {
+	const { onAddNote, onAddStudioNote, getByText, getByRole } = setup(ids);
 	await fireEvent.contextMenu(getByText('Model'), { button: 2 });
 	await fireEvent.click(getByRole('menuitem', { name: 'Add note' }));
 	expect(onAddStudioNote).toHaveBeenCalledExactlyOnceWith('studios/model.ts');

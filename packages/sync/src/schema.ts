@@ -83,6 +83,8 @@ const agentSessions = table("agentSessions")
     status: string<AgentStatus>(),
     documentID: string().from("document_id").optional(),
     detail: json<JSONObject>().optional(),
+    /** Run by the app itself (the built-in agent), not an MCP connection */
+    builtin: boolean().optional(),
     createdAt: number().from("created_at"),
     lastSeenAt: number().from("last_seen_at"),
   })
@@ -155,6 +157,9 @@ const notes = table("notes")
     status: string<NoteStatus>(),
     orphaned: boolean(),
     claimedBy: string().from("claimed_by").optional(),
+    /** Handed to the built-in agent by this user (runs on their provider) */
+    agentAssignedBy: string().from("agent_assigned_by").optional(),
+    agentAssignedAt: number().from("agent_assigned_at").optional(),
     removedAt: number().from("removed_at").optional(),
     createdAt: number().from("created_at"),
     updatedAt: number().from("updated_at"),

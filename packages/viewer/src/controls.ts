@@ -21,6 +21,9 @@ export type ControlsHost = {
 };
 
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+/** Time constant (ms) of the extra friction on a trackpad orbit's momentum tail: smaller stops sooner. */
+const COAST_TAU = 60;
+const newCoast = () => ({ prev: 0, ratio: 0, dir: 0, run: 0, dx: 0, dy: 0, t: 0, since: null as number | null });
 
 export class CadControls {
   target = new THREE.Vector3();
@@ -213,7 +216,7 @@ export class CadControls {
         s.panDepth ??= this.depthAt(x, y);
         this.pan(-dx, -dy, s.panDepth);
       } else {
-        const k = 1.0 * this.momentumDamping(dx, dy);
+        const k = this.momentumDamping(dx, dy, e.timeStamp);
         // about the view's center at the model's depth, not the cursor: on a trackpad the cursor is
         // wherever it was left, not a point you grabbed (a mouse drag grabs one, so it pivots there)
         s.pivot ??= this.viewCenterPivot();
@@ -243,7 +246,7 @@ export class CadControls {
     let s = this.stream;
     if (!s || now - s.t > 200 || Math.abs(x - s.x) + Math.abs(y - s.y) > 3 || s.ctrl !== e.ctrlKey) {
       s = this.stream = { t: now, x, y, ctrl: e.ctrlKey, trackpad: fromTrackpad(e), pivot: null, panDepth: null };
-      this.coast = { prev: 0, ratio: 0, dir: 0, run: 0 };
+      this.coast = newCoast();
     }
     s.t = now;
     // a mouse wheel only scrolls sideways with shift held: a diagonal delta is a trackpad
@@ -254,24 +257,26 @@ export class CadControls {
 
   /**
    * macOS keeps scrolling after the fingers lift (momentum). CAD orbit shouldn't coast far past the
-   * view you stopped on, so momentum gets extra friction: once a run looks like momentum (shrinking
-   * by a steady ratio in a fixed direction) each event is weighted 1/(1 + n/1.5)², n events into the
-   * run. That brakes hard at release, then glides out along macOS's own tail instead of stopping dead.
-   * Fingers slowing on purpose wobble in size and direction, which resets the run, so they keep
-   * control; a pickup (fingers back on the pad) ends it. Browsers don't expose the scroll phase, so
-   * this reads the delta envelope. Returns the weight to apply the event with.
+   * view you stopped on, so momentum gets extra friction on top of macOS's own decay. Once a run
+   * looks like momentum (shrinking by a steady ratio in a fixed direction) each event is weighted
+   * exp(−t/COAST_TAU), t since the run was recognized: the weight starts at 1, so the release speed
+   * carries on unbroken and then eases out faster than the OS would — a shorter native glide, not a
+   * brake. It's timed, not counted, so 60 and 120 Hz feel the same. Fingers slowing on purpose
+   * wobble in size and direction, which resets the run, so they keep control; a pickup (fingers
+   * back on the pad: a pause, a reversal, or growing again) ends it. Browsers don't expose the
+   * scroll phase, so this reads the delta envelope. Returns the weight to apply the event with.
    */
-  private momentumDamping(dx: number, dy: number): number {
+  private momentumDamping(dx: number, dy: number, t: number): number {
     const c = this.coast;
     const mag = Math.hypot(dx, dy);
     if (!mag) return 0;
     const dir = Math.atan2(dy, dx);
     if (c.prev) {
       const r = mag / c.prev;
-      if (c.run >= 3) {
-        // confirmed: follow the tail (integer rounding makes it stutter) until the fingers pick up
-        if (mag > c.prev * 1.2 + 1) (c.run = 0), (c.ratio = 0);
-        else c.run++;
+      if (c.since !== null) {
+        // confirmed: momentum arrives every frame, never grows and never reverses (it only
+        // shrinks, or repeats a value through integer rounding); anything else is the fingers
+        if (t - c.t > 60 || mag > c.prev + 1 || dx * c.dx < 0 || dy * c.dy < 0) (c.run = 0), (c.ratio = 0), (c.since = null);
       } else {
         // integer deltas make small vectors' directions coarse: only judge direction on bigger ones
         const turn = Math.abs(Math.atan2(Math.sin(dir - c.dir), Math.cos(dir - c.dir)));
@@ -280,13 +285,17 @@ export class CadControls {
           // a repeated value (integer rounding) neither confirms nor breaks the run
         } else if (r < 1 && r > 0.6 && straight && (!c.ratio || Math.abs(r - c.ratio) < 0.08)) c.run++, (c.ratio = r);
         else (c.run = 0), (c.ratio = 0);
+        if (c.run >= 2) c.since = t;
       }
     }
     c.prev = mag;
     c.dir = dir;
-    return 1 / (1 + c.run / 1.5) ** 2;
+    c.dx = dx;
+    c.dy = dy;
+    c.t = t;
+    return c.since === null ? 1 : Math.exp(-(t - c.since) / COAST_TAU);
   }
-  private coast = { prev: 0, ratio: 0, dir: 0, run: 0 };
+  private coast = newCoast();
 
   // Safari reports pinches as gesture events (scale since the gesture began), not ctrl+wheel
   private gestureScale: number | null = null;

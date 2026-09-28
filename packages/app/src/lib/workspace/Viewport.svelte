@@ -801,7 +801,7 @@
 
 	{#if empty}
 		<div class="{scrim} z-10" data-testid="empty-document">
-			<EmptyState size="panel" class="animate-enter" title="No parts yet">
+			<EmptyState size="panel" class="animate-enter" title="No parts yet" description={ws.agentReady ? undefined : 'Connect a coding agent or add an API key for the built-in agent, then describe what to build.'}>
 				{#snippet action()}
 					<div class="flex gap-2">
 						<Button variant="primary" onclick={onAddStudio} data-testid="add-studio"><Plus size={14} /> Add a studio</Button>

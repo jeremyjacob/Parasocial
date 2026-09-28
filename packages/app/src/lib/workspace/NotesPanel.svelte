@@ -10,7 +10,7 @@
 	let { ws, nc, onfocus, onversion }: { ws: WorkspaceState; nc: NotesController; onfocus: (noteID: string) => void; onversion: (versionID: string) => void } = $props();
 
 	const statusItems = [
-		{ value: 'all', label: 'All open' },
+		{ value: 'all', label: 'All' },
 		{ value: 'open', label: 'Open' },
 		{ value: 'resolved', label: 'Resolved' },
 		{ value: 'removed', label: 'Removed' }
@@ -23,7 +23,6 @@
 				if (f.status === 'removed') {
 					if (!n.removedAt) return false;
 				} else if (n.removedAt) return false;
-				if (f.status === 'all' && n.status === 'Resolved') return false;
 				if (f.status === 'open' && !(n.status === 'Open' || n.status === 'AgentWorking')) return false;
 				if (f.status === 'resolved' && n.status !== 'Resolved') return false;
 				if (f.part !== 'all' && !n.anchor.targets.some((t) => t.kind === 'studio' ? `studio:${t.studio}` === f.part : t.part === f.part)) return false;
@@ -33,7 +32,6 @@
 			})
 			.sort((a, b) => b.updatedAt - a.updatedAt)
 	);
-	const pinOf = (id: string) => nc.pins.find((p) => p.noteID === id);
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col" data-testid="notes-panel">
@@ -47,7 +45,7 @@
 	<div class="flex min-h-0 flex-1 flex-col gap-2 overflow-auto p-2">
 		{#each list as n (n.id)}
 			<div class="shrink-0" animate:flip={{ duration: flipDuration(), easing: easeOut }} in:rise={{ y: 6, scale: 0.98, duration: 200 }} out:fadeOut>
-				<NoteCard {ws} {nc} note={n as any} pin={pinOf(n.id)} onfocus={() => onfocus(n.id)} {onversion} />
+				<NoteCard {ws} {nc} note={n as any} onfocus={() => onfocus(n.id)} {onversion} />
 			</div>
 		{:else}
 			<div class="flex flex-col gap-2 px-2 py-4 text-ui text-fg-secondary" in:rise>
@@ -56,6 +54,9 @@
 				{:else}
 					<p>No notes yet.</p>
 					<p class="text-label leading-6 [&_kbd]:mx-0.5">Press <Kbd keys={['C']} /> and click the model.</p>
+					{#if !ws.agentReady}
+						<p class="text-label" data-testid="notes-agent-hint">Notes are how you ask an agent for changes. <a href="/settings#agent" class="text-accent hover:underline">Add an API key</a> or connect a coding agent to have them picked up.</p>
+					{/if}
 				{/if}
 			</div>
 		{/each}

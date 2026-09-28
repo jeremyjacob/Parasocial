@@ -54,7 +54,7 @@ parasocial/                      Bun workspaces monorepo
 │  ├─ viewer/       Three.js renderer, picking, selection, overlays, markup (framework-agnostic)
 │  ├─ sync/         Zero schema, custom mutators (shared by client, server and MCP), Svelte 5 adapter
 │  ├─ app/          SvelteKit: workspace UI plus server routes (mutators, auth, OAuth, blobs, MCP)
-│  ├─ engine-pool/  headless Chromium pool that runs the engine build for MCP and cache warming
+│  ├─ engine-pool/  sandboxed Deno processes that run the engine build for MCP and cache warming
 │  └─ mcp/          MCP tool definitions (hosted by the app server)
 ├─ deploy/          docker compose stack
 └─ examples/        reference parts; also the regression corpus and the source of empty-state art
@@ -67,7 +67,7 @@ parasocial/                      Bun workspaces monorepo
 | `postgres`    | All authored state. Logical replication on, for Zero                                                                                                                                    |
 | `zero-cache`  | Syncs Postgres to clients                                                                                                                                                               |
 | `app`         | SvelteKit, running on Bun. Serves the UI, runs mutators, handles passkeys and OAuth, hosts the MCP endpoint, and serves the engine page on a separate origin (second port or subdomain) |
-| `engine-pool` | Headless Chromium workers that run the same engine build. No network egress                                                                                                             |
+| `engine-pool` | Sandboxed Deno processes that run the same engine build. No network egress                                                                                                                |
 | `caddy`       | TLS and routing for the app and engine origins. Passkeys need HTTPS everywhere except `localhost`                                                                                       |
 | `storage`     | S3-compatible object storage for derived data and authored binaries. S3 or R2 when hosted; a bundled S3-compatible service or a filesystem adapter in compose                           |
 
@@ -78,10 +78,10 @@ parasocial/                      Bun workspaces monorepo
 There is **one engine build**, hosted in two places.
 
 - **In the browser**, the kernel runs in a Web Worker inside a sandboxed, cross-origin **engine iframe** (see §5, Sandboxing). It regenerates automatically on every change the human sees.
-- **On the server**, `engine-pool` runs the same build in headless Chromium for MCP calls: write results, `render`, `measure`, `describe_model`, and so on. MCP never depends on a browser tab being open.
+- **On the server**, `engine-pool` runs the same build in Deno for MCP calls: write results, `render` (WebGPU; Mesa's lavapipe on GPU-less hosts), `measure`, `describe_model`, and so on. MCP never depends on a browser tab being open.
 - **Why:** the same build with the same deterministic inputs means agents get exactly the geometry the human sees. We also avoid maintaining OCCT on both a server runtime and the browser.
 - **Isolation**, because this runs user code on our servers:
-    - Each document job gets its own Chromium process, with the Chromium sandbox on.
+    - Each document gets its own Deno process that may only read the engine build: no network, env, writes, subprocesses or FFI. (The loader's global shadowing is not a boundary; Deno's permissions are.)
     - Containers have no network egress.
     - Jobs have CPU, memory and wall-clock limits.
 
@@ -235,6 +235,11 @@ type NoteAnchor = {
         query?: string; // semantic query, if the entity was tagged
         point: [number, number, number]; // part-local fallback point on the surface
         normal?: [number, number, number];
+    } | {
+        kind: "studio";
+        studio: string; // studio script path, e.g. "studios/bracket.ts"
+        name: string; // display name at creation
+        point: [number, number, number]; // studio/world coordinates
     }>;
     camera: { position; target; up; fov; ortho: boolean };
     version: string; // document version the note was made on
@@ -245,7 +250,7 @@ type NoteAnchor = {
 };
 ```
 
-Notes anchor to geometry and parts, never to operations or params (they can still mention params). A note can target **any number of entities**, across parts. Feedback about a whole operation ("make the corner fillets bigger") targets its faces; the stable names already identify the operation that made them.
+Notes anchor to geometry, parts and studios, never to operations or params (they can still mention params). A note can target **any number of entities**, across parts. Feedback about a whole operation ("make the corner fillets bigger") targets its faces; the stable names already identify the operation that made them. Studio targets reference the studio script path, independently of its display name or current exports. They remain valid while that script exists; deleting it orphans the note, which can be reattached using a studio picker.
 
 Resolution on every regen:
 
@@ -263,8 +268,9 @@ Resolution on every regen:
 ### UX
 
 - **`C` enters note mode** (Figma convention). Click geometry to place a pin, or select first and then press `C` to note the selection. A note can target any number of entities, across parts. Shift/⌘-click, box select, or "Select all from this operation" builds the selection first.
+- **A studio's context menu adds a studio note.** Its pin uses studio coordinates, and hovering the thread highlights the studio's current parts or assembly instances.
 - **Pins sit in the viewport**, hide when their geometry is occluded, and cluster when zoomed out. Avatars distinguish the human from each agent.
-- **Threads live in a Notes tab** in the right panel. They can be filtered by status (including Removed), part or author. Hovering a thread highlights its geometry and shows its markup.
+- **Threads live in a Notes tab** in the right panel. They can be filtered by status (including Removed), studio or part, and author. Hovering a thread highlights its geometry and shows its markup.
 - **Completion replies are optional.** Agents resolve finished notes without boilerplate. When an agent does reply, it can link a version; clicking it opens compare (see §8 Compare).
 - **Notes can mention params** (`@thickness`) and parts (`#lid`), which render as chips.
 
@@ -279,7 +285,7 @@ Every tool takes a `document`. A session connected from a document's **Connect a
 | Tool                                                                                                                                          | Returns                                                                                                                                                                                                                                                                                                                        |
 | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `list_documents()` / `create_document(name)`                                                                                                  | documents the user can access                                                                                                                                                                                                                                                                                                  |
-| `list_notes(status?, part?)`                                                                                                                  | threads with markup and snapshot. Each target is described fully: entity type, stable name, the operation that made it (tag, operation type, source line), the helper call chain (`mountingHoles()` at `bracket.ts:30` → `lib/holes.ts:12`), key measurements (area/length, normal/radius), and the named neighbors it touches |
+| `list_notes(status?, part?, studio?)`                                                                                                                  | threads with markup and snapshot. Each target is described fully: entity type, stable name, the operation that made it (tag, operation type, source line), the helper call chain (`mountingHoles()` at `bracket.ts:30` → `lib/holes.ts:12`), key measurements (area/length, normal/radius), and the named neighbors it touches |
 | `get_note(id)` / `reply_to_note(id, text, version?, status?)`                                                                                 | thread operations; replies resolve by default and release the claim, with an explicit `Open` option for unfinished work or questions                                                                                                                                                                    |
 | `wait_for_notes(timeoutSeconds?)`                                                                                                             | long-poll: returns as soon as a human adds a note or replies on one the agent may work on (free, or held by this session), described like `list_notes` with the reason; `{ notes: [] }` at the timeout. The note mutators `pg_notify` on commit and the MCP server `LISTEN`s, so any app replica wakes the waiting session     |
 | `claim_note(id)` / `release_note(id)`                                                                                                         | claim a note for this session; fails with the holder's name if another session has it                                                                                                                                                                                                                                          |
@@ -595,7 +601,7 @@ M0 and M1 carry the risk. M2 doesn't depend on naming and can run alongside them
 | Script runtime      | Cross-origin engine iframe → Web Worker; esbuild-wasm                                                                                                                                                                                                                                                          | Frozen API, shadowed globals, seeded `Math.random`; source maps for provenance                                                                                      |
 | Auth                | Passkeys via SimpleWebAuthn; an OAuth 2.1 authorization server for MCP                                                                                                                                                                                                                                         | The OAuth server must support dynamic client registration and PKCE. Evaluate `oidc-provider`                                                                        |
 | MCP                 | `@modelcontextprotocol/sdk`, streamable HTTP                                                                                                                                                                                                                                                                   | Hosted in the SvelteKit server                                                                                                                                      |
-| Engine pool         | Playwright-driven headless Chromium                                                                                                                                                                                                                                                                            | Per-document processes, no egress, resource limits. Runs on Bun; if Playwright proves flaky under Bun, this one service falls back to Node (it's its own container) |
+| Engine pool         | Deno, one process per document                                                                                                                                                                                                                                                                                 | Per-document processes with no Deno permissions beyond reading the engine build, no egress, resource limits. The pool server runs on Bun; renders use WebGPU                                            |
 | Storage             | S3-compatible object storage                                                                                                                                                                                                                                                                                   | Content-addressed; signed URLs                                                                                                                                      |
 | Runtime and tooling | **Bun**: package manager, workspaces, runtime, scripts, and test runner                                                                                                                                                                                                                                        | `zero-cache` runs in its own upstream container, whatever its runtime                                                                                               |
 | Deploy              | docker compose                                                                                                                                                                                                                                                                                                 |                                                                                                                                                                     |
@@ -609,7 +615,7 @@ M0 and M1 carry the risk. M2 doesn't depend on naming and can run alongside them
 - **Iteration latency.** See the budgets in §9. Depends on the per-op cache, progressive meshing and warm engines. OCCT fillets and Booleans on complex parts may still blow the scrub budget; measure on the corpus early.
 - **WASM size and load time.** Measure in M0. Budget: < 15 MB compressed. Only the first visit pays for it; after that it's served from the service worker and the compiled-code cache.
 - **Browser/server parity.** Geometry must match exactly (same build, deterministic inputs). Renders from the pool use software GL, so they only need to be faithful, not pixel-identical to the user's GPU.
-- **Running user code on our servers.** The pool is a real attack surface. Mitigation: Chromium sandbox, per-document processes, no egress, resource limits.
+- **Running user code on our servers.** The pool is a real attack surface. Mitigation: Deno's permission sandbox, per-document processes, no egress, resource limits.
 - **Passkey-only accounts have no recovery beyond synced or extra passkeys.** Mitigation: prompt users to add a second passkey, say so clearly at sign-up, and make export easy.
 - **Passkeys are bound to the instance's domain.** Mitigation: fix the domain at install, document it, and use export/import for moves.
 - **We own the Zero Svelte adapter.** Small, but leaked subscriptions are the main bug risk. Mitigation: pin Zero, test subscription cleanup.

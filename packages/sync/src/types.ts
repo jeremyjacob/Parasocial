@@ -18,7 +18,8 @@ export type Stroke = {
   width?: number;
 };
 
-export type NoteTarget = {
+export type NoteTarget =
+  | {
     kind: "face" | "edge" | "vertex" | "part" | "point";
     name: string;
     query?: string;
@@ -26,7 +27,8 @@ export type NoteTarget = {
     studio?: never;
     point: Vec3;
     normal?: Vec3;
-  } | {
+  }
+  | {
     kind: "studio";
     /** Studio script path, independent of its current exports or display name. */
     studio: string;

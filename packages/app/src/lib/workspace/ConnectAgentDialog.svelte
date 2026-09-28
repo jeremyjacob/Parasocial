@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Copy, Check } from '@lucide/svelte';
+	import { Copy, Check, KeyRound } from '@lucide/svelte';
+	import { page } from '$app/state';
 	import { Dialog } from '$lib/components/ui/dialog';
 	import { Button, IconButton } from '$lib/components/ui/button';
 	import { Checkbox } from '$lib/components/ui/checkbox';
@@ -107,6 +108,12 @@
 					</div>
 				{/if}
 			</div>
+			{#if !page.data.agentConfigured}
+				<div class="flex items-center gap-3 border-t border-line-subtle pt-4" data-testid="connect-agent-builtin">
+					<p class="flex-1 text-label text-fg-secondary">No coding agent? Use the built-in agent with your own API key instead.</p>
+					<Button size="sm" variant="ghost" href="/settings#agent"><KeyRound size={14} /> Add API key</Button>
+				</div>
+			{/if}
 		</div>
 	</div>
 </Dialog>

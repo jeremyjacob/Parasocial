@@ -238,6 +238,15 @@ async function putBlob(content = crypto.randomUUID()) {
 }
 
 describe("notes", () => {
+  test("studio targets require a valid studio script path", async () => {
+    const documentID = await newDoc(db, ada);
+    const snapshot = await putBlob();
+    for (const studio of [undefined, "lib/model.ts", "studios/../model.ts", "studios/.hidden.ts"]) {
+      const invalid = { ...anchor(snapshot), targets: [{ kind: "studio", studio, name: "Model", point: [0, 0, 0] }] };
+      await expect(run(db, mutators.note.create({ id: crypto.randomUUID(), documentID, anchor: invalid as any }), { userID: ada })).rejects.toThrow();
+    }
+  });
+
   test("create requires the snapshot blob to exist and bumps its refcount", async () => {
     const doc = await newDoc(db, ada);
     const missing = await runMutator(db, mutators.note.create({ id: crypto.randomUUID(), documentID: doc, anchor: anchor("a".repeat(64)), text: "hi" }), { userID: ada });

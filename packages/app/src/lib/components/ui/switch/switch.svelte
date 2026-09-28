@@ -31,5 +31,5 @@
 			class="block size-3 rounded-full bg-white shadow-[0_1px_2px_rgb(0_0_0/0.2)] transition-transform duration-[var(--duration-base)] ease-spring data-[state=checked]:translate-x-3"
 		/>
 	</Switch.Root>
-	{#if label}<Label.Root for={sid} class="text-ui text-fg select-none">{label}</Label.Root>{/if}
+	{#if label}<Label.Root for={sid} class="truncate whitespace-nowrap text-ui text-fg select-none">{label}</Label.Root>{/if}
 </div>

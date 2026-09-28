@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
 // Viewer navigation from wheel input: notched wheels zoom, trackpads orbit/pan with two fingers and
-// zoom with a pinch, momentum doesn't coast an orbit, and overlays pass gestures through.
+// zoom with a pinch, momentum glides an orbit out briefly, and overlays pass gestures through.
 const viewerRoot = fileURLToPath(new URL("../../packages/viewer/", import.meta.url));
 
 async function setup(page: Page) {
@@ -45,12 +45,14 @@ async function setup(page: Page) {
       const len = Math.hypot(...d);
       return { dir: d.map((v: number) => v / len), dist: len, target: s.target };
     };
-    /** A trackpad-shaped wheel event: pixel deltas with the legacy wheelDelta at −3×delta. */
+    /** A trackpad-shaped wheel event: pixel deltas with the legacy wheelDelta at −3×delta, one per 60 Hz frame. */
+    let clock = performance.now();
     w.pad = (el: Element, dx: number, dy: number, mods: { shiftKey?: boolean; ctrlKey?: boolean } = {}) => {
       const r = el.getBoundingClientRect();
       const e = new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, ...mods });
       Object.defineProperty(e, "wheelDeltaX", { value: -3 * dx });
       Object.defineProperty(e, "wheelDeltaY", { value: -3 * dy });
+      Object.defineProperty(e, "timeStamp", { value: (clock += 1000 / 60) });
       el.dispatchEvent(e);
       return e.defaultPrevented;
     };
@@ -105,46 +107,59 @@ test("a pinch zooms 1:1 with the fingers", async ({ page }) => {
   expect(after / before).toBeLessThan(0.6);
 });
 
-test("momentum after a flick brakes an orbit and glides out; slowing down by hand still orbits", async ({ page }) => {
+test("momentum after a flick glides out without a brake; slowing down by hand still orbits", async ({ page }) => {
   await setup(page);
   const r = await page.evaluate(() => {
     const w = window as any;
     const canvas = w.viewer.canvas;
-    for (let i = 0; i < 8; i++) w.pad(canvas, -40, 0);
-    // the fingers lift: a smooth geometric decay
-    const mid = w.cam().dir;
-    for (let i = 1; i < 30; i++) w.pad(canvas, -Math.round(40 * 0.9 ** i), 0);
-    const coasted = angle(mid, w.cam().dir);
-    w.reset();
-    // macOS momentum proper: a slow ~4% decay per event from the release speed
-    for (let i = 0; i < 8; i++) w.pad(canvas, -40, 0);
-    const mid2 = w.cam().dir;
-    let late: number[] = [];
-    for (let i = 1; i < 80; i++) {
-      w.pad(canvas, -Math.round(40 * 0.96 ** i), 0);
-      if (i === 20) late = w.cam().dir;
-    }
-    const coastedSlow = angle(mid2, w.cam().dir);
-    const glide = angle(late, w.cam().dir);
+    const steps = (decay: number) => {
+      w.reset();
+      for (let i = 0; i < 8; i++) w.pad(canvas, -40, 0);
+      const out: number[] = [];
+      let prev = w.cam().dir;
+      for (let i = 1; i < 80; i++) {
+        w.pad(canvas, -Math.round(40 * decay ** i), 0);
+        const d = w.cam().dir;
+        out.push(angle(prev, d));
+        prev = d;
+      }
+      return out;
+    };
+    // the fingers lift: a fast geometric decay, and macOS momentum proper (~4% per frame)
+    const fast = steps(0.9);
+    const slow = steps(0.96);
     w.reset();
     // a hand slowing down wobbles in size and direction
     const wobble = [30, 26, 27, 21, 22, 16, 17, 12, 13, 9, 10, 7, 8, 5, 6];
     const start = w.cam().dir;
     for (const [i, m] of wobble.entries()) w.pad(canvas, -m, i % 2 ? 2 : -1);
-    return { coasted, coastedSlow, glide, byHand: angle(start, w.cam().dir) };
+    const byHand = angle(start, w.cam().dir);
+    // fingers back on the pad mid-glide take over again at full speed
+    for (let i = 0; i < 8; i++) w.pad(canvas, -40, 0);
+    for (let i = 1; i < 12; i++) w.pad(canvas, -Math.round(40 * 0.96 ** i), 0);
+    const before = w.cam().dir;
+    w.pad(canvas, 30, 0);
+    const pickup = angle(before, w.cam().dir);
+    return { fast, slow, byHand, pickup };
     function angle(a: number[], b: number[]) {
       return Math.acos(Math.min(1, a.reduce((s, v, i) => s + v * b[i], 0)));
     }
   });
-  // at most the first few momentum events land before the decay is recognized
-  console.log(r);
-  expect(r.coasted).toBeLessThan(0.2);
-  expect(r.coastedSlow).toBeLessThan(0.25);
-  // it glides out along the tail rather than stopping dead
-  expect(r.glide).toBeGreaterThan(0.002);
-  expect(r.glide).toBeLessThan(0.05);
-  // undamped this wobble orbits 1.49 rad; its decreasing steps are damped a little
-  expect(r.byHand).toBeGreaterThan(1.15);
+  const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
+  const full = 40 * 0.0065;
+  for (const s of [r.fast, r.slow]) {
+    // no brake: a steady exponential glide, never a sudden drop (the old damping fell 1 → 0.36 at release)
+    for (let i = 1; i < 12; i++) expect(s[i]).toBeGreaterThan(s[i - 1] * 0.6 - 1e-4);
+    // but it settles within a few hundred ms instead of macOS's ~1.5 s
+    expect(sum(s.slice(20))).toBeLessThan(0.01);
+  }
+  // a short glide: a few full-speed frames' worth, not the ~25 of an undamped macOS tail
+  expect(sum(r.slow)).toBeGreaterThan(full * 2);
+  expect(sum(r.slow)).toBeLessThan(full * 7);
+  // it isn't mistaken for momentum: undamped, this wobble turns the view 1.29 rad (1.49 rad of yaw)
+  expect(r.byHand).toBeGreaterThan(1.27);
+  // (yaw about Z turns the view by a bit less than the yaw angle: it looks down at the model)
+  expect(r.pickup).toBeGreaterThan(30 * 0.0065 * 0.75);
 });
 
 test("gestures over overlays navigate; scrollable overlays keep their scroll", async ({ page }) => {

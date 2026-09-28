@@ -49,8 +49,7 @@ async function host(kind: "browser" | "pool", search = "") {
     },
     clearTimeout(id: number) { timers.delete(id); },
   };
-  const path = kind === "browser" ? "../src/browser/page.ts" : "../../engine-pool/src/page.ts";
-  // Rendering is not exercised; no DOM/WebGL is needed for the pool's RPC lifecycle.
+  const path = kind === "browser" ? "../src/browser/page.ts" : "../../engine-pool/src/engine.ts";
   const source = readFileSync(new URL(path, import.meta.url), "utf8").replace(/^import .* from "(@parasocial\/viewer|\.\.\/protocol)";\n/gm, "");
   runInNewContext(transpiler.transformSync(source), context);
   const count = workers.length;

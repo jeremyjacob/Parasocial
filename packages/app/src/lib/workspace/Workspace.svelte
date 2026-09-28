@@ -42,10 +42,12 @@
 	import { clockTime } from '$lib/format';
 	import { rise, reveal } from '$lib/styles/motion';
 
-	let { documentID, zero, user }: { documentID: string; zero: ParasocialZero; user: { userID: string; name: string } } = $props();
+	let { documentID, zero, user, agentConfigured = false, mcpConnected = false }: { documentID: string; zero: ParasocialZero; user: { userID: string; name: string }; agentConfigured?: boolean; mcpConnected?: boolean } = $props();
 
 	const ws = new WorkspaceState({ documentID, zero, userID: user.userID });
 	ws.userName = user.name;
+	ws.agentConfigured = agentConfigured;
+	ws.mcpConnected = mcpConnected;
 	(globalThis as any).__ws = ws; // test hook
 
 	const docQ = useQuery(() => queries.documents.byID({ documentID }));

@@ -10,5 +10,5 @@
 </script>
 
 {#key data.id}
-	<Workspace documentID={data.id} {zero} user={data.user!} />
+	<Workspace documentID={data.id} {zero} user={data.user!} agentConfigured={data.agentConfigured} mcpConnected={data.mcpConnected} />
 {/key}

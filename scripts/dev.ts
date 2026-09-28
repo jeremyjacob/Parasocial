@@ -13,6 +13,8 @@ export const DEV_ENV = {
   APP_SECRET: "dev-secret-dev-secret-dev-secret-dev-secret",
   ZERO_API_KEY: "dev-zero-key",
   BLOB_DIR: join(root, ".data/blobs"),
+  // full agent tool calls and built-in agent runs, for debugging (packages/mcp/src/trace.ts)
+  AGENT_TRACE_DIR: join(root, ".data/agent-traces"),
   ZERO_CACHE_URL: "http://localhost:4848",
 };
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { Plus, Upload, FileBox, LoaderCircle, Pencil, Trash2, Bot } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Dialog, ConfirmDialog } from '$lib/components/ui/dialog';
@@ -12,6 +12,7 @@
 	import { queries, mutators, type ParasocialZero } from '@parasocial/sync';
 	import AppHeader from '$lib/components/app/app-header.svelte';
 	import HeroArt from '$lib/components/app/hero-art.svelte';
+	import AgentSetup from '$lib/components/app/agent-setup.svelte';
 	import { configureEngine, warmEngine } from '$lib/engine';
 	import { newID } from '$lib/zero';
 	import { relativeTime } from '$lib/format';
@@ -46,6 +47,7 @@
 	let examples = $state.raw<Example[]>([]);
 	let creating = $state(false);
 	let connectOpen = $state(false);
+	const agentReady = $derived(data.agentConfigured || data.mcpConnected);
 	let newOpen = $state(false);
 	let newName = $state('');
 	let importing = $state('');
@@ -183,7 +185,8 @@
 	}
 </script>
 
-<svelte:window onclick={(e) => { if (!(e.target as Element)?.closest?.('[role=option], [role=menu]')) selected = new Set(); }} />
+<!-- coming back from the terminal or the sign-in tab: recheck, so the setup card goes once an agent has signed in -->
+<svelte:window onfocus={() => !agentReady && invalidateAll()} onclick={(e) => { if (!(e.target as Element)?.closest?.('[role=option], [role=menu]')) selected = new Set(); }} />
 
 <svelte:head><title>Documents · Parasocial</title></svelte:head>
 
@@ -201,9 +204,14 @@
 			<section class="flex flex-col items-center pt-6 text-center" data-testid="empty-documents">
 				<HeroArt name="hero" fit="contain" class="relative h-[300px] w-full max-w-[640px]" />
 				<h1 class="mt-2 text-heading">Create your first document</h1>
-				<Button variant="primary" size="lg" class="mt-5" onclick={() => (newOpen = true)}><Plus size={14} /> New document</Button>
+				{#if agentReady}
+					<Button variant="primary" size="lg" class="mt-5" onclick={() => (newOpen = true)}><Plus size={14} /> New document</Button>
+				{:else}
+					<AgentSetup class="mt-6 w-full max-w-[720px]" onConnect={() => (connectOpen = true)} />
+				{/if}
 			</section>
 		{:else}
+			{#if !agentReady}<AgentSetup class="mb-8" onConnect={() => (connectOpen = true)} />{/if}
 			<h1 class="mb-4 text-title">Documents</h1>
 			<!-- Figma-style grid: click selects (⌘ toggles, ⇧ extends), double-click opens -->
 			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

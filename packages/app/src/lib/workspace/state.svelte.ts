@@ -32,6 +32,14 @@ export class WorkspaceState {
 	readonly zero: ParasocialZero;
 	readonly userID: string;
 	userName = '';
+	/** this user has a built-in agent provider set up (Settings) */
+	agentConfigured = false;
+	/** a coding agent (Claude Code, Codex, …) has signed in over MCP */
+	mcpConnected = false;
+	/** with neither, nothing can act on notes or build models */
+	get agentReady() {
+		return this.agentConfigured || this.mcpConnected;
+	}
 	engine: EngineClient | null = null;
 	viewer: Viewer | null = null;
 	/** Assemblies: joints, dragging, saved positions, interference. */

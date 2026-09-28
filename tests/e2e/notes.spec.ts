@@ -58,10 +58,10 @@ test.describe("notes", () => {
     await page.mouse.move(5, 5);
     await expect(page.getByTestId("pin-peek")).toHaveCount(0);
 
-    // reply in the thread (⌘↩)
+    // reply in the thread (↩ sends, ⇧↩ is a newline)
     const reply = card.getByRole("textbox", { name: "Reply" });
     await reply.fill("Agreed, 4 mm should do it");
-    await reply.press("Meta+Enter");
+    await reply.press("Enter");
     await expect(card).toContainText("Agreed, 4 mm should do it");
     await expect(reply).toHaveValue("");
     await expect.poll(() => wsEval<number>(page, "ws.notes[0].messages?.length ?? 0")).toBe(2);
@@ -71,6 +71,26 @@ test.describe("notes", () => {
     await expect.poll(() => wsEval<string>(page, "ws.notes[0].status")).toBe("Resolved");
     await expect(page.getByTestId("notes-panel").getByTestId("note-card")).toHaveCount(0);
     await expect(page.getByTestId("notes-panel")).toContainText("No notes match these filters.");
+  });
+
+  test("studio context menu creates a studio note that survives reload", async ({ page }) => {
+    const studio = page.locator('[data-studio="studios/bracket.ts"]');
+    await studio.getByText('Bracket', { exact: true }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Add note', exact: true }).click();
+    await expect(page.getByTestId('note-composer')).toContainText('Studio: Bracket');
+    await page.getByTestId('note-text').fill('Simplify this studio');
+    await page.getByTestId('note-post').click();
+    await expect(page.getByTestId('note-composer')).toHaveCount(0);
+    await expect.poll(() => wsEval<number>(page, 'ws.notes.length')).toBe(1);
+    expect(await wsEval<any>(page, 'ws.notes[0].anchor.targets')).toEqual([
+      { kind: 'studio', studio: 'studios/bracket.ts', name: 'Bracket', point: expect.any(Array) }
+    ]);
+    await expect(page.getByTestId('pin')).toHaveCount(1);
+    await expect(page.getByTestId('note-card')).toContainText('Studio');
+    await page.reload();
+    await expect.poll(() => wsEval<number>(page, 'ws?.notes?.length ?? 0')).toBe(1);
+    await expect(page.getByTestId('pin')).toHaveCount(1);
+    await expect.poll(async () => (await pins(page))[0]?.resolution).toBe('name');
   });
 
   test("pencil: strokes, the composer waits for a pause, then post", async ({ page }) => {

@@ -25,11 +25,27 @@
 	let { message, class: className }: { message: NoteMessageData; class?: string } = $props();
 	let logOpen = $state(false);
 	const isAgent = $derived(message.author.kind === 'agent');
+	// Agent replies run long: clamp them, offering the toggle only when the clamp actually cuts text
+	let bodyEl = $state<HTMLParagraphElement>();
+	let expanded = $state(false);
+	let overflows = $state(false);
+	$effect(() => {
+		if (!bodyEl || !isAgent) return;
+		const el = bodyEl;
+		void message.body; // re-measure as a streaming reply grows past the clamp (the box height stops changing then)
+		const measure = () => {
+			if (!expanded) overflows = el.scrollHeight > el.clientHeight + 1;
+		};
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
 </script>
 
 <article class={cn('flex gap-2.5', className)}>
 	<Avatar {...message.author} size={24} class="mt-0.5" />
-	<div class="flex min-w-0 flex-1 flex-col gap-1.5">
+	<div class="flex min-w-0 flex-1 flex-col gap-0">
 		<header class="flex h-5 min-w-0 items-baseline gap-1.5">
 			<span class="max-w-[70%] shrink-0 truncate text-ui font-semibold text-fg">{message.author.name}</span>
 			{#if message.detail || isAgent}<span class="min-w-0 truncate text-label text-fg-tertiary" title={message.detail}>{message.detail ?? 'Agent'}</span>{/if}
@@ -55,7 +71,7 @@
 				{/if}
 			</div>
 		{/if}
-		{#if message.body.length}<p class="text-body text-fg [overflow-wrap:anywhere]">
+		{#if message.body.length}<p bind:this={bodyEl} class={cn('text-body text-fg [overflow-wrap:anywhere]', isAgent && !expanded && 'line-clamp-4')}>
 			{#each message.body as seg, i (i)}{#if typeof seg === 'string'}{seg}{:else}<MentionChip
 						kind={seg.kind}
 						name={seg.name}
@@ -63,6 +79,16 @@
 						broken={seg.broken}
 					/>{/if}{/each}
 		</p>{/if}
+		{#if overflows}
+			<button
+				type="button"
+				aria-expanded={expanded}
+				onclick={() => (expanded = !expanded)}
+				class="-my-0.5 -ml-1 inline-flex h-6 w-fit items-center rounded-sm px-1 text-label text-fg-tertiary hover:text-fg-secondary focus-ring"
+			>
+				{expanded ? 'Show less' : 'Show more'}
+			</button>
+		{/if}
 		{#if message.version}
 			<VersionChip {...message.version} class="mt-0.5 w-full" />
 		{/if}

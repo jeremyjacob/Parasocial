@@ -75,8 +75,11 @@ async function pg(tx: Tx, text: string, params: unknown[] = []): Promise<Record<
 
 /** Postgres channel for note activity agents may need to act on (see NoteEvent). */
 export const NOTE_EVENTS_CHANNEL = "parasocial_note_events";
-/** Payload on NOTE_EVENTS_CHANNEL: a note was created, or a human replied on one. */
-export type NoteEvent = { documentID: string; noteID: string; kind: "created" | "reply" };
+/**
+ * Payload on NOTE_EVENTS_CHANNEL: a note was created, a human replied on one, a note was handed to
+ * the built-in agent, or a document's auto hand-off was switched on (no note).
+ */
+export type NoteEvent = { documentID: string; noteID: string | null; kind: "created" | "reply" | "assigned" | "auto-handoff" };
 
 /** Wakes MCP sessions waiting on the document. Delivered on commit, so rolled-back mutations never announce. */
 async function notifyNote(tx: Tx, event: NoteEvent) {
@@ -295,19 +298,22 @@ const snapshotOverride = paramKey.extend({ expression: z.string(), value: paramV
 const anchorSchema = z.object({
   targets: z
     .array(
-      z.discriminatedUnion("kind", [z.object({
-        kind: z.enum(["face", "edge", "vertex", "part", "point"]),
-        name: z.string(),
-        query: z.string().optional(),
-        part: z.string().optional(),
-        point: vec3,
-        normal: vec3.optional(),
-      }), z.object({
-        kind: z.literal("studio"),
-        studio: z.string().refine((path) => path.startsWith("studios/") && validateScriptPath(path) === null, "Invalid studio script path"),
-        name: z.string(),
-        point: vec3,
-      })]),
+      z.discriminatedUnion("kind", [
+        z.object({
+          kind: z.enum(["face", "edge", "vertex", "part", "point"]),
+          name: z.string(),
+          query: z.string().optional(),
+          part: z.string().optional(),
+          point: vec3,
+          normal: vec3.optional(),
+        }),
+        z.object({
+          kind: z.literal("studio"),
+          studio: z.string().refine((path) => path.startsWith("studios/") && validateScriptPath(path) === null, "Invalid studio script path"),
+          name: z.string(),
+          point: vec3,
+        }),
+      ]),
     )
     .min(1),
   camera: z.object({ position: vec3, target: vec3, up: vec3, fov: z.number(), ortho: z.boolean() }),
@@ -603,14 +609,30 @@ export const mutators = defineMutators({
         await authorize(tx, ctx, args.id, "editor");
         const doc = await need(tx, await tx.run(zql.documents.where("id", args.id).one()), "Document");
         if (!doc) return;
+        // settings.agent names whose provider pays for the built-in agent: only setAgentAutoHandoff writes it
+        const { agent: _agent, ...settings } = args.settings ?? {};
         await tx.mutate.documents.update({
           id: args.id,
           ...(args.units ? { units: args.units } : {}),
-          ...(args.settings ? { settings: { ...doc.settings, ...args.settings } } : {}),
+          ...(args.settings ? { settings: { ...doc.settings, ...settings } } : {}),
           updatedAt: Date.now(),
         });
       },
     ),
+
+    /**
+     * Auto hand-off: open notes go to the built-in agent without anyone handing them over. It runs
+     * as (and on the provider of) whoever switched it on, recorded server-side as settings.agent.runAs.
+     */
+    setAgentAutoHandoff: defineMutator(z.object({ id, enabled: z.boolean() }), async ({ tx, ctx, args }) => {
+      const c = await authorize(tx, ctx, args.id, "editor");
+      if (c.agentSessionID) fail("forbidden", "Only people can change agent hand-off");
+      const doc = await need(tx, await tx.run(zql.documents.where("id", args.id).one()), "Document");
+      if (!doc) return;
+      const agent = args.enabled ? { autoHandoff: true, runAs: c.userID } : { autoHandoff: false };
+      await tx.mutate.documents.update({ id: args.id, settings: { ...doc.settings, agent }, updatedAt: Date.now() });
+      if (args.enabled) await notifyNote(tx, { documentID: args.id, noteID: null, kind: "auto-handoff" });
+    }),
 
     /**
      * Where an assembly's joints were dragged to (`settings.poses[assembly][joint] = values`), or
@@ -1107,9 +1129,37 @@ export const mutators = defineMutators({
         id: note.id,
         claimedBy: null,
         status: note.status === "AgentWorking" ? "Open" : note.status,
+        // a person taking a note back also takes it off the built-in agent's list
+        ...(c.agentSessionID ? {} : { agentAssignedBy: null, agentAssignedAt: null }),
         updatedAt: Date.now(),
       });
       await setAgentStatus(tx, note.claimedBy, "idle", null);
+    }),
+
+    /**
+     * Hand a note to the built-in agent (it runs on your provider), or take it back. Taking it back
+     * releases the agent's claim, which stops a run in progress.
+     */
+    assignAgent: defineMutator(z.object({ noteID: id, assign: z.boolean() }), async ({ tx, ctx, args }) => {
+      const l = await loadNote(tx, ctx, args.noteID, "editor");
+      if (!l) return;
+      const { note, c } = l;
+      if (c.agentSessionID) fail("forbidden", "Only people can hand notes to the agent");
+      if (note.removedAt) fail("invalid", "This note was removed");
+      const now = Date.now();
+      if (args.assign) {
+        if (note.claimedBy) {
+          const holder = await holderName(tx, note.claimedBy);
+          fail("claimed", `Claimed by ${holder.name}`, { holder });
+        }
+        await tx.mutate.notes.update({ id: note.id, agentAssignedBy: c.userID, agentAssignedAt: now, status: "Open", updatedAt: now });
+        await notifyNote(tx, { documentID: note.documentID, noteID: note.id, kind: "assigned" });
+        return;
+      }
+      const holder = note.claimedBy ? await tx.run(zql.agentSessions.where("id", note.claimedBy).one()) : undefined;
+      const release = holder?.builtin ? { claimedBy: null, status: note.status === "AgentWorking" ? ("Open" as const) : note.status } : {};
+      await tx.mutate.notes.update({ id: note.id, agentAssignedBy: null, agentAssignedAt: null, ...release, updatedAt: now });
+      if (holder?.builtin) await setAgentStatus(tx, holder.id, "idle", null);
     }),
 
     /** set_note_status. AgentWorking is only entered through claim; any other status releases the claim. */

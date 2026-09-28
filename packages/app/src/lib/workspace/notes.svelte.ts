@@ -48,14 +48,19 @@ export class NotesController {
 	}
 
 	// ---------- drafting ----------
-	startFromStudio(file: string) {
+	private studioTarget(file: string): StudioDraftTarget | null {
 		const ws = this.ws;
-		if (ws.dirty.length) return toast('Save to add notes');
-		if (!ws.viewer || !ws.partTree.some((g) => g.file === file)) return;
+		if (!ws.viewer || !ws.partTree.some((g) => g.file === file)) return null;
 		ws.setActiveStudio(file);
 		const bounds = ws.viewer.bounds();
 		const center = bounds.isEmpty() ? new Vector3(...ws.viewer.cameraState().target) : bounds.getCenter(new Vector3());
-		this.startFromTargets([{ ref: { kind: 'studio', studio: file }, point: center.toArray() as Vec3 }], ws.viewer.project(center) ?? { x: 200, y: 200 });
+		return { ref: { kind: 'studio', studio: file }, point: center.toArray() as Vec3 };
+	}
+
+	startFromStudio(file: string) {
+		if (this.ws.dirty.length) return toast('Save to add notes');
+		const target = this.studioTarget(file);
+		if (target) this.startFromTargets([target], this.ws.viewer!.project(new Vector3(...target.point)) ?? { x: 200, y: 200 });
 	}
 
 	startFromTargets(targets: Draft['targets'], screen: { x: number; y: number }, text?: string) {
@@ -103,14 +108,7 @@ export class NotesController {
 		this.posting = true;
 		try {
 			// names for the targets (stable names are how notes find their geometry again)
-			const targets = await Promise.all(
-				d.targets.map(async (t): Promise<NoteTarget> => {
-					const r = t.ref;
-					if (r.kind === 'studio') return { kind: 'studio', studio: r.studio, name: this.ws.partTree.find((g) => g.file === r.studio)?.name ?? r.studio, point: t.point };
-					const name = await this.targetName(r);
-					return { kind: r.kind, part: r.part, name, point: t.point, normal: 'normal' in t ? t.normal : undefined };
-				})
-			);
+			const targets = await Promise.all(d.targets.map((t) => this.anchorTarget(t)));
 			// snapshot of the view (with markup) → upload first, then reference (§3)
 			const blob = await ws.viewer.snapshot('image/webp', 0.85);
 			const up = await fetch(`/api/blobs?document=${encodeURIComponent(ws.documentID)}`, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/webp' } });
@@ -139,6 +137,13 @@ export class NotesController {
 		}
 	}
 
+	private async anchorTarget(t: Draft['targets'][number]): Promise<NoteTarget> {
+		const r = t.ref;
+		if (r.kind === 'studio') return { kind: 'studio', studio: r.studio, name: this.ws.partTree.find((g) => g.file === r.studio)?.name ?? r.studio, point: t.point };
+		const name = await this.targetName(r);
+		return { kind: r.kind, part: r.part, name, point: t.point, normal: 'normal' in t ? t.normal : undefined };
+	}
+
 	/** Names belong to the displayed mesh, which may be available before the engine boots. */
 	private async targetName(ref: DraftTarget['ref']): Promise<string> {
 		if (ref.kind === 'part') return ref.part;
@@ -149,14 +154,18 @@ export class NotesController {
 		return (await this.ws.engine.describe(ref.part, ref.kind, ref.index)).name;
 	}
 
-	/** Re-anchor an orphaned note to a newly picked entity. */
-	async reanchor(noteID: string, t: DraftTarget) {
+	async reanchorStudio(noteID: string, file: string) {
+		if (this.ws.dirty.length) return toast('Save to reattach notes');
+		const target = this.studioTarget(file);
+		if (target) await this.reanchor(noteID, target);
+	}
+
+	/** Re-anchor an orphaned note to a newly picked target. */
+	async reanchor(noteID: string, t: Draft['targets'][number]) {
 		const ws = this.ws;
 		const n = ws.notes.find((x) => x.id === noteID);
 		if (!n) return;
-		const r = t.ref;
-		const name = await this.targetName(r);
-		const anchor = { ...n.anchor, targets: [{ kind: r.kind, part: r.part, name, point: t.point, normal: t.normal }] };
+		const anchor = { ...n.anchor, targets: [await this.anchorTarget(t)] };
 		const { snapshot: _s, ...rest } = anchor as any;
 		await ws.mutate(mutators.note.reanchor({ noteID, anchor: rest } as any), 'Re-anchor note');
 		this.reanchoring = null;
@@ -175,6 +184,10 @@ export class NotesController {
 	}
 	restore(noteID: string) {
 		return this.ws.mutate(mutators.note.restore({ noteID }), 'Restore note');
+	}
+	/** Hand a note to the built-in agent (runs on your provider), or take it back (stops a run). */
+	assignAgent(noteID: string, assign: boolean) {
+		return this.ws.mutate(mutators.note.assignAgent({ noteID, assign }), assign ? 'Hand to agent' : 'Take back from agent');
 	}
 
 	// ---------- resolution (every regeneration) ----------

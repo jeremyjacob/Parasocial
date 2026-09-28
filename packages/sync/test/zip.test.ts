@@ -41,7 +41,10 @@ async function seedDoc() {
     documentID: doc,
     text: "wall too thin",
     anchor: {
-      targets: [{ kind: "face", name: "bracket/extrude1 · side · sketch1/line3", point: [1, 2, 3], normal: [0, 1, 0] }],
+      targets: [
+        { kind: "face", name: "bracket/extrude1 · side · sketch1/line3", point: [1, 2, 3], normal: [0, 1, 0] },
+        { kind: "studio", studio: "studios/bracket.ts", name: "Bracket", point: [0, 0, 0] },
+      ],
       camera: { position: [100, 100, 100], target: [0, 0, 0], up: [0, 0, 1], fov: 40, ortho: true },
       version: "v3",
       configuration: "M3",

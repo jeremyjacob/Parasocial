@@ -49,7 +49,7 @@
 				></textarea>
 				<IconButton
 					label="Send"
-					shortcut={['mod', 'enter']}
+					shortcut={['enter']}
 					variant={reply ? 'accent' : 'ghost'}
 					active={!!reply}
 					size="sm"

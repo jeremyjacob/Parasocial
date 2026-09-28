@@ -105,13 +105,15 @@ services:
     restart: unless-stopped
     networks: [backend, edge, engine]
 
-  # STUB — see deploy/engine-pool/Dockerfile. Real service lands in M5
-  # (Playwright-driven headless Chromium running the engine build).
+  # Runs scripts for MCP calls: one sandboxed Deno process per active document
+  # (see deploy/engine-pool.Dockerfile).
   engine-pool:
     build:
-      context: ./engine-pool
+      context: ..
+      dockerfile: deploy/engine-pool.Dockerfile
     environment:
-      PORT: "4000"
+      POOL_HOST: 0.0.0.0
+      POOL_PORT: "4000"
     restart: unless-stopped
     networks: [engine] # internal: no egress, no route to postgres or storage
 

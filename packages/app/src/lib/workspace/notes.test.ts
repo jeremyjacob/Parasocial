@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { Box3, Vector3 } from 'three';
 import type { Note, ParasocialZero, Script } from '@parasocial/sync';
 import type { Viewer } from '@parasocial/viewer';
 import type { PartResult } from '@parasocial/runtime/protocol';
 import Harness from '$lib/test/harness.svelte';
 import NoteComposer from './NoteComposer.svelte';
+import NoteCard from './NoteCard.svelte';
 import { NotesController } from './notes.svelte';
 import { WorkspaceState } from './state.svelte';
 
@@ -49,6 +50,7 @@ describe('studio notes', () => {
 		const ui = render(Harness, { props: { component: NoteComposer, props: { ws, nc } } });
 		expect(ui.getByText('Studio: Model')).toBeTruthy();
 		expect(nc.draft?.targets).toEqual([{ ref: { kind: 'studio', studio: file }, point: [5, 10, 15] }]);
+		ui.unmount();
 		expect(await nc.post('Simplify the housing')).toBe(true);
 		expect((mutate.mock.calls[0][0].args as any).anchor.targets).toEqual(note.anchor.targets);
 	});
@@ -85,6 +87,18 @@ describe('studio notes', () => {
 		vi.spyOn(ws.viewer!, 'bounds').mockReturnValue(new Box3());
 		nc.startFromStudio(file);
 		expect(nc.draft?.targets[0].point).toEqual(camera.target);
+	});
+
+	it('reattaches an orphaned studio note by choosing a studio, preserving its scope', async () => {
+		const { ws, nc, note } = setup();
+		const orphan: Note = { ...note, orphaned: true, anchor: { ...note.anchor, targets: [{ kind: 'studio', studio: 'studios/deleted.ts', name: 'Deleted', point: [0, 0, 0] }] } };
+		ws.notes = [orphan];
+		const mutate = vi.spyOn(ws, 'mutate').mockResolvedValue({} as any);
+		const ui = render(Harness, { props: { component: NoteCard, props: { ws, nc, note: orphan, onfocus: vi.fn(), onversion: vi.fn() } } });
+		await fireEvent.click(ui.getByRole('button', { name: 'Reattach' }));
+		await fireEvent.click(ui.getByRole('menuitem', { name: 'Model' }));
+		await vi.waitFor(() => expect(mutate).toHaveBeenCalledOnce());
+		expect((mutate.mock.calls[0][0].args as any).anchor.targets).toEqual(note.anchor.targets);
 	});
 
 	it('labels multiple whole-part targets without undefined', () => {

@@ -10,6 +10,7 @@ import type { PoolClient } from "@parasocial/engine-pool/client";
 import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
 import { NoteCursor, type NoteEvents } from "./note-events";
 import { documentContext } from "./document-context";
+import { trace } from "./trace";
 
 export type Session = {
   id: string;
@@ -218,20 +219,28 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs", ttlSeconds: 3600 });
   }
 
-  /** Wrap a tool: rate limit, error shaping, last-seen. */
+  // every call in full, for debugging (off unless AGENT_TRACE_DIR is set)
+  const traceCall = trace(`tools-${s.id}`);
+
+  /** Wrap a tool: rate limit, error shaping, last-seen, trace. */
   function tool<S extends z.ZodRawShape>(name: string, description: string, shape: S, fn: (a: z.infer<z.ZodObject<S>>, extra: Extra) => Promise<ToolResult>, annotations?: Record<string, boolean>) {
     server.registerTool(name, { description, inputSchema: shape as any, annotations }, (async (args: any, extra: Extra) => {
       const now = Date.now();
       s.calls = s.calls.filter((t) => now - t < 60_000);
       if (s.calls.length >= LIMIT_PER_MIN) return { isError: true, content: [{ type: "text", text: "Rate limit: too many calls this minute. Slow down and batch work." }] };
       s.calls.push(now);
+      let result: ToolResult;
+      let thrown: unknown;
       try {
-        return await fn(args, extra);
+        result = await fn(args, extra);
       } catch (e) {
+        thrown = e;
         const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
-        return { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data, null, 2)}` : msg }] };
+        result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data, null, 2)}` : msg }] };
       }
+      traceCall({ session: s.id, client: s.clientName, label: s.label, document: s.defaultDocument, tool: name, args, ms: Date.now() - now, isError: !!result.isError, result: result.content, ...(thrown && !(thrown instanceof ToolError) ? { exception: thrown } : {}) });
+      return result;
     }) as any);
   }
 
@@ -365,7 +374,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "reply_to_note",
-    "Reply on a note thread and resolve it by default after completing and verifying the work. Links the version you created (default: your latest write) and releases your claim. Use Open for unfinished work or questions.",
+    "Reply on a note thread and resolve it by default after completing and verifying the work. Links the version you created (default: your latest write) and releases your claim. Use Open for unfinished work or questions. Keep the text short (one to three sentences): what changed or what you need, not a recap of the work.",
     { document, id: z.string(), text: z.string().min(1), version: z.string().optional().describe("version id to link (default: your latest)"), status: z.enum(["Resolved", "Open"]).optional().describe("default Resolved; Open for unfinished work or questions") },
     async ({ document: dd, id, text: body, version, status }) => {
       const documentID = docID(dd);

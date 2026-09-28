@@ -6,38 +6,41 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { mutators } from "@parasocial/sync";
 import { runMutator, type Db, type BlobStore } from "@parasocial/sync/server";
 import { PoolClient } from "@parasocial/engine-pool/client";
-import { registerTools, type Session } from "./tools";
+import { registerTools, type Session, type ToolDeps } from "./tools";
 import { INSTRUCTIONS } from "./instructions";
 import { createOAuth, type OAuth } from "./oauth";
 import { API_DTS, EXAMPLES } from "./resources";
-import { createNoteEvents } from "./note-events";
+import { createNoteEvents, type NoteEvents } from "./note-events";
 import { documentContext, DOCUMENT_GUIDANCE } from "./document-context";
 
-export type McpDeps = { db: Db; store: BlobStore; config: { appOrigin: string; secret: string }; pool?: PoolClient };
+export type McpDeps = { db: Db; store: BlobStore; config: { appOrigin: string; secret: string }; pool?: PoolClient; noteEvents?: NoteEvents };
 
 type Live = { transport: WebStandardStreamableHTTPServerTransport; server: McpServer; session: Session; userID: string };
+
+/** One agent session's MCP server: its tools, instructions and resources. MCP connections and the built-in agent both use it. */
+export async function createSessionServer(session: Session, deps: ToolDeps) {
+  const context = await documentContext(deps.db, session.userID, deps.config.appOrigin);
+  const instructions = `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
+  const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions, capabilities: { tools: {}, resources: {} } });
+  registerTools(server, session, deps);
+  server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}`, mimeType: "text/markdown" }] }));
+  server.registerResource("api-types", "parasocial://api/parasocial.d.ts", { title: "Modeling API types (parasocial)", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
+  server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
+  server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
+    const id = session.defaultDocument;
+    const [d] = id ? await deps.db.sql`SELECT id, name, units, settings FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${session.userID} WHERE d.id = ${id}` : [];
+    return { contents: [{ uri: uri.href, text: JSON.stringify(d ?? { note: "No default document for this session" }, null, 2), mimeType: "application/json" }] };
+  });
+  return server;
+}
 
 export function createMcp(deps: McpDeps) {
   const oauth: OAuth = createOAuth({ db: deps.db, config: deps.config });
   const pool = deps.pool ?? new PoolClient();
   const live = new Map<string, Live>();
-  const noteEvents = createNoteEvents(deps.db);
+  const noteEvents = deps.noteEvents ?? createNoteEvents(deps.db);
 
-  async function buildServer(session: Session) {
-    const context = await documentContext(deps.db, session.userID, deps.config.appOrigin);
-    const instructions = `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
-    const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions, capabilities: { tools: {}, resources: {} } });
-    registerTools(server, session, { db: deps.db, pool, store: deps.store, noteEvents, config: deps.config });
-    server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}`, mimeType: "text/markdown" }] }));
-    server.registerResource("api-types", "parasocial://api/parasocial.d.ts", { title: "Modeling API types (parasocial)", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
-    server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
-    server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
-      const id = session.defaultDocument;
-      const [d] = id ? await deps.db.sql`SELECT id, name, units, settings FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${session.userID} WHERE d.id = ${id}` : [];
-      return { contents: [{ uri: uri.href, text: JSON.stringify(d ?? { note: "No default document for this session" }, null, 2), mimeType: "application/json" }] };
-    });
-    return server;
-  }
+  const buildServer = (session: Session) => createSessionServer(session, { db: deps.db, pool, store: deps.store, noteEvents, config: deps.config });
 
   /** POST/GET/DELETE /mcp */
   async function handle(req: Request): Promise<Response> {
@@ -120,7 +123,7 @@ export function createMcp(deps: McpDeps) {
   }, 60_000);
   (sweep as any).unref?.();
 
-  return { handle, oauth, sessions: () => live.size };
+  return { handle, oauth, sessions: () => live.size, pool, noteEvents };
 }
 
 export type Mcp = ReturnType<typeof createMcp>;

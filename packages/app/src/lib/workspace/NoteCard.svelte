@@ -1,15 +1,16 @@
 <script lang="ts">
-	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink } from '@lucide/svelte';
+	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink, Bot, Hand } from '@lucide/svelte';
 	import { NoteMessage, NoteStatusChip, type NoteMessageData, type NoteSegment, type NoteStatus } from '$lib/components/ui/notes';
 	import { IconButton, Button } from '$lib/components/ui/button';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { relativeTime } from '$lib/format';
+	import { toast } from '$lib/components/ui/toast';
 	import { rise } from '$lib/styles/motion';
 	import type { Note, NoteMessage as Msg } from '@parasocial/sync';
 	import type { WorkspaceState } from './state.svelte';
-	import type { NotesController, Pin } from './notes.svelte';
+	import type { NotesController } from './notes.svelte';
 
-	let { ws, nc, note, pin, onfocus, onversion }: { ws: WorkspaceState; nc: NotesController; note: Note & { messages?: Msg[] }; pin?: Pin; onfocus: () => void; onversion: (versionID: string) => void } = $props();
+	let { ws, nc, note, onfocus, onversion }: { ws: WorkspaceState; nc: NotesController; note: Note & { messages?: Msg[] }; onfocus: () => void; onversion: (versionID: string) => void } = $props();
 	let reply = $state('');
 
 	const status = $derived<NoteStatus>(note.orphaned ? 'orphaned' : note.status === 'Open' ? 'open' : note.status === 'AgentWorking' ? 'working' : 'resolved');
@@ -70,8 +71,23 @@
 		return out;
 	});
 
+	// handed to the built-in agent: stays with it (a reply puts it back to work) until someone takes it back
+	const withAgent = $derived(!!note.agentAssignedBy && !resolved && !note.removedAt);
+	const agentEntry = $derived<MenuEntry[]>(
+		note.removedAt || resolved
+			? []
+			: note.agentAssignedBy
+				? [{ label: 'Take back from agent', icon: Hand, onSelect: () => nc.assignAgent(note.id, false) }]
+				: [{ label: 'Hand to agent', icon: Bot, disabled: !!note.claimedBy, onSelect: handToAgent }]
+	);
+	function handToAgent() {
+		if (!ws.agentConfigured) return toast.error('Add an API key to use the built-in agent', { action: { label: 'Settings', onClick: () => (location.href = '/settings#agent') } });
+		nc.assignAgent(note.id, true);
+	}
+
 	const menu = $derived<MenuEntry[]>([
 		{ label: 'Show in viewport', icon: Crosshair, onSelect: onfocus },
+		...agentEntry,
 		{ type: 'separator' },
 		note.removedAt ? { label: 'Restore', icon: Undo2, onSelect: () => nc.restore(note.id) } : { label: 'Remove', icon: Trash2, destructive: true, onSelect: () => nc.remove(note.id) }
 	]);
@@ -98,7 +114,7 @@
 				<span class="truncate text-fg-tertiary">{kind}</span>
 			</span>
 		</button>
-		<span class="shrink-0 text-label text-fg-tertiary tabular-nums">Note #{pin?.number ?? nc.numberOf(note.id)}</span>
+		{#if withAgent && status !== 'working'}<span class="flex shrink-0 items-center text-fg-tertiary" title="With the agent: it picks this up, and again after your replies"><Bot size={14} /></span>{/if}
 		<!-- "Open" is the default: only call out the states worth noticing -->
 		{#if status !== 'open' && !(resolved && !note.removedAt)}<NoteStatusChip {status} label={claimant ? `${claimant.clientName} working` : undefined} class="shrink-0" />{/if}
 		{#if !note.removedAt}
@@ -120,7 +136,16 @@
 	</header>
 	{#if note.orphaned}
 		<div class="flex items-center gap-2 border-b border-line-subtle bg-error-subtle px-3 py-2 text-label text-error">
-			<Unlink size={12} /> {t0?.kind === 'studio' ? "Can't find its studio." : "Can't find its geometry."} <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click the model…' : 'Reattach'}</Button>
+			<Unlink size={12} /> {t0?.kind === 'studio' ? "Can't find its studio." : "Can't find its geometry."}
+			{#if t0?.kind === 'studio'}
+				<div class="ml-auto">
+					<DropdownMenu items={ws.partTree.map((g) => ({ label: g.name, onSelect: () => nc.reanchorStudio(note.id, g.file) }))}>
+						{#snippet trigger(props)}<Button {...props} variant="ghost" size="sm" disabled={!ws.partTree.length}>Reattach</Button>{/snippet}
+					</DropdownMenu>
+				</div>
+			{:else}
+				<Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click the model…' : 'Reattach'}</Button>
+			{/if}
 		</div>
 	{/if}
 	<div class="flex flex-col gap-4 px-3 py-3">
@@ -135,10 +160,10 @@
 					rows="1"
 					placeholder="Reply…"
 					aria-label="Reply"
-					onkeydown={(e) => (e.key === 'Enter' && (e.metaKey || e.ctrlKey) ? (e.preventDefault(), send()) : e.key === 'Escape' && (e.currentTarget as HTMLElement).blur())}
+					onkeydown={(e) => (e.key === 'Enter' && !e.shiftKey && !e.isComposing ? (e.preventDefault(), send()) : e.key === 'Escape' && (e.currentTarget as HTMLElement).blur())}
 					class="field-sizing-content max-h-32 min-h-6 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary"
 				></textarea>
-				<IconButton label="Send" shortcut={['mod', 'enter']} variant={reply ? 'accent' : 'ghost'} active={!!reply} size="sm" disabled={!reply} class="rounded-full" onclick={send}><ArrowUp /></IconButton>
+				<IconButton label="Send" shortcut={['enter']} variant={reply ? 'accent' : 'ghost'} active={!!reply} size="sm" disabled={!reply} class="rounded-full" onclick={send}><ArrowUp /></IconButton>
 			</div>
 		</div>
 	{/if}

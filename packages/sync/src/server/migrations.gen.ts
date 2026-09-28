@@ -23,5 +23,9 @@ export const MIGRATIONS: readonly (readonly [name: string, sql: string])[] = [
  [
   "0006_drop_awaiting_review.sql",
   "-- Notes no longer have a review state: once the agent marks a note done, it's done.\nUPDATE notes SET status = 'Resolved' WHERE status = 'AwaitingReview';\nALTER TABLE notes DROP CONSTRAINT notes_status_check;\nALTER TABLE notes ADD CONSTRAINT notes_status_check CHECK (status IN ('Open', 'AgentWorking', 'Resolved'));\n"
+ ],
+ [
+  "0007_builtin_agent.sql",
+  "-- Built-in agent: runs inside the app server on the user's own model provider, and works notes\n-- handed to it (one at a time per document) through the same tools and mutators as MCP agents.\n\n-- server-only. One provider per user; the key is sealed with APP_SECRET (AES-GCM) and never\n-- leaves the server.\nCREATE TABLE user_agent_settings (\n  user_id       text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,\n  provider      text NOT NULL CHECK (provider IN ('anthropic', 'openai', 'google', 'openai-compatible')),\n  model         text NOT NULL CHECK (length(model) BETWEEN 1 AND 200),\n  base_url      text,\n  api_key_enc   text,                              -- base64(iv || ciphertext)\n  api_key_hint  text,                              -- last 4 characters, for display\n  updated_at    timestamptz NOT NULL DEFAULT now()\n);\n\n-- Sessions the app runs itself (not an MCP connection).\nALTER TABLE agent_sessions ADD COLUMN builtin boolean NOT NULL DEFAULT false;\n\n-- Handed to the built-in agent by this user (it runs on their provider). Kept until a human takes\n-- the note back, so a follow-up reply puts the agent back to work. agent_assigned_at counts as\n-- human activity: handing a note over again re-runs it.\nALTER TABLE notes ADD COLUMN agent_assigned_by text REFERENCES users(id) ON DELETE SET NULL;\nALTER TABLE notes ADD COLUMN agent_assigned_at timestamptz;\n"
  ]
 ];
