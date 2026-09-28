@@ -975,7 +975,8 @@ export const mutators = defineMutators({
     /**
      * Creates a note. The snapshot blob must already be uploaded (upload first,
      * then reference). Draft strokes (`strokeIDs`) are attached; `strokes` are
-     * inserted attached.
+     * inserted attached. `assignAgent` hands it to the built-in agent in the same transaction, so
+     * the agent can't claim it in between (a separate assignAgent would clobber the claim's status).
      */
     create: defineMutator(
       z.object({
@@ -986,9 +987,11 @@ export const mutators = defineMutators({
         messageID: id.optional(),
         strokeIDs: z.array(id).default([]),
         strokes: z.array(strokeInput).default([]),
+        assignAgent: z.boolean().default(false),
       }),
       async ({ tx, ctx, args }) => {
-        const c = await authorize(tx, ctx, args.documentID, "viewer");
+        const c = await authorize(tx, ctx, args.documentID, args.assignAgent ? "editor" : "viewer");
+        if (args.assignAgent && c.agentSessionID) fail("forbidden", "Only people can hand notes to the agent");
         const hash = args.anchor.snapshot;
         if (!SHA256_RE.test(hash)) fail("invalid", "anchor.snapshot must be a sha256 blob hash");
         if (isServer(tx)) {
@@ -1008,6 +1011,7 @@ export const mutators = defineMutators({
           status: "Open",
           orphaned: false,
           claimedBy: null,
+          ...(args.assignAgent ? { agentAssignedBy: c.userID, agentAssignedAt: now } : {}),
           removedAt: null,
           createdAt: now,
           updatedAt: now,
@@ -1157,7 +1161,9 @@ export const mutators = defineMutators({
           const holder = await holderName(tx, note.claimedBy);
           fail("claimed", `Claimed by ${holder.name}`, { holder });
         }
-        await tx.mutate.notes.update({ id: note.id, agentAssignedBy: c.userID, agentAssignedAt: now, status: "Open", updatedAt: now });
+        // only reopens a resolved note: never overwrite AgentWorking from a claim that raced in
+        const reopen = note.status === "Resolved" ? { status: "Open" as const } : {};
+        await tx.mutate.notes.update({ id: note.id, agentAssignedBy: c.userID, agentAssignedAt: now, ...reopen, updatedAt: now });
         await notifyNote(tx, { documentID: note.documentID, noteID: note.id, kind: "assigned" });
         return;
       }

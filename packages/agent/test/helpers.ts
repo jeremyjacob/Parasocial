@@ -13,12 +13,12 @@ export function toolDeps(db: TestDb): ToolDeps {
   return { db, pool: new PoolClient(), store: new FsBlobStore(tmpdir()), noteEvents: createNoteEvents(db), config: { appOrigin: "http://localhost", secret: SECRET } };
 }
 
-export async function newNote(db: TestDb, userID: string, documentID: string, text = "Make it thicker") {
+export async function newNote(db: TestDb, userID: string, documentID: string, text = "Make it thicker", assignAgent = false) {
   const noteID = crypto.randomUUID();
   const snapshot = await sha256Hex(`snapshot:${noteID}`);
   await db.sql`INSERT INTO blobs (hash, size, content_type) VALUES (${snapshot}, 8, 'image/png') ON CONFLICT DO NOTHING`;
   await run(db, mutators.note.create({
-    id: noteID, documentID, text,
+    id: noteID, documentID, text, assignAgent,
     anchor: {
       targets: [{ kind: "point", name: "point", point: [0, 0, 0] }],
       camera: { position: [10, 10, 10], target: [0, 0, 0], up: [0, 0, 1], fov: 45, ortho: false },

@@ -131,6 +131,15 @@ test("taking a note back releases the built-in agent's claim; agents can't hand 
   expect(m).toMatchObject({ claimed_by: null, agent_assigned_by: null });
 });
 
+test("a note can be created already handed to the agent", async () => {
+  const ada = await createUser(db);
+  const documentID = await newDoc(db, ada);
+  const noteID = await newNote(db, ada, documentID, "Build a Pi case", true);
+  const [n] = await db.sql`SELECT status, agent_assigned_by FROM notes WHERE id = ${noteID}`;
+  expect(n).toMatchObject({ status: "Open", agent_assigned_by: ada });
+  await run(db, mutators.note.remove({ noteID }), { userID: ada });
+});
+
 test("runs interrupted by a restart are given back and picked up again", async () => {
   const ada = await createUser(db);
   const documentID = await newDoc(db, ada);

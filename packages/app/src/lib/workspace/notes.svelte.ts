@@ -131,15 +131,14 @@ export class NotesController {
 		await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 		const target = this.studioTarget(file);
 		if (!target) throw new Error("Couldn't open the new studio. Try again.");
-		const id = await this.create([target], text, []);
-		await this.assignAgent(id, true).then((r) => r.client);
+		const id = await this.create([target], text, [], true);
 		this.active = id;
 		ws.rightTab = 'notes';
 		return id;
 	}
 
 	/** Names the targets, uploads the view snapshot (upload first, then reference: §3), creates the note. */
-	private async create(targets: Draft['targets'], text: string, strokeIDs: string[]) {
+	private async create(targets: Draft['targets'], text: string, strokeIDs: string[], assignAgent = false) {
 		const ws = this.ws;
 		const viewer = ws.viewer!;
 		// names for the targets (stable names are how notes find their geometry again)
@@ -158,7 +157,7 @@ export class NotesController {
 			sectionPlane: viewer.getSection() ?? undefined,
 			snapshot: hash
 		};
-		await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs } as any), 'Add note').then((r) => r.client);
+		await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs, assignAgent } as any), 'Add note').then((r) => r.client);
 		return id;
 	}
 
