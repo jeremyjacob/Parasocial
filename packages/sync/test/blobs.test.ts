@@ -144,6 +144,40 @@ describe("refcount sweep", () => {
   });
 });
 
+describe("images pasted into messages", () => {
+  test("referenced by note.create and note.reply, signed for the document, kept by the sweep", async () => {
+    const doc = await newDoc(db, ada);
+    const snap = (await (await upload(ada, doc, new Uint8Array([...PNG, 4, 1]))).json()) as { hash: string };
+    const first = (await (await upload(ada, doc, new Uint8Array([...PNG, 4, 2]))).json()) as { hash: string };
+    const second = (await (await upload(ada, doc, new Uint8Array([...PNG, 4, 3]), "image/gif")).json()) as { hash: string };
+    const noteID = crypto.randomUUID();
+    expect((await runMutator(db, mutators.note.create({ id: noteID, documentID: doc, anchor: anchor(snap.hash), images: [first.hash] }), { userID: ada })).ok).toBe(true);
+    // image-only reply; images in `data` are ignored (only `images` references blobs)
+    const r = await runMutator(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "", images: [second.hash], data: { images: ["e".repeat(64)] } }), { userID: ada });
+    expect(r.ok).toBe(true);
+    const rows = await db.sql`SELECT text, data FROM note_messages WHERE note_id = ${noteID} ORDER BY created_at`;
+    expect(rows.map((m: any) => m.data)).toEqual([{ images: [first.hash] }, { images: [second.hash] }]);
+
+    // an image that was never uploaded, or an empty message, is rejected
+    const missing = await runMutator(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "x", images: ["d".repeat(64)] }), { userID: ada });
+    expect(missing.ok).toBe(false);
+    const empty = await runMutator(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: " " }), { userID: ada });
+    expect(empty.ok).toBe(false);
+
+    await db.sql`UPDATE blobs SET refcount = 0, created_at = now() - interval '2 days' WHERE hash IN (${first.hash}, ${second.hash})`;
+    const { urls } = (await (await signReq(ada, doc, [first.hash, second.hash])).json()) as { urls: Record<string, string> };
+    expect(Object.keys(urls).sort()).toEqual([first.hash, second.hash].sort());
+    const other = await newDoc(db, bob);
+    expect((await (await signReq(bob, other, [first.hash])).json()) as unknown).toEqual({ urls: {} });
+
+    const { deleted } = await sweepBlobs(db, store);
+    expect(deleted).not.toContain(first.hash);
+    expect(deleted).not.toContain(second.hash);
+    const [b] = await db.sql`SELECT refcount FROM blobs WHERE hash = ${second.hash}`;
+    expect(b.refcount).toBe(1);
+  });
+});
+
 describe("document thumbnails", () => {
   const bytes = (n: number) => new Uint8Array([...PNG, n]);
   const hashOf = async (r: Response) => ((await r.json()) as { hash: string }).hash;

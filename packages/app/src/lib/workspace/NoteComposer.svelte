@@ -1,12 +1,17 @@
 <script lang="ts">
-	import { ArrowUp, X, LoaderCircle } from '@lucide/svelte';
+	import { ArrowUp, X, LoaderCircle, ImagePlus } from '@lucide/svelte';
 	import { IconButton } from '$lib/components/ui/button';
+	import { NoteImages } from '$lib/components/ui/notes';
+	import { imageFiles } from './attachments.svelte';
 	import type { NotesController } from './notes.svelte';
 	import type { WorkspaceState } from './state.svelte';
 
 	let { ws, nc }: { ws: WorkspaceState; nc: NotesController } = $props();
 	let text = $state(nc.draft?.text ?? '');
 	let el: HTMLTextAreaElement;
+	let picker = $state<HTMLInputElement>();
+	let dragging = $state(false);
+	const attachments = nc.attachments();
 	const d = $derived(nc.draft!);
 	const PLURAL = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', studio: 'studios' } as const;
 	// "Edge of Drawer", "2 faces on Drawer", "3 features on Drawer, Lid"
@@ -27,8 +32,15 @@
 		queueMicrotask(() => el?.focus());
 	});
 	async function post() {
-		if (!text.trim() && !nc.draftStrokeIDs.length) return;
-		if (await nc.post(text.trim())) text = '';
+		if (!text.trim() && !nc.draftStrokeIDs.length && !attachments.items.length) return;
+		if (await nc.post(text.trim(), attachments)) (text = '', attachments.clear());
+	}
+	function ondrop(e: DragEvent) {
+		dragging = false;
+		const files = imageFiles(e.dataTransfer);
+		if (!files.length) return;
+		e.preventDefault();
+		attachments.add(files);
 	}
 	function onkey(e: KeyboardEvent) {
 		// ⌘Z/⌘⇧Z with nothing typed undo the drawing, not the text
@@ -39,13 +51,27 @@
 	}
 </script>
 
-<div class="w-[280px] rounded-dialog border border-line-subtle bg-elevated p-2 shadow-popover" data-testid="note-composer" role="dialog" aria-label="New note">
+<div
+	class="w-[280px] rounded-dialog border bg-elevated p-2 shadow-popover {dragging ? 'border-[var(--border-focus)]' : 'border-line-subtle'}"
+	data-testid="note-composer"
+	role="dialog"
+	aria-label="New note"
+	tabindex="-1"
+	ondragover={(e) => e.dataTransfer?.types.includes('Files') && (e.preventDefault(), (dragging = true))}
+	ondragleave={() => (dragging = false)}
+	{ondrop}
+>
 	<div class="mb-1 flex h-6 items-center gap-1 pr-1 pl-2.5 text-label text-fg-secondary">
 		<span class="truncate">{label}</span>
 		<IconButton label="Discard" shortcut={['esc']} size="sm" class="ml-auto" onclick={() => nc.discard()}><X /></IconButton>
 	</div>
+	{#if attachments.items.length}
+		<NoteImages compact class="mb-1.5 px-1" images={attachments.items.map((a) => ({ src: a.url, uploading: !a.hash && !a.failed, failed: a.failed, onremove: () => attachments.remove(a.id) }))} />
+	{/if}
 	<div class="field h-auto min-h-8 items-end gap-1 py-1 pr-1 pl-2.5">
-		<textarea bind:this={el} bind:value={text} rows="2" placeholder="Add a note…" onkeydown={onkey} data-app-undo={text ? undefined : ''} class="field-sizing-content max-h-40 min-h-10 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary" data-testid="note-text"></textarea>
+		<textarea bind:this={el} bind:value={text} rows="2" placeholder="Add a note…" onkeydown={onkey} onpaste={attachments.paste} data-app-undo={text ? undefined : ''} class="field-sizing-content max-h-40 min-h-10 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary" data-testid="note-text"></textarea>
+		<input bind:this={picker} type="file" accept="image/*" multiple hidden onchange={(e) => (attachments.add(e.currentTarget.files ?? []), (e.currentTarget.value = ''))} />
+		<IconButton label="Add image" size="sm" class="rounded-full" onclick={() => picker?.click()} data-testid="note-attach"><ImagePlus /></IconButton>
 		<IconButton label="Post" shortcut={['enter']} variant="accent" active size="sm" class="rounded-full" onclick={post} disabled={nc.posting} data-testid="note-post">{#if nc.posting}<LoaderCircle class="animate-spin" />{:else}<ArrowUp />{/if}</IconButton>
 	</div>
 </div>

@@ -24,6 +24,8 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
   let stopped = false;
   // scans run one after another, so two can't start the same document
   let chain: Promise<void> = Promise.resolve();
+  // notes whose run a restart cut off: they go again even though the agent already wrote in them
+  const resume = new Set<string>();
 
   /** The next note to work in each idle document (or just `documentID`). */
   async function candidates(documentID: string | null) {
@@ -37,12 +39,12 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
                   AND EXISTS (SELECT 1 FROM user_agent_settings u WHERE u.user_id = d.settings->'agent'->>'runAs')))
          AND EXISTS (SELECT 1 FROM document_members m WHERE m.document_id = n.document_id AND m.role IN ('editor', 'owner')
                       AND m.user_id = COALESCE(n.agent_assigned_by, d.settings->'agent'->>'runAs'))
-         AND NOT EXISTS (
+         AND (n.id = ANY(${[...resume]}::text[]) OR NOT EXISTS (
            SELECT 1 FROM note_messages b JOIN agent_sessions a ON a.id = b.author_agent_id AND a.builtin
             WHERE b.note_id = n.id
               AND b.created_at >= GREATEST(
                 COALESCE(n.agent_assigned_at, n.created_at),
-                COALESCE((SELECT max(h.created_at) FROM note_messages h WHERE h.note_id = n.id AND h.author_agent_id IS NULL AND h.kind = 'message'), n.created_at)))
+                COALESCE((SELECT max(h.created_at) FROM note_messages h WHERE h.note_id = n.id AND h.author_agent_id IS NULL AND h.kind = 'message'), n.created_at))))
        ORDER BY n.document_id, n.created_at, n.id`) as unknown as { id: string; document_id: string; run_as: string }[];
   }
 
@@ -51,6 +53,7 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
       if (stopped) return;
       for (const c of await candidates(documentID)) {
         if (running.has(c.document_id)) continue;
+        resume.delete(c.id);
         start(c.document_id, c.id, c.run_as);
       }
     }).catch((e) => log("scan failed", e));
@@ -71,8 +74,9 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
 
   /** Runs don't survive a restart: give their notes back so they're picked up again. */
   async function recover() {
-    await db.sql`UPDATE notes SET claimed_by = NULL, status = CASE WHEN status = 'AgentWorking' THEN 'Open' ELSE status END
-                  WHERE claimed_by IN (SELECT id FROM agent_sessions WHERE builtin)`;
+    const cut = (await db.sql`UPDATE notes SET claimed_by = NULL, status = CASE WHEN status = 'AgentWorking' THEN 'Open' ELSE status END
+                  WHERE claimed_by IN (SELECT id FROM agent_sessions WHERE builtin) RETURNING id`) as unknown as { id: string }[];
+    for (const n of cut) resume.add(n.id);
     await db.sql`UPDATE agent_sessions SET status = 'idle', detail = NULL WHERE builtin AND status <> 'idle'`;
   }
 

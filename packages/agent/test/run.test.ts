@@ -37,6 +37,26 @@ test("resolves a note through the MCP tools, as a built-in agent session scoped 
   expect(JSON.stringify(call.prompt)).toContain("Make it thicker");
 });
 
+test("images pasted into the thread reach the model as images", async () => {
+  const userID = await createUser(db);
+  const documentID = await newDoc(db, userID);
+  const noteID = await newNote(db, userID, documentID, "Match this sketch");
+  const deps = toolDeps(db);
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5, 6, 7]);
+  const hash = new Bun.CryptoHasher("sha256").update(png).digest("hex");
+  await deps.store.put(hash, png, "image/png");
+  await db.sql`INSERT INTO blobs (hash, size, content_type) VALUES (${hash}, ${png.length}, 'image/png') ON CONFLICT DO NOTHING`;
+  await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "", images: [hash] } as any), { userID });
+  const m = scriptedModel([{ tool: "set_note_status", input: { id: noteID, status: "Resolved" } }]);
+
+  expect(await runNote(deps, { documentID, noteID, userID, model: m.model })).toBe("resolved");
+  const user = (m.prompts[0] as any[]).find((p) => p.role === "user");
+  const file = user.content.find((c: any) => c.type === "file");
+  expect(file).toBeDefined();
+  expect(file.mediaType).toBe("image/png");
+  expect(JSON.stringify(user.content)).toContain("pasted into the thread");
+});
+
 test("a run that ends without settling gives the note back with its last words", async () => {
   const userID = await createUser(db);
   const documentID = await newDoc(db, userID);

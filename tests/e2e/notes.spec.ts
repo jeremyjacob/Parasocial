@@ -320,4 +320,49 @@ test.describe("notes", () => {
     await page.getByRole("tab", { name: "Notes" }).click();
     await expect(page.getByTestId("note-card")).not.toContainText("Can't find its geometry");
   });
+
+  test("pasted images: in a new note and a reply, uploaded and shown in the thread", async ({ page }) => {
+    // a 400×240 png pasted from the clipboard
+    const paste = (selector: string) =>
+      page.locator(selector).evaluate(async (el) => {
+        const c = document.createElement("canvas");
+        c.width = 400;
+        c.height = 240;
+        const g = c.getContext("2d")!;
+        g.fillStyle = "#3e63dd";
+        g.fillRect(0, 0, 400, 240);
+        const blob = await new Promise<Blob>((r) => c.toBlob((b) => r(b!), "image/png"));
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob], "paste.png", { type: "image/png" }));
+        el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      });
+
+    await page.keyboard.press("c");
+    await clickAt(page, TOP);
+    await expect(page.getByTestId("note-composer")).toBeVisible();
+    await paste('[data-testid="note-text"]');
+    await expect(page.getByTestId("note-composer").getByRole("img")).toHaveCount(1);
+    await page.getByTestId("note-text").fill("Like this");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => wsEval<number>(page, "ws.notes.length")).toBe(1);
+
+    const card = page.getByTestId("notes-panel").getByTestId("note-card");
+    await expect(card.getByTestId("note-images").getByRole("img")).toHaveCount(1);
+
+    // an image-only reply
+    await paste('[data-testid="notes-panel"] textarea[aria-label="Reply"]');
+    await card.getByRole("button", { name: "Send" }).click();
+    await expect(card.getByTestId("note-images").getByRole("img")).toHaveCount(2);
+    const images = await wsEval<unknown[]>(page, "ws.notes[0].messages.filter((m) => !m.authorAgentID).map((m) => [m.text, m.data?.images?.length ?? 0])");
+    expect(images).toEqual([["Like this", 1], ["", 1]]);
+
+    // after a reload the thread's images come back through signed URLs
+    await page.reload();
+    const again = page.getByTestId("notes-panel").getByTestId("note-card");
+    await page.getByRole("tab", { name: "Notes" }).click().catch(() => {});
+    const imgs = again.getByTestId("note-images").getByRole("img");
+    await expect(imgs).toHaveCount(2);
+    await expect.poll(() => imgs.first().evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth)).toBe(400);
+    expect(await imgs.first().getAttribute("src")).toContain("/api/blobs/");
+  });
 });

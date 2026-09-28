@@ -6,6 +6,9 @@ export type { AssemblyDef, AssemblyTools, JointAt, JointOpts, MateOpts, Range, I
 export type { FrameSpec } from "./connector";
 export { sketch, Sketch, loft } from "./sketch";
 export type { P2, ExtrudeOpts, RevolveOpts } from "./sketch";
+export type { SweepOpts } from "./sketch";
+export { path3d, helix, Path3d } from "./path3d";
+export type { HelixOpts } from "./path3d";
 export { Solid, box, cylinder, measure, thicken, MATERIALS } from "./solid";
 export { EntitySet } from "./selection";
 export type { Entity } from "./selection";

@@ -332,6 +332,19 @@ const strokeInput = z.object({
   width: z.number().positive().max(50).optional(),
 });
 
+/** Images pasted into a message: uploaded blobs (upload first, then reference), kept in `data.images`. */
+export const MAX_NOTE_IMAGES = 8;
+const images = z.array(z.string().regex(SHA256_RE, "must be a sha256 blob hash")).max(MAX_NOTE_IMAGES).default([]);
+
+/** Server: every image blob must exist; each reference bumps its refcount (the sweep recomputes it anyway). */
+async function referenceImages(tx: Tx, hashes: readonly string[]) {
+  if (!isServer(tx) || !hashes.length) return;
+  for (const hash of new Set(hashes)) {
+    const rows = await pg(tx, "UPDATE blobs SET refcount = refcount + 1 WHERE hash = $1 AND content_type LIKE 'image/%' RETURNING hash", [hash]);
+    if (rows.length === 0) fail("blob_missing", "Upload the image before posting it", { hash });
+  }
+}
+
 const scriptFile = z.object({ path: z.string(), content: z.string().max(1_000_000) });
 
 // ───────────────────────────── implementations ─────────────────────────────
@@ -1003,6 +1016,7 @@ export const mutators = defineMutators({
         strokeIDs: z.array(id).default([]),
         strokes: z.array(strokeInput).default([]),
         assignAgent: z.boolean().default(false),
+        images,
       }),
       async ({ tx, ctx, args }) => {
         const c = await authorize(tx, ctx, args.documentID, args.assignAgent ? "editor" : "viewer");
@@ -1013,6 +1027,7 @@ export const mutators = defineMutators({
           const rows = await pg(tx, "UPDATE blobs SET refcount = refcount + 1 WHERE hash = $1 RETURNING hash", [hash]);
           if (rows.length === 0) fail("blob_missing", "Upload the snapshot before creating the note", { hash });
         }
+        await referenceImages(tx, args.images);
         const now = Date.now();
         const who = author(c);
         const { markup: _markup, ...anchor } = args.anchor;
@@ -1031,7 +1046,7 @@ export const mutators = defineMutators({
           createdAt: now,
           updatedAt: now,
         });
-        if (args.text.trim()) {
+        if (args.text.trim() || args.images.length) {
           await tx.mutate.noteMessages.insert({
             id: args.messageID ?? `${args.id}:0`,
             noteID: args.id,
@@ -1040,7 +1055,7 @@ export const mutators = defineMutators({
             authorAgentID: who.agentID,
             kind: "message",
             text: args.text,
-            data: null,
+            data: args.images.length ? { images: args.images } : null,
             versionID: null,
             createdAt: now,
           });
@@ -1081,11 +1096,17 @@ export const mutators = defineMutators({
         versionID: id.optional(),
         kind: z.enum(["message", "activity"]).default("message"),
         data: z.record(z.string(), z.any()).optional(),
+        images,
       }),
       async ({ tx, ctx, args }) => {
         const l = await loadNote(tx, ctx, args.noteID);
         if (!l) return;
         const { note, c } = l;
+        if (args.kind === "message" && !args.text.trim() && !args.images.length) fail("invalid", "Write something or attach an image");
+        await referenceImages(tx, args.images);
+        // images live only in `images`: a caller's data can't reference blobs it didn't upload
+        const { images: _i, ...extra } = args.data ?? {};
+        const data = args.images.length ? { ...extra, images: args.images } : args.data ? extra : null;
         const who = author(c);
         const now = Date.now();
         await tx.mutate.noteMessages.insert({
@@ -1096,7 +1117,7 @@ export const mutators = defineMutators({
           authorAgentID: who.agentID,
           kind: args.kind,
           text: args.text,
-          data: args.data ?? null,
+          data,
           versionID: args.versionID ?? null,
           createdAt: now,
         });

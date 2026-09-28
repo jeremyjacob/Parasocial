@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink, Bot, Hand } from '@lucide/svelte';
-	import { NoteMessage, NoteStatusChip, type NoteMessageData, type NoteSegment, type NoteStatus } from '$lib/components/ui/notes';
+	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink, Bot, Hand, ImagePlus } from '@lucide/svelte';
+	import { NoteMessage, NoteImages, NoteStatusChip, type NoteMessageData, type NoteSegment, type NoteStatus } from '$lib/components/ui/notes';
 	import { IconButton, Button } from '$lib/components/ui/button';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { relativeTime } from '$lib/format';
@@ -9,9 +9,13 @@
 	import type { Note, NoteMessage as Msg } from '@parasocial/sync';
 	import type { WorkspaceState } from './state.svelte';
 	import type { NotesController } from './notes.svelte';
+	import { imageFiles } from './attachments.svelte';
 
 	let { ws, nc, note, onfocus, onversion }: { ws: WorkspaceState; nc: NotesController; note: Note & { messages?: Msg[] }; onfocus: () => void; onversion: (versionID: string) => void } = $props();
 	let reply = $state('');
+	const attachments = nc.attachments();
+	let picker = $state<HTMLInputElement>();
+	let dragging = $state(false);
 
 	const status = $derived<NoteStatus>(note.orphaned ? 'orphaned' : note.status === 'Open' ? 'open' : note.status === 'AgentWorking' ? 'working' : 'resolved');
 	const t0 = $derived(note.anchor.targets[0]);
@@ -36,6 +40,11 @@
 		return out;
 	}
 
+	const messageImages = (m: Msg): string[] => {
+		const images = (m.data as { images?: unknown } | null)?.images;
+		return Array.isArray(images) ? images.filter((h): h is string => typeof h === 'string') : [];
+	};
+
 	const messages = $derived.by<NoteMessageData[]>(() => {
 		const msgs = note.messages ?? [];
 		const out: NoteMessageData[] = [];
@@ -59,6 +68,7 @@
 				detail,
 				time: relativeTime(m.createdAt),
 				body: segments(m.text),
+				images: messageImages(m).map((hash) => ({ src: nc.imageURL(hash) })),
 				// the message already carries a timestamp; the chip only needs the version and what changed
 				version: v ? { version: v.number, summary: v.message, onclick: () => onversion(v.id) } : undefined
 			};
@@ -92,11 +102,29 @@
 		note.removedAt ? { label: 'Restore', icon: Undo2, onSelect: () => nc.restore(note.id) } : { label: 'Remove', icon: Trash2, destructive: true, onSelect: () => nc.remove(note.id) }
 	]);
 
-	function send() {
+	const canSend = $derived(!!reply.trim() || attachments.items.length > 0);
+	let sending = $state(false);
+	async function send() {
 		const text = reply.trim();
-		if (!text) return;
-		nc.reply(note.id, text);
-		reply = '';
+		if ((!text && !attachments.items.length) || sending) return;
+		sending = true;
+		try {
+			const images = await attachments.hashes();
+			nc.reply(note.id, text, images);
+			reply = '';
+			attachments.clear();
+		} catch (e) {
+			toast.error((e as Error).message);
+		} finally {
+			sending = false;
+		}
+	}
+	function ondrop(e: DragEvent) {
+		dragging = false;
+		const files = imageFiles(e.dataTransfer);
+		if (!files.length) return;
+		e.preventDefault();
+		attachments.add(files);
 	}
 </script>
 
@@ -153,17 +181,32 @@
 		{#if !messages.length}<p class="text-label text-fg-tertiary">No messages.</p>{/if}
 	</div>
 	{#if !note.removedAt}
-		<div class="px-3 pb-3">
-			<div class="field h-auto min-h-8 items-end gap-1 py-1 pr-1 pl-2.5">
-				<textarea
-					bind:value={reply}
-					rows="1"
-					placeholder="Reply…"
-					aria-label="Reply"
-					onkeydown={(e) => (e.key === 'Enter' && !e.shiftKey && !e.isComposing ? (e.preventDefault(), send()) : e.key === 'Escape' && (e.currentTarget as HTMLElement).blur())}
-					class="field-sizing-content max-h-32 min-h-6 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary"
-				></textarea>
-				<IconButton label="Send" shortcut={['enter']} variant={reply ? 'accent' : 'ghost'} active={!!reply} size="sm" disabled={!reply} class="rounded-full" onclick={send}><ArrowUp /></IconButton>
+		<div
+			class="px-3 pb-3"
+			role="group"
+			aria-label="Reply"
+			ondragover={(e) => e.dataTransfer?.types.includes('Files') && (e.preventDefault(), (dragging = true))}
+			ondragleave={() => (dragging = false)}
+			{ondrop}
+		>
+			<div class="field h-auto min-h-8 flex-col items-stretch gap-1 py-1 pr-1 pl-2.5 {dragging ? 'shadow-[inset_0_0_0_1px_var(--border-focus)]' : ''}">
+				{#if attachments.items.length}
+					<NoteImages compact class="pt-1" images={attachments.items.map((a) => ({ src: a.url, uploading: !a.hash && !a.failed, failed: a.failed, onremove: () => attachments.remove(a.id) }))} />
+				{/if}
+				<div class="flex items-end gap-1">
+					<textarea
+						bind:value={reply}
+						rows="1"
+						placeholder="Reply…"
+						aria-label="Reply"
+						onpaste={attachments.paste}
+						onkeydown={(e) => (e.key === 'Enter' && !e.shiftKey && !e.isComposing ? (e.preventDefault(), send()) : e.key === 'Escape' && (e.currentTarget as HTMLElement).blur())}
+						class="field-sizing-content max-h-32 min-h-6 w-full resize-none bg-transparent py-1 text-body text-fg outline-none placeholder:text-fg-tertiary"
+					></textarea>
+					<input bind:this={picker} type="file" accept="image/*" multiple hidden onchange={(e) => (attachments.add(e.currentTarget.files ?? []), (e.currentTarget.value = ''))} />
+					<IconButton label="Add image" size="sm" class="rounded-full" onclick={() => picker?.click()}><ImagePlus /></IconButton>
+					<IconButton label="Send" shortcut={['enter']} variant={canSend ? 'accent' : 'ghost'} active={canSend} size="sm" disabled={!canSend || sending} class="rounded-full" onclick={send}><ArrowUp /></IconButton>
+				</div>
 			</div>
 		</div>
 	{/if}

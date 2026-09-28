@@ -1,13 +1,14 @@
 // Sketches: explicit 2D geometry on a plane -> profile faces -> extrude / revolve (PLAN §5).
 // Each segment gets a stable name (`outline/right`, `bore`, `sketch1/line3`) that flows into
 // the names of the faces generated from it.
-import { lineEdge, arcEdge3, circleEdge, splineEdge, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built } from "@parasocial/kernel";
+import { lineEdge, arcEdge3, circleEdge, splineEdge, bsplineEdge, bsplineKnots, sampleEdge, edgeTangent, KernelError, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built, type SweepMode } from "@parasocial/kernel";
 import { entityShape, faceOf, type OpRecord } from "@parasocial/naming";
 import { EntitySet } from "./selection";
 import { ctx } from "./context";
-import { runOp, userError } from "./op";
+import { runOp, userError, warn } from "./op";
 import { Plane, axisVec, type AxisLike } from "./plane";
 import { Solid, booleanOp } from "./solid";
+import { Path3d } from "./path3d";
 
 export type P2 = [number, number];
 
@@ -15,7 +16,8 @@ type Seg =
   | { kind: "line"; a: P2; b: P2; name?: string; tag?: string }
   | { kind: "arc"; a: P2; m: P2; b: P2; name?: string; tag?: string }
   | { kind: "circle"; c: P2; r: number; name?: string; tag?: string }
-  | { kind: "spline"; pts: P2[]; closed: boolean; name?: string; tag?: string };
+  | { kind: "spline"; pts: P2[]; closed: boolean; t0?: P2; t1?: P2; name?: string; tag?: string }
+  | { kind: "bspline"; poles: P2[]; degree: number; weights?: number[]; knots: number[]; mults: number[]; periodic: boolean; name?: string; tag?: string };
 
 type Loop = { segs: Seg[]; closed: boolean };
 
@@ -219,9 +221,16 @@ export class Sketch {
       const r: P2 = [prev.b[0] - c[0], prev.b[1] - c[1]];
       const cr = (prev.m[0] - prev.a[0]) * (prev.b[1] - prev.a[1]) - (prev.m[1] - prev.a[1]) * (prev.b[0] - prev.a[0]);
       t = cr > 0 ? [r[1], -r[0]] : [-r[1], r[0]];
-    } else {
-      const n = prev.pts.length;
-      t = [prev.pts[n - 1][0] - prev.pts[n - 2][0], prev.pts[n - 1][1] - prev.pts[n - 2][1]];
+    } else if (prev.kind === "spline" && prev.t1) t = prev.t1;
+    else {
+      // the real end tangent of the built curve
+      const e = segEdge(this.plane, prev);
+      try {
+        const t3 = edgeTangent(e, true);
+        t = [dot3(t3, this.plane.xDir), dot3(t3, this.plane.yDir)];
+      } finally {
+        e.delete();
+      }
     }
     // circle tangent to t at a, through end: center = a + s*perp(t)
     const tl = Math.hypot(t[0], t[1]);
@@ -242,11 +251,76 @@ export class Sketch {
     const R = Math.abs(s);
     return this.threePointArc([c[0] + R * Math.cos(am), c[1] + R * Math.sin(am)], end, opts);
   }
-  /** Smooth spline from the cursor through `points`. */
-  splineTo(points: P2[], opts: SegOpts = {}): this {
+  /**
+   * Smooth spline from the cursor through `points`. `startTangent` / `endTangent` are 2D
+   * direction vectors in sketch coordinates (only the direction matters; the magnitude is
+   * ignored), e.g. `{ startTangent: [1, 0] }` to leave the cursor heading along +x.
+   */
+  splineTo(points: P2[], opts: SegOpts & { startTangent?: P2; endTangent?: P2 } = {}): this {
+    if (!Array.isArray(points) || !points.length) userError("splineTo needs at least one point to pass through");
     const a = this.need();
-    this.pushSeg({ kind: "spline", pts: [a, ...points.map((p) => [...p] as P2)], closed: false }, "spline", opts.tag);
+    const s: Seg = { kind: "spline", pts: [a, ...points.map((p) => [...p] as P2)], closed: false };
+    if (opts.startTangent) s.t0 = dir2(opts.startTangent, "splineTo startTangent");
+    if (opts.endTangent) s.t1 = dir2(opts.endTangent, "splineTo endTangent");
+    this.pushSeg(s, "spline", opts.tag);
     this.cursor = [...points[points.length - 1]] as P2;
+    return this;
+  }
+  /**
+   * Spline through `points` as its own profile. Closed by default: a smooth periodic loop (no
+   * corner at the first point; don't repeat it at the end). `closed: false` starts an open
+   * path like `moveTo(points[0]).splineTo(rest)` that you can continue or close.
+   */
+  spline(points: P2[], opts: SegOpts & { closed?: boolean } = {}): this {
+    if (!Array.isArray(points)) userError("spline(points) needs an array of [x, y] points");
+    if (opts.closed === false) {
+      if (points.length < 2) userError("an open spline needs at least 2 points");
+      return this.moveTo(points[0]).splineTo(points.slice(1), { tag: opts.tag });
+    }
+    let pts = points.map((p) => [...p] as P2);
+    if (pts.length > 3 && eq(pts[0], pts[pts.length - 1])) pts = pts.slice(0, -1);
+    if (pts.length < 3) userError(`a closed spline needs at least 3 distinct points (got ${pts.length})`);
+    this.endPath();
+    this.checkTag(opts.tag);
+    this.loops.push({ closed: true, segs: [{ kind: "spline", pts, closed: true, name: opts.tag ?? `${this.prefix()}spline${this.n("spline")}` }] });
+    return this;
+  }
+  /**
+   * B-spline (NURBS) from the cursor, shaped by `controlPoints`: the cursor is the first control
+   * point and the curve ends on the last one (which becomes the cursor). It passes near, not
+   * through, the points in between. `degree` defaults to 3; `weights` (one per control point
+   * including the cursor, all > 0) make it rational, e.g. weight √2/2 on the middle point of
+   * `[r,0] → [r,r] → [0,r]` with degree 2 gives an exact quarter circle. `knots`/`mults` default to
+   * clamped uniform; custom ones must keep the ends clamped (end multiplicity = degree + 1).
+   */
+  bsplineTo(controlPoints: P2[], opts: SegOpts & { degree?: number; weights?: number[]; knots?: number[]; mults?: number[] } = {}): this {
+    if (!Array.isArray(controlPoints) || !controlPoints.length) userError("bsplineTo needs at least one control point");
+    const a = this.need();
+    const poles = [a, ...controlPoints.map((p) => [...p] as P2)];
+    const k = knotsOf(poles, opts, false);
+    if (k.mults[0] !== k.degree + 1 || k.mults[k.mults.length - 1] !== k.degree + 1)
+      userError(`bsplineTo needs clamped ends (first and last multiplicity = degree + 1 = ${k.degree + 1}) so the curve starts at the cursor and ends on the last control point; use bspline(..., { closed: true }) for a periodic loop`);
+    this.pushSeg({ kind: "bspline", poles, ...k, weights: opts.weights && [...opts.weights], periodic: false }, "bspline", opts.tag);
+    this.cursor = [...poles[poles.length - 1]] as P2;
+    return this;
+  }
+  /**
+   * B-spline (NURBS) from `controlPoints` as its own profile. Closed by default: a smooth periodic
+   * loop around the control polygon (default knots uniform). `closed: false` starts an open path
+   * like `moveTo(points[0]).bsplineTo(rest, opts)`. Options as in `bsplineTo`.
+   */
+  bspline(controlPoints: P2[], opts: SegOpts & { closed?: boolean; degree?: number; weights?: number[]; knots?: number[]; mults?: number[] } = {}): this {
+    if (!Array.isArray(controlPoints) || controlPoints.length < 2) userError("bspline needs at least 2 control points");
+    if (opts.closed === false) {
+      const { closed: _, ...rest } = opts;
+      return this.moveTo(controlPoints[0]).bsplineTo(controlPoints.slice(1), rest);
+    }
+    const poles = controlPoints.map((p) => [...p] as P2);
+    const k = knotsOf(poles, opts, true);
+    this.endPath();
+    this.checkTag(opts.tag);
+    const name = opts.tag ?? `${this.prefix()}bspline${this.n("bspline")}`;
+    this.loops.push({ closed: true, segs: [{ kind: "bspline", poles, ...k, weights: opts.weights && [...opts.weights], periodic: true, name }] });
     return this;
   }
   /** Close the current path with a line back to its start. */
@@ -306,7 +380,8 @@ export class Sketch {
         if (sg.kind === "line") return { kind: "line", a: f(sg.a), b: f(sg.b), name };
         if (sg.kind === "arc") return { kind: "arc", a: f(sg.a), m: f(sg.m), b: f(sg.b), name };
         if (sg.kind === "circle") return { kind: "circle", c: f(sg.c), r: sg.r, name };
-        return { kind: "spline", pts: sg.pts.map(f), closed: sg.closed, name };
+        if (sg.kind === "bspline") return { ...sg, poles: sg.poles.map(f), name };
+        return { kind: "spline", pts: sg.pts.map(f), closed: sg.closed, t0: sg.t0 && f(sg.t0), t1: sg.t1 && f(sg.t1), name };
       }),
     }));
     this.loops.push(...copy);
@@ -341,19 +416,54 @@ export class Sketch {
     return this.pathRecord();
   }
 
-  /** Sweep this profile along `path` (a sketch with one open path, usually on a perpendicular plane). */
-  sweep(path: Sketch, opts: { tag?: string; mode?: "new" | "add" | "remove"; target?: Solid } = {}): Solid {
-    if (!(path instanceof Sketch)) userError("sweep(path) needs a sketch with one path, e.g. sketch(plane.XZ).moveTo([0,0]).lineTo([0,40])");
+  /**
+   * Sweep this profile along `path`: a sketch with one open path (usually on a perpendicular plane),
+   * a `path3d(...)` through 3D space, or a `helix({...})` (springs, threads, coils).
+   * Draw the profile at the path's start, on a plane crossing the path there.
+   * `orientation` sets how the profile turns along the path: "auto" (default) keeps it upright about the
+   * axis on a helix and uses a minimal-twist frame otherwise; "frenet" follows the path's curvature;
+   * { binormal: axis } keeps the profile's orientation fixed relative to that direction.
+   * Side faces are named `<tag> · side · <profile segment>` (with the path segment on multi-segment
+   * 3D paths: `<tag> · side · path1/line2 · <profile segment>`); the ends are `cap.start` / `cap.end`.
+   */
+  sweep(path: Sketch | Path3d, opts: SweepOpts = {}): Solid {
+    if (!(path instanceof Sketch) && !(path instanceof Path3d))
+      userError("sweep(path) needs a path: a sketch with one path, e.g. sketch(plane.XZ).moveTo([0,0]).lineTo([0,40]), a path3d([0,0,0]).lineTo([0,0,40]), or a helix({ radius, pitch, turns })");
+    const mode = sweepMode(path, opts.orientation);
+    if (path instanceof Path3d) {
+      const { point, tangent } = path.startFrame();
+      const n = this.plane.normal;
+      const cos = Math.abs(n[0] * tangent[0] + n[1] * tangent[1] + n[2] * tangent[2]);
+      const at = `(${point.map((c) => +c.toFixed(4)).join(", ")})`;
+      if (cos < 1e-3) userError(`sweep: the profile's plane is parallel to the path where it starts at ${at}; draw the profile on a plane crossing the path there${path.helixAxis() ? ", e.g. one containing the helix axis like plane.XZ for a helix around Z" : ""}`);
+      const o = this.plane.origin;
+      const off = Math.abs((point[0] - o[0]) * n[0] + (point[1] - o[1]) * n[1] + (point[2] - o[2]) * n[2]);
+      if (off > 1e-4) warn(`sweep: the profile's plane is ${+off.toFixed(4)} away from the path start ${at}; the swept solid follows the path's shape from where the profile is. Move the sketch plane to the path start if that isn't intended`, "operation");
+    }
     const prof = this.profile();
     const pth = path.pathRecord();
+    const multi = path instanceof Path3d && pth.topo.edges.items.length > 1;
     const rec = runOp({
       type: "sweep",
       tag: opts.tag,
-      params: {},
+      params: mode === "corrected" ? {} : { orientation: mode },
       inputs: [prof, pth],
       build: () => {
-        const built = sweep(prof.shape, pth.shape);
-        return { built, historyOptions: { generatedFrom: ["edge", "vertex"], noModified: true }, roles: ({ topo, history }) => capRoles(topo, history, built, "side") };
+        const built = sweep(prof.shape, pth.shape, { mode });
+        return {
+          built,
+          historyOptions: { generatedFrom: ["edge", "vertex"], noModified: true },
+          roles: ({ topo, history }) => {
+            const r = capRoles(topo, history, built, "side");
+            if (multi)
+              history.face.forEach((o: any[], i: number) => {
+                const seg = o.find((x) => x.slot === 1 && x.kind === "edge" && x.rel === "generated");
+                const name = seg && pth.roles.edge?.[seg.index];
+                if (r.face[i] === "side" && name) r.face[i] = `side · ${name}`;
+              });
+            return r;
+          },
+        };
       },
     });
     return combine(new Solid(rec), opts.mode, opts.target);
@@ -475,6 +585,24 @@ export class Sketch {
   }
 }
 
+export type SweepOpts = {
+  tag?: string;
+  /** How the profile turns along the path (see `sweep`). Default "auto". */
+  orientation?: "auto" | "frenet" | { binormal: AxisLike };
+  mode?: "new" | "add" | "remove";
+  target?: Solid;
+};
+
+function sweepMode(path: Sketch | Path3d, o: SweepOpts["orientation"] = "auto"): SweepMode {
+  if (o === "auto") {
+    const ax = path instanceof Path3d ? path.helixAxis() : undefined;
+    return ax ? { binormal: ax } : "corrected";
+  }
+  if (o === "frenet") return "frenet";
+  if (o && typeof o === "object" && "binormal" in o) return { binormal: axisVec(o.binormal) };
+  userError(`sweep orientation must be "auto", "frenet" or { binormal: "Z" } (got ${JSON.stringify(o)})`);
+}
+
 function combine(s: Solid, mode: ExtrudeOpts["mode"], target?: Solid): Solid {
   if (!mode || mode === "new") return s;
   if (!target) userError(`mode "${mode}" needs a target solid: { mode: "${mode}", target: base }`);
@@ -494,11 +622,15 @@ function capRoles(topo: any, history: any, built: Built, sideRole: string) {
   return { face };
 }
 
+// closed splines start and end on their first point; periodic bsplines near their first pole
 function startOf(s: Seg): P2 {
-  return s.kind === "line" || s.kind === "arc" ? s.a : s.kind === "circle" ? [s.c[0] + s.r, s.c[1]] : s.pts[0];
+  return s.kind === "line" || s.kind === "arc" ? s.a : s.kind === "circle" ? [s.c[0] + s.r, s.c[1]] : s.kind === "bspline" ? s.poles[0] : s.pts[0];
 }
 function endOf(s: Seg): P2 {
-  return s.kind === "line" || s.kind === "arc" ? s.b : s.kind === "circle" ? [s.c[0] + s.r, s.c[1]] : s.pts[s.pts.length - 1];
+  if (s.kind === "line" || s.kind === "arc") return s.b;
+  if (s.kind === "circle") return [s.c[0] + s.r, s.c[1]];
+  if (s.kind === "bspline") return s.periodic ? s.poles[0] : s.poles[s.poles.length - 1];
+  return s.closed ? s.pts[0] : s.pts[s.pts.length - 1];
 }
 
 function circumcenter(a: P2, b: P2, c: P2): P2 {
@@ -508,8 +640,8 @@ function circumcenter(a: P2, b: P2, c: P2): P2 {
   return [ux, uy];
 }
 
-/** Sample a loop as a polygon (for region classification). */
-function sampleLoop(l: Loop): P2[] {
+/** Sample a loop as a polygon (for region classification). Splines sample their built `edge`s. */
+function sampleLoop(l: Loop, pl: Plane, edge: (s: Seg) => any): P2[] {
   const pts: P2[] = [];
   for (const s of l.segs) {
     if (s.kind === "line") pts.push(s.a);
@@ -526,7 +658,7 @@ function sampleLoop(l: Loop): P2[] {
       const sweep = ccw ? norm(a1 - a0) : -norm(a0 - a1);
       for (let i = 0; i < 24; i++) pts.push([c[0] + r * Math.cos(a0 + (sweep * i) / 24), c[1] + r * Math.sin(a0 + (sweep * i) / 24)]);
       void a1;
-    } else pts.push(...s.pts.slice(0, -1));
+    } else pts.push(...sampleEdge(edge(s), 64).map((p) => pl.toLocal(p)));
   }
   return pts;
 }
@@ -554,7 +686,8 @@ function buildProfile(pl: Plane, loops: Loop[]) {
     return wireFromEdges(edges);
   });
   // classify loops: depth by containment
-  const polys = loops.map(sampleLoop);
+  const edgeOf = new Map(segEdges.map((s) => [s.seg, s.edge]));
+  const polys = loops.map((l) => sampleLoop(l, pl, (s) => edgeOf.get(s)));
   const areas = polys.map((p) => Math.abs(polyArea(p)));
   const parent = loops.map((_, i) => {
     let best = -1;
@@ -592,8 +725,32 @@ function segEdge(pl: Plane, s: Seg) {
   if (s.kind === "line") return lineEdge(pl.toWorld(s.a), pl.toWorld(s.b));
   if (s.kind === "arc") return arcEdge3(pl.toWorld(s.a), pl.toWorld(s.m), pl.toWorld(s.b));
   if (s.kind === "circle") return circleEdge(pl.toWorld(s.c), pl.normal, s.r);
-  return splineEdge(s.pts.map((p) => pl.toWorld(p)), s.closed);
+  const vec = (v: P2): Vec3 => pl.toWorld(v).map((c, i) => c - pl.origin[i]) as Vec3;
+  if (s.kind === "bspline") return bsplineEdge({ poles: s.poles.map((p) => pl.toWorld(p)), degree: s.degree, weights: s.weights, knots: s.knots, mults: s.mults, periodic: s.periodic });
+  return splineEdge(s.pts.map((p) => pl.toWorld(p)), { closed: s.closed, startTangent: s.t0 && vec(s.t0), endTangent: s.t1 && vec(s.t1) });
 }
+
+function knotsOf(poles: P2[], o: { degree?: number; weights?: number[]; knots?: number[]; mults?: number[] }, periodic: boolean) {
+  for (const [v, w] of [[o.degree, "degree"], ...(o.weights ?? []).map((x, i) => [x, `weight ${i}`]), ...(o.knots ?? []).map((x, i) => [x, `knot ${i}`])] as [unknown, string][])
+    if (v !== undefined) num(v, `bspline ${w}`);
+  try {
+    return bsplineKnots({ poles: poles.map((p) => [p[0], p[1], 0]), degree: o.degree, weights: o.weights, knots: o.knots, mults: o.mults, periodic });
+  } catch (e) {
+    if (e instanceof KernelError) userError(e.message);
+    throw e;
+  }
+}
+
+function dir2(v: P2, what: string): P2 {
+  if (!Array.isArray(v) || v.length !== 2) userError(`${what} must be a 2D direction like [1, 0]`);
+  num(v[0], what);
+  num(v[1], what);
+  const l = Math.hypot(v[0], v[1]);
+  if (l < 1e-12) userError(`${what} must be a non-zero direction (got [${v[0]}, ${v[1]}])`);
+  return [v[0] / l, v[1] / l];
+}
+
+const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 /** A closed polygon with every corner rounded to radius r (tangent arcs). */
 function roundedLoop(pts: P2[], r: number, side: (i: number) => string, corner: (i: number) => string): Seg[] {
@@ -633,14 +790,14 @@ function centroid(p: P2[]): P2 {
 }
 
 /** Map each profile edge to its segment's name (by identity, falling back to geometry). */
-function namer(segEdges: { seg: Seg; edge: any }[]) {
+export function namer(segEdges: { seg: { name?: string }; edge: any }[]) {
   return {
     roles: ({ topo }: { topo: any }) => {
       const edge: (string | undefined)[] = topo.edges.items.map((e: any) => {
         const hit = segEdges.find((s) => s.edge.IsSame(e));
         if (hit) return hit.seg.name;
         const mid = edgeInfo(e).mid;
-        let best: Seg | undefined,
+        let best: { name?: string } | undefined,
           bd = Infinity;
         for (const s of segEdges) {
           const d = Math.hypot(...(edgeInfo(s.edge).mid.map((c, k) => c - mid[k]) as Vec3));

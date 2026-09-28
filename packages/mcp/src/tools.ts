@@ -188,7 +188,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }
 
   async function noteView(documentID: string, n: any, d: DocState) {
-    const messages = await db.sql`SELECT m.kind, m.text, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ${n.id} ORDER BY m.created_at`;
+    const messages = await db.sql`SELECT m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ${n.id} ORDER BY m.created_at`;
     const strokes = await db.sql`SELECT part, points, color FROM markup_strokes WHERE note_id = ${n.id}`;
     const numberRows = await db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`;
     return {
@@ -203,8 +203,26 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       view: { camera: n.anchor.camera, configuration: n.anchor.configuration, render: `render({ view: "note:${n.id}" })` },
       markup: strokes.length ? strokes.map((st: any) => ({ part: st.part, color: st.color, points: st.points.length, from: vec(st.points[0]), to: vec(st.points[st.points.length - 1]) })) : undefined,
       snapshot: n.snapshot_hash ? signBlobURL(deps.config, { hash: n.snapshot_hash, documentID, basePath: "/api/blobs" }) : undefined,
-      messages: messages.map((m: any) => ({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, at: new Date(Number(m.created_at)).toISOString(), version: m.version_id ?? undefined })),
+      messages: messages.map((m: any) => ({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, images: messageImages(m).length ? messageImages(m).map((hash) => signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs" })) : undefined, at: new Date(Number(m.created_at)).toISOString(), version: m.version_id ?? undefined })),
     };
+  }
+
+  /** Images a person pasted into a message (blob hashes). */
+  const messageImages = (m: { data?: { images?: unknown } | null }): string[] => (Array.isArray(m.data?.images) ? m.data.images.filter((h): h is string => typeof h === "string") : []);
+
+  /** The images pasted into a note's thread, newest last, as image content (at most `max`). */
+  async function noteImages(noteID: string, max = 8): Promise<Content[]> {
+    const rows = await db.sql`SELECT data FROM note_messages WHERE note_id = ${noteID} AND kind = 'message' ORDER BY created_at`;
+    const hashes = [...new Set(rows.flatMap((m: any) => messageImages(m)))].slice(-max);
+    const out: Content[] = [];
+    for (const hash of hashes) {
+      const [b] = await db.sql`SELECT content_type FROM blobs WHERE hash = ${hash}`;
+      const body = b ? await deps.store.get(hash) : null;
+      if (!body) continue;
+      const bytes = Buffer.from(await new Response(body).arrayBuffer());
+      out.push({ type: "image", data: bytes.toString("base64"), mimeType: b!.content_type });
+    }
+    return out;
   }
 
   async function latestVersion(documentID: string) {
@@ -305,7 +323,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   // ---------------- notes ----------------
   tool(
     "list_notes",
-    "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link.",
+    "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link. Messages with pasted images list their links; get_note returns the images themselves.",
     { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional(), studio: z.string().optional().describe("Filter studio-level notes by studio script path, e.g. studios/model.ts.") },
     async ({ document: dd, status, part, studio }) => {
       const documentID = docID(dd);
@@ -319,17 +337,18 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     { readOnlyHint: true },
   );
 
-  tool("get_note", "One note thread, described like list_notes.", { document, id: z.string() }, async ({ document: dd, id }) => {
+  tool("get_note", "One note thread, described like list_notes, followed by the images people pasted into it (messages[].images lists them in order).", { document, id: z.string() }, async ({ document: dd, id }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const [n] = await db.sql`SELECT * FROM notes WHERE id = ${id} AND document_id = ${documentID}`;
     if (!n) throw new ToolError(`No note ${id} in this document.`);
-    return text(await noteView(documentID, n, d));
+    const view = text(await noteView(documentID, n, d));
+    return { content: [...view.content, ...(await noteImages(n.id))] };
   });
 
   tool(
     "wait_for_notes",
-    "Block until a human adds a note or replies on one (notes held by other agents are skipped), then return those notes described like list_notes, each with a `reason` (created, and/or the new replies). Returns { notes: [] } at the timeout; call it again to keep waiting. Each call continues where the previous one stopped, starting from when this session connected, so call list_notes first for what was already there.",
+    "Block until a human adds a note or replies on one (notes held by other agents are skipped), then return those notes described like list_notes, each with a `reason` (created, and/or the new replies), followed by the images pasted into them. Returns { notes: [] } at the timeout; call it again to keep waiting. Each call continues where the previous one stopped, starting from when this session connected, so call list_notes first for what was already there.",
     {
       document,
       allDocuments: z.boolean().optional().describe("wait across every document you can access instead of one; each note then carries its `document`"),
@@ -356,6 +375,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (!found.length) return text({ notes: [], hint: "Nothing new. Call wait_for_notes again to keep waiting." });
         const docs = new Map<string, DocState>();
         const notes = [];
+        const images: Content[] = [];
         for (const a of found) {
           const [n] = await db.sql`SELECT * FROM notes WHERE id = ${a.noteID}`;
           if (!n) continue;
@@ -363,8 +383,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           if (!d) docs.set(a.documentID, (d = await loadDoc(db, s.userID, a.documentID)));
           const reason = { created: a.created || undefined, replies: a.replies.length ? a.replies.map((r) => ({ author: r.author, text: r.text })) : undefined };
           notes.push({ reason, ...(allDocuments ? { document: { id: d.id, name: d.name, url: documentURL(d.id) } } : {}), ...(await noteView(a.documentID, n, d)) });
+          if (images.length < 8) images.push(...(await noteImages(n.id, 8 - images.length)));
         }
-        return text({ notes });
+        return { content: [...text({ notes }).content, ...images] };
       } finally {
         clearInterval(beat);
       }

@@ -226,6 +226,23 @@ export function edgeTangent(edge: Shape, atEnd: boolean): Vec3 {
   });
 }
 
+/** `n` points evenly spaced in parameter along an edge (in its orientation), end point excluded. */
+export function sampleEdge(edge: Shape, n: number): Vec3[] {
+  const O = oc();
+  return scoped(() => {
+    const ad = tmp(new O.BRepAdaptor_Curve(edge));
+    const f = ad.FirstParameter(),
+      l = ad.LastParameter();
+    const rev = edge.Orientation() === O.TopAbs_Orientation.TopAbs_REVERSED;
+    const out: Vec3[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      out.push(p3(tmp(ad.Value(rev ? l - (l - f) * t : f + (l - f) * t))));
+    }
+    return out;
+  });
+}
+
 /**
  * Whether the two faces meet tangent-continuously (G1 or better) along `edge`: fillet
  * boundaries, coplanar splits. CAD viewers leave these out of the drawn edges.

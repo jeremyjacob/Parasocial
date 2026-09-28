@@ -5,9 +5,11 @@ import { mutators, type Note, type NoteTarget, type MarkupStroke } from '@paraso
 import type { EntityRef } from '@parasocial/viewer';
 import type { Vec3 } from '@parasocial/kernel';
 import { Vector3 } from 'three';
+import { SvelteMap } from 'svelte/reactivity';
 import { newID } from '$lib/zero';
 import { toast } from '$lib/components/ui/toast';
 import type { WorkspaceState } from './state.svelte';
+import { Attachments } from './attachments.svelte';
 
 export type DraftTarget = { ref: Omit<EntityRef, 'kind'> & { kind: EntityRef['kind'] | 'part' }; point: Vec3; normal?: Vec3 };
 export type StudioDraftTarget = { ref: { kind: 'studio'; studio: string; part?: never; index?: never }; point: Vec3 };
@@ -32,8 +34,47 @@ export class NotesController {
 	/** Note waiting to be re-anchored by the next pick. */
 	reanchoring = $state<string | null>(null);
 	private resolving = 0;
+	/** Images in threads: blob hash → displayable URL (signed, or the local copy of your own upload). */
+	private imageURLs = new SvelteMap<string, string>();
+	private unsigned = new Set<string>();
+	private signTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private ws: WorkspaceState) {}
+
+	/** Pasted images for a new note or a reply. */
+	attachments() {
+		return new Attachments(
+			() => this.ws.documentID,
+			(hash, url) => this.imageURLs.set(hash, url)
+		);
+	}
+
+	/** A URL for an image in a thread, or undefined until it's signed (batched: one request per burst). */
+	imageURL(hash: string): string | undefined {
+		const url = this.imageURLs.get(hash);
+		if (url || this.unsigned.has(hash)) return url;
+		this.unsigned.add(hash);
+		this.signTimer ??= setTimeout(() => this.sign(), 0);
+	}
+
+	private async sign() {
+		this.signTimer = undefined;
+		const hashes = [...this.unsigned].filter((h) => !this.imageURLs.has(h));
+		if (!hashes.length) return;
+		try {
+			const res = await fetch('/api/blobs/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documentID: this.ws.documentID, hashes }) });
+			if (!res.ok) throw new Error(String(res.status));
+			const { urls } = (await res.json()) as { urls: Record<string, string> };
+			for (const [h, u] of Object.entries(urls)) this.imageURLs.set(h, u);
+			// signed for an hour: sign again well before they expire
+			setTimeout(() => {
+				for (const h of Object.keys(urls)) if (this.imageURLs.get(h) === urls[h]) this.imageURLs.delete(h), this.unsigned.delete(h);
+			}, 50 * 60_000);
+		} catch {
+			// not signed (not synced to the server yet, or offline): let the next render ask again
+			setTimeout(() => hashes.forEach((h) => this.unsigned.delete(h)), 5_000);
+		}
+	}
 
 	/** Keep draft IDs through undo/redo; only existing, unattached strokes can be posted or discarded. */
 	get draftStrokeIDs(): string[] {
@@ -101,12 +142,13 @@ export class NotesController {
 		for (const id of strokeIDs) this.ws.zero.mutate(mutators.markup.remove({ id }));
 	}
 
-	async post(text: string) {
+	async post(text: string, images?: Attachments) {
 		const d = this.draft;
 		if (!d || !this.ws.viewer || this.posting) return false;
 		this.posting = true;
 		try {
-			const id = await this.create(d.targets, text, this.draftStrokeIDs);
+			const hashes = (await images?.hashes()) ?? [];
+			const id = await this.create(d.targets, text, this.draftStrokeIDs, false, hashes);
 			this.draft = null;
 			this.active = id;
 			if (this.ws.tool === 'note' || this.ws.tool === 'pencil') this.ws.tool = 'select';
@@ -138,7 +180,7 @@ export class NotesController {
 	}
 
 	/** Names the targets, uploads the view snapshot (upload first, then reference: §3), creates the note. */
-	private async create(targets: Draft['targets'], text: string, strokeIDs: string[], assignAgent = false) {
+	private async create(targets: Draft['targets'], text: string, strokeIDs: string[], assignAgent = false, images: string[] = []) {
 		const ws = this.ws;
 		const viewer = ws.viewer!;
 		// names for the targets (stable names are how notes find their geometry again)
@@ -157,7 +199,7 @@ export class NotesController {
 			sectionPlane: viewer.getSection() ?? undefined,
 			snapshot: hash
 		};
-		await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs, assignAgent } as any), 'Add note').then((r) => r.client);
+		await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs, assignAgent, images } as any), 'Add note').then((r) => r.client);
 		return id;
 	}
 
@@ -197,8 +239,8 @@ export class NotesController {
 	}
 
 	// ---------- thread actions ----------
-	reply(noteID: string, text: string) {
-		return this.ws.mutate(mutators.note.reply({ id: newID(), noteID, text } as any), 'Reply');
+	reply(noteID: string, text: string, images: string[] = []) {
+		return this.ws.mutate(mutators.note.reply({ id: newID(), noteID, text, images } as any), 'Reply');
 	}
 	setStatus(noteID: string, status: Note['status']) {
 		return this.ws.mutate(mutators.note.setStatus({ noteID, status } as any), status === 'Resolved' ? 'Mark note done' : 'Reopen note');

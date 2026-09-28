@@ -82,9 +82,6 @@
 					Create account with passkey
 				</Button>
 			</form>
-			<p class="mt-4 rounded-md bg-hover px-3 py-2 text-label text-fg-secondary">
-				Don’t lose it, someone didn’t build a recovery flow.
-			</p>
 			{#if !data.needsSetup}
 				<div class="mt-4 text-center text-ui text-fg-secondary">
 					Have an account? <button class="focus-ring rounded-xs font-medium text-accent hover:underline" onclick={() => ((mode = 'signin'), (error = ''))}>Sign in</button>

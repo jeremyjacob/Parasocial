@@ -1,5 +1,6 @@
 /**
- * Content-addressed blob store for authored binaries (note snapshots, document thumbnails).
+ * Content-addressed blob store for authored binaries (note snapshots, images pasted into note
+ * messages (`note_messages.data.images`), document thumbnails).
  *
  *   upload first → get the sha256 → run the mutation that references it.
  *   note.create checks the blobs row exists and bumps its refcount, so a row
@@ -144,7 +145,7 @@ export function verifyBlobSignature(
 
 // ───────────────────────────── handlers ─────────────────────────────
 
-const ALLOWED_TYPES = new Set(["image/png", "image/webp", "image/jpeg", "image/avif"]);
+const ALLOWED_TYPES = new Set(["image/png", "image/webp", "image/jpeg", "image/avif", "image/gif"]);
 export const MAX_BLOB_BYTES = 10 * 1024 * 1024;
 
 export function createBlobHandlers(deps: {
@@ -193,6 +194,7 @@ export function createBlobHandlers(deps: {
       SELECT b.hash FROM blobs b
       WHERE b.hash = ANY(${valid})
         AND (EXISTS (SELECT 1 FROM notes n WHERE n.document_id = ${documentID} AND n.snapshot_hash = b.hash)
+             OR EXISTS (SELECT 1 FROM note_messages m WHERE m.document_id = ${documentID} AND m.data->'images' ? b.hash)
              OR EXISTS (SELECT 1 FROM documents d WHERE d.id = ${documentID} AND b.hash IN (d.thumb_light, d.thumb_dark))
              OR (b.uploaded_by = ${user.userID} AND b.refcount = 0))`;
     const urls: Record<string, string> = {};
@@ -271,10 +273,15 @@ export function createBlobHandlers(deps: {
 export async function sweepBlobs(db: Db, store: BlobStore, opts: { graceMs?: number } = {}) {
   const grace = opts.graceMs ?? 24 * 3600_000;
   await db.sql`
-    UPDATE blobs b SET refcount = coalesce(r.n, 0)
-    FROM (SELECT b2.hash, ((SELECT count(*) FROM notes n WHERE n.snapshot_hash = b2.hash)
-      + (SELECT count(*) FROM documents d WHERE b2.hash IN (d.thumb_light, d.thumb_dark)))::int AS n FROM blobs b2) r
-    WHERE r.hash = b.hash AND b.refcount IS DISTINCT FROM coalesce(r.n, 0)`;
+    WITH refs AS (
+      SELECT snapshot_hash AS hash FROM notes WHERE snapshot_hash IS NOT NULL
+      UNION ALL SELECT thumb_light FROM documents WHERE thumb_light IS NOT NULL
+      UNION ALL SELECT thumb_dark FROM documents WHERE thumb_dark IS NOT NULL
+      UNION ALL SELECT jsonb_array_elements_text(data->'images') FROM note_messages WHERE jsonb_typeof(data->'images') = 'array'
+    ), counts AS (SELECT hash, count(*)::int AS n FROM refs GROUP BY hash)
+    UPDATE blobs b SET refcount = coalesce(c.n, 0)
+    FROM blobs b2 LEFT JOIN counts c ON c.hash = b2.hash
+    WHERE b2.hash = b.hash AND b.refcount IS DISTINCT FROM coalesce(c.n, 0)`;
   const doomed = await db.sql`
     SELECT hash FROM blobs WHERE refcount = 0 AND created_at < ${new Date(Date.now() - grace)}`;
   const deleted: string[] = [];
@@ -282,7 +289,8 @@ export async function sweepBlobs(db: Db, store: BlobStore, opts: { graceMs?: num
     // Delete the row first (guarded against a concurrent reference), then the bytes.
     const gone = await db.sql`DELETE FROM blobs WHERE hash = ${hash} AND refcount = 0
                               AND NOT EXISTS (SELECT 1 FROM notes WHERE snapshot_hash = ${hash})
-                              AND NOT EXISTS (SELECT 1 FROM documents WHERE ${hash} IN (thumb_light, thumb_dark)) RETURNING hash`;
+                              AND NOT EXISTS (SELECT 1 FROM documents WHERE ${hash} IN (thumb_light, thumb_dark))
+                              AND NOT EXISTS (SELECT 1 FROM note_messages WHERE data->'images' ? ${hash}) RETURNING hash`;
     if (gone.length) {
       await store.delete(hash);
       deleted.push(hash);

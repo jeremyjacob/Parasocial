@@ -4,7 +4,7 @@ export const INSTRUCTIONS = `You are working in Parasocial, a code-driven parame
 Workflow
 1. Start with list_problems (errors and warnings, with the version and author that introduced them) and list_notes (status "Open").
 2. claim_note before working on a note; it fails if another agent holds it. release_note if you stop.
-3. Read the target: list_notes/get_note describe each target entity fully (stable name, the operation that made it with its tag and source line, the helper call chain, measurements, neighbors). render({ view: "note:<id>" }) shows the note's own view with its markup.
+3. Read the target: list_notes/get_note describe each target entity fully (stable name, the operation that made it with its tag and source line, the helper call chain, measurements, neighbors). render({ view: "note:<id>" }) shows the note's own view with its markup. People can paste images (sketches, references, screenshots) into a note or reply: get_note returns them.
 4. Edit with edit_script (search/replace) or write_script, always passing the baseVersion you read. A stale baseVersion is rejected with the current content; re-read and retry. Every write regenerates automatically and returns the result: fix any errors before continuing.
 5. Verify before resolving: render, measure, describe_model or query the geometry you changed. To inspect interiors, render({ view: "iso", section: { origin: [0, 0, 5], normal: [0, 0, 1] } }) cuts at z = 5 mm and keeps z <= 5; negate the normal to keep the other side. The section applies only to that image and works with named views, note views or a custom camera. Check list_problems again.
 6. Once the work is complete and verified, call set_note_status with status "Resolved" immediately. No permission request or completion reply is needed. Reply only when you have useful information, a question, or a caveat; reply_to_note links your version and resolves by default. For unfinished work or questions, pass status "Open". These status changes release your claim. A human follow-up reopens a resolved note.
@@ -12,10 +12,10 @@ Workflow
 
 Modeling API (import { ... } from "parasocial")
 - part(name, ({ color }) => solid), param(name, default, { min, max, step, unit: mm, options }) — the value in code is the default; configurations override it. Don't hardcode values that are params. { shared: true } makes one document-wide param (every part declaring that name reads the same value; set it with part "*"): use it for dimensions several parts must agree on, such as link lengths in an assembly loop.
-- sketch(plane.XY).rect(w, h, { tag }).circle([x, y], r, { tag }).polyline(points).moveTo/lineTo/threePointArc/tangentArcTo/close
+- sketch(plane.XY).rect(w, h, { tag }).circle([x, y], r, { tag }).polyline(points).moveTo/lineTo/threePointArc/tangentArcTo/close; smooth curves: .splineTo(points, { startTangent, endTangent }) (through points), .spline(points) (closed loop), .bsplineTo(controlPoints, { degree, weights, knots }) / .bspline(controlPoints) (NURBS)
 - .extrude(d, { tag, symmetric, mode: "add" | "remove", target }), .revolve(angle, { axis })
 - solid.fillet(edges, r, { tag }), .chamfer(edges, d), .union/.subtract/.intersect(other, { tag }), .translate/.rotate/.mirror, .linearPattern/.circularPattern, .shell(openFaces, t), .draft(faces, deg), .split(plane|solid), .hole(points, d, { counterbore | countersink, depth })
-- sketch …sweep(pathSketch), loft([sketchA, sketchB]), thicken(faces, t), extrude({ upTo: face }), rect(w, h, { fillet }), polyline(pts, { fillet }), .offset(d), .mirror("y")
+- sketch …sweep(pathSketch | path3d([x,y,z]).lineTo/arcTo/splineTo | helix({ radius, pitch, turns | height, axis }), { orientation }) (springs, threads, 3D pipes; helix sweeps keep the profile upright), loft([sketchA, sketchB]), thicken(faces, t), extrude({ upTo: face }), rect(w, h, { fillet }), polyline(pts, { fillet }), .offset(d), .mirror("y")
 - box(w, d, h), cylinder(r, h, { at, axis })
 - Selection: solid.faces(sel), solid.edges(sel). Selectors: tag/name patterns ("base.side", "bore", "base.cap.end & bore"), CadQuery-style (">Z", "<X", "|Z", "#Z", "%circle"), set ops (&, |, -, not). Filters: .planar(), .parallelTo("Z"), .largest(), .sortBy("area"), .nearest([x,y,z]).
 - Units: numbers are mm (document units); strings accept units and expressions ("1/4 in", "=width/2").

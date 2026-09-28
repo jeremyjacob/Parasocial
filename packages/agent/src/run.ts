@@ -143,7 +143,10 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
     (poll as any).unref?.();
 
     const note = await client.callTool({ name: "get_note", arguments: { document: documentID, id: noteID } });
-    const noteText = (note.content as { type: string; text?: string }[]).find((c) => c.type === "text")?.text ?? "";
+    const noteContent = note.content as { type: string; text?: string; data?: string; mimeType?: string }[];
+    const noteText = noteContent.find((c) => c.type === "text")?.text ?? "";
+    // images pasted into the thread go to the model as images
+    const noteImages = noteContent.filter((c) => c.type === "image" && c.data).map((c) => ({ type: "file" as const, mediaType: c.mimeType ?? "image/png", data: c.data! }));
     const tools = await mcpToolSet(client, documentID);
 
     for (const name of ["set_note_status", "reply_to_note", "release_note"]) {
@@ -161,14 +164,14 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
     }
 
     const instructions = `${client.getInstructions() ?? ""}\n\n${ADDENDUM}`;
-    const prompt = `You've been handed note ${noteID}. Here it is:\n\n${noteText}`;
-    t({ event: "prompt", instructions, prompt, tools: Object.keys(tools) });
+    const prompt = `You've been handed note ${noteID}. Here it is:\n\n${noteText}${noteImages.length ? `\n\nThe ${noteImages.length === 1 ? "image" : `${noteImages.length} images`} pasted into the thread follow, in order.` : ""}`;
+    t({ event: "prompt", instructions, prompt, images: noteImages.length, tools: Object.keys(tools) });
     let result;
     try {
       result = await generateText({
         model,
         instructions,
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: noteImages.length ? [{ type: "text", text: prompt }, ...noteImages] : prompt }],
         tools,
         stopWhen: [isStepCount(opts.maxSteps ?? MAX_STEPS), () => settled],
         abortSignal: abort.signal,

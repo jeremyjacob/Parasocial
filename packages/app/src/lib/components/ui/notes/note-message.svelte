@@ -12,6 +12,8 @@
 		version?: { version: number; time?: string; summary?: string; onclick?: () => void };
 		/** Agent activity log (render, measure, edit …), collapsible. */
 		activity?: string[];
+		/** Images pasted into the message. */
+		images?: import('./note-images.svelte').NoteImage[];
 	};
 </script>
 
@@ -21,6 +23,7 @@
 	import { Avatar } from '$lib/components/ui/avatar';
 	import MentionChip from './mention-chip.svelte';
 	import VersionChip from './version-chip.svelte';
+	import NoteImages from './note-images.svelte';
 
 	let { message, class: className }: { message: NoteMessageData; class?: string } = $props();
 	let logOpen = $state(false);
@@ -88,6 +91,9 @@
 			>
 				{expanded ? 'Show less' : 'Show more'}
 			</button>
+		{/if}
+		{#if message.images?.length}
+			<NoteImages images={message.images} class={message.body.length ? 'mt-1.5' : 'mt-0.5'} />
 		{/if}
 		{#if message.version}
 			<VersionChip {...message.version} class="mt-0.5 w-full" />

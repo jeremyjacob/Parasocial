@@ -19,6 +19,7 @@ export type Built = { shape: Shape; maker: any | null; caps?: { start: Shape; en
 const pnt = (p: Vec3) => tmp(new (oc().gp_Pnt)(p[0], p[1], p[2]));
 const dir = (d: Vec3) => tmp(new (oc().gp_Dir)(d[0], d[1], d[2]));
 const vec = (d: Vec3) => tmp(new (oc().gp_Vec)(d[0], d[1], d[2]));
+const dist = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const progress = () => tmp(new (oc().Message_ProgressRange)());
 
 function guard<T>(what: string, fn: () => T): T {
@@ -59,17 +60,146 @@ export function circleEdge(center: Vec3, normal: Vec3, radius: number): Shape {
   }));
 }
 
-export function splineEdge(points: Vec3[], closed = false): Shape {
+export type SplineOpts = {
+  /** Periodic curve through all points, smooth (C2) at the seam. Don't repeat the first point. */
+  closed?: boolean;
+  startTangent?: Vec3;
+  endTangent?: Vec3;
+  /** Per-point tangent directions (null = free), same length as `points`. */
+  tangents?: (Vec3 | null)[];
+};
+
+const fmt = (p: Vec3) => `(${p.map((c) => +c.toFixed(4)).join(", ")})`;
+
+/** Smooth curve through `points`. Tangents are directions: their magnitude is ignored. */
+export function splineEdge(points: Vec3[], opts: SplineOpts | boolean = {}): Shape {
   const O = oc();
+  const o: SplineOpts = typeof opts === "boolean" ? { closed: opts } : opts;
   return guard("spline", () => scoped(() => {
-    if (points.length < 2) throw new KernelError("spline needs at least 2 points");
-    const pts = closed ? [...points, points[0]] : points;
+    let pts = points;
+    if (o.closed && pts.length > 2 && dist(pts[0], pts[pts.length - 1]) < 1e-7) pts = pts.slice(0, -1);
+    if (pts.length < (o.closed ? 3 : 2)) throw new KernelError(`${o.closed ? "closed spline needs at least 3" : "spline needs at least 2"} distinct points (got ${pts.length})`);
+    for (let i = 0; i < pts.length - (o.closed ? 0 : 1); i++) {
+      const j = (i + 1) % pts.length;
+      if (dist(pts[i], pts[j]) < 1e-6) throw new KernelError(`spline points ${i} and ${j} coincide at ${fmt(pts[i])}`);
+    }
+    if (o.closed && (o.startTangent || o.endTangent)) throw new KernelError("a closed spline is smooth at its seam: startTangent/endTangent don't apply (use tangents[0] to set the seam direction)");
+    if (o.tangents && o.tangents.length !== pts.length) throw new KernelError(`spline tangents needs one entry (or null) per point: got ${o.tangents.length} for ${pts.length} points`);
+    const unitT = (t: Vec3, what: string): Vec3 => {
+      const l = Math.hypot(t[0], t[1], t[2]);
+      if (!(l > 1e-12)) throw new KernelError(`spline ${what} must be a non-zero direction (got ${fmt(t)})`);
+      return [t[0] / l, t[1] / l, t[2] / l];
+    };
     const arr: any = tmp(new O.NCollection_Array1_gp_Pnt(1, pts.length));
     pts.forEach((p, i) => arr.SetValue(i + 1, pnt(p)));
-    const b = tmp(new O.GeomAPI_PointsToBSpline());
-    b.Init(arr, 3, 8, O.GeomAbs_Shape.GeomAbs_C2, 1e-4);
-    if (!b.IsDone()) throw new KernelError("spline fit failed; check the points aren't coincident");
+    // plain open splines keep the legacy least-squares fit: Interpolate differs visibly (up to ~20% of
+    // the span on wiggly point sets), which would reshape existing documents
+    if (!o.closed && !o.startTangent && !o.endTangent && !o.tangents) {
+      const b = tmp(new O.GeomAPI_PointsToBSpline());
+      b.Init(arr, 3, 8, O.GeomAbs_Shape.GeomAbs_C2, 1e-4);
+      if (!b.IsDone()) throw new KernelError("spline fit failed; check the points aren't coincident");
+      return tmp(new O.BRepBuilderAPI_MakeEdge(tmp(b.Curve()))).Edge();
+    }
+    const b = tmp(new O.GeomAPI_Interpolate(tmp(new O.NCollection_HArray1_gp_Pnt(arr)), !!o.closed, 1e-7));
+    const ts = o.tangents ? [...o.tangents] : pts.map((): Vec3 | null => null);
+    if (o.startTangent) ts[0] = o.startTangent;
+    if (o.endTangent) ts[pts.length - 1] = o.endTangent;
+    if (ts.some((t) => t)) {
+      const tv: any = tmp(new O.NCollection_Array1_gp_Vec(1, pts.length));
+      const flags: any = tmp(new O.NCollection_Array1_bool(1, pts.length));
+      ts.forEach((t, i) => {
+        const what = i === 0 && o.startTangent ? "startTangent" : i === pts.length - 1 && o.endTangent ? "endTangent" : `tangent ${i}`;
+        tv.SetValue(i + 1, vec(t ? unitT(t, what) : [0, 0, 0]));
+        flags.SetValue(i + 1, !!t);
+      });
+      b.Load(tv, tmp(new O.NCollection_HArray1_bool(flags)), true);
+    }
+    b.Perform();
+    if (!b.IsDone()) throw new KernelError("spline interpolation failed; check the points and tangents");
     return tmp(new O.BRepBuilderAPI_MakeEdge(tmp(b.Curve()))).Edge();
+  }));
+}
+
+export type BSplineOpts = {
+  poles: Vec3[];
+  /** Default 3 (lowered to poles − 1 when there are fewer poles). */
+  degree?: number;
+  /** Rational weights, one per pole, all > 0. */
+  weights?: number[];
+  /** Distinct knots with `mults`, or (without `mults`) the full flat knot vector. Default: clamped uniform. */
+  knots?: number[];
+  mults?: number[];
+  /** Closed periodic curve (default knots: uniform, all multiplicity 1). */
+  periodic?: boolean;
+};
+
+/** Validate and fill in a B-spline's degree, knots and multiplicities (pure JS; throws KernelError). */
+export function bsplineKnots(o: BSplineOpts): { degree: number; knots: number[]; mults: number[] } {
+  const n = o.poles.length;
+  const deg = o.degree ?? Math.max(1, Math.min(3, n - (o.periodic ? 0 : 1)));
+  if (!Number.isInteger(deg) || deg < 1 || deg > 25) throw new KernelError(`bspline degree must be an integer from 1 to 25 (got ${deg})`);
+  if (n < deg + 1) throw new KernelError(`a degree-${deg} bspline needs at least ${deg + 1} control points (got ${n})`);
+  if (o.weights) {
+    if (o.weights.length !== n) throw new KernelError(`bspline needs one weight per control point (got ${o.weights.length} weights for ${n} points)`);
+    o.weights.forEach((w, i) => {
+      if (!(w > 0) || !Number.isFinite(w)) throw new KernelError(`bspline weight ${i} must be positive (got ${w})`);
+    });
+  }
+  let knots = o.knots,
+    mults = o.mults;
+  if (knots && !mults) {
+    // flat knot vector -> distinct knots + multiplicities
+    const k: number[] = [],
+      m: number[] = [];
+    knots.forEach((u, i) => {
+      if (i && u < knots![i - 1]) throw new KernelError(`bspline knots must be non-decreasing (knot ${i} = ${u} < ${knots![i - 1]})`);
+      if (i && u - k[k.length - 1] < 1e-12) m[m.length - 1]++;
+      else (k.push(u), m.push(1));
+    });
+    (knots = k), (mults = m);
+  }
+  if (!mults) {
+    if (o.periodic) mults = Array(n + 1).fill(1);
+    else mults = [deg + 1, ...Array(n - deg - 1).fill(1), deg + 1];
+  }
+  if (!knots) knots = mults.map((_, i) => i / (mults!.length - 1));
+  if (knots.length !== mults.length) throw new KernelError(`bspline knots and mults must have the same length (got ${knots.length} and ${mults.length})`);
+  if (knots.length < 2) throw new KernelError("bspline needs at least 2 distinct knots");
+  for (let i = 1; i < knots.length; i++) if (!(knots[i] > knots[i - 1])) throw new KernelError(`bspline knots must be increasing when mults are given (knot ${i} = ${knots[i]} after ${knots[i - 1]})`);
+  mults.forEach((m, i) => {
+    const end = i === 0 || i === mults!.length - 1;
+    const max = end && !o.periodic ? deg + 1 : deg;
+    if (!Number.isInteger(m) || m < 1 || m > max) throw new KernelError(`bspline multiplicity ${i} must be an integer from 1 to ${max} (got ${m})`);
+  });
+  const sum = mults.reduce((a, b) => a + b, 0);
+  if (o.periodic) {
+    if (mults[0] !== mults[mults.length - 1]) throw new KernelError(`a periodic bspline needs equal first and last multiplicities (got ${mults[0]} and ${mults[mults.length - 1]})`);
+    if (sum - mults[mults.length - 1] !== n) throw new KernelError(`a periodic bspline needs sum(mults) − last mult = number of control points (${sum - mults[mults.length - 1]} ≠ ${n})`);
+  } else if (sum !== n + deg + 1) throw new KernelError(`bspline needs sum(mults) = control points + degree + 1 (${sum} ≠ ${n} + ${deg} + 1)`);
+  return { degree: deg, knots, mults };
+}
+
+/** B-spline / NURBS curve from control points (poles). */
+export function bsplineEdge(o: BSplineOpts): Shape {
+  const O = oc();
+  return guard("bspline", () => scoped(() => {
+    const { degree, knots, mults } = bsplineKnots(o);
+    const n = o.poles.length;
+    const P: any = tmp(new O.NCollection_Array1_gp_Pnt(1, n));
+    o.poles.forEach((p, i) => P.SetValue(i + 1, pnt(p)));
+    const K: any = tmp(new O.NCollection_Array1_double(1, knots.length));
+    knots.forEach((k, i) => K.SetValue(i + 1, k));
+    const M: any = tmp(new O.NCollection_Array1_int(1, mults.length));
+    mults.forEach((m, i) => M.SetValue(i + 1, m));
+    let c: any;
+    if (o.weights) {
+      const W: any = tmp(new O.NCollection_Array1_double(1, n));
+      o.weights.forEach((w, i) => W.SetValue(i + 1, w));
+      c = tmp(new O.Geom_BSplineCurve(P, W, K, M, degree, !!o.periodic, true));
+    } else c = tmp(new O.Geom_BSplineCurve(P, K, M, degree, !!o.periodic));
+    const mk = tmp(new O.BRepBuilderAPI_MakeEdge(c));
+    if (!mk.IsDone()) throw new KernelError("bspline edge could not be built (degenerate control points?)");
+    return mk.Edge();
   }));
 }
 
@@ -293,15 +423,110 @@ const list = (shapes: Shape[]) => {
   return l;
 };
 
+/**
+ * How the profile is oriented along the path:
+ * - `corrected` (default): corrected Frenet (BRepOffsetAPI_MakePipe), minimal twist on general paths.
+ * - `frenet`: true Frenet trihedron.
+ * - `{ binormal }`: the profile keeps a fixed binormal direction (helices: the helix axis, so a
+ *   thread profile stays upright).
+ */
+export type SweepMode = "corrected" | "frenet" | { binormal: Vec3 };
+
 /** Sweep a profile (face or wire) along a path wire. */
-export function sweep(profile: Shape, path: Shape): Built {
+export function sweep(profile: Shape, path: Shape, opts: { mode?: SweepMode } = {}): Built {
   const O = oc();
+  const mode = opts.mode ?? "corrected";
   return guard("sweep", () => scoped(() => {
-    // the two-argument form uses a corrected Frenet trihedron
-    const mk = new O.BRepOffsetAPI_MakePipe(O.TopoDS.Wire(path), profile);
-    mk.Build(progress());
-    if (!mk.IsDone()) throw new KernelError("sweep failed: check the profile sits at the start of the path and the path has no sharp kinks");
+    if (mode === "corrected") {
+      const mk = new O.BRepOffsetAPI_MakePipe(O.TopoDS.Wire(path), profile);
+      mk.Build(progress());
+      if (!mk.IsDone()) throw new KernelError("sweep failed: check the profile sits at the start of the path and the path has no sharp kinks");
+      return { shape: downcast(mk.Shape()), maker: mk, caps: { start: mk.FirstShape(), end: mk.LastShape() } };
+    }
+    // pipe shell: sweeps a wire; a face contributes its outer wire (holes aren't supported)
+    let section = profile;
+    const T = O.TopAbs_ShapeEnum;
+    const kind = profile.ShapeType() === T.TopAbs_FACE ? "face" : profile.ShapeType() === T.TopAbs_WIRE ? "wire" : "other";
+    if (kind === "face") {
+      if (explore(profile, "wire").items.length > 1) throw new KernelError("sweep: this orientation mode can't sweep a profile with holes; sweep the outer outline and subtract a second sweep of the hole");
+      section = tmp(O.BRepTools.OuterWire(O.TopoDS.Face(profile)));
+    } else if (kind !== "wire") throw new KernelError("sweep: this orientation mode needs a single closed profile (one region, no holes)");
+    const mk = new O.BRepOffsetAPI_MakePipeShell(O.TopoDS.Wire(path));
+    if (mode === "frenet") mk.SetMode(true);
+    else mk.SetMode(dir(mode.binormal));
+    mk.Add(section, false, false);
+    try {
+      mk.Build(progress());
+    } catch (e) {
+      mk.delete();
+      throw new KernelError(`sweep failed: ${occtMessage(e)}`);
+    }
+    if (!mk.IsDone()) {
+      mk.delete();
+      throw new KernelError("sweep failed: check the profile sits at the start of the path, is small enough for the path's curvature, and the path has no sharp kinks");
+    }
+    if (kind === "face" && !mk.MakeSolid()) {
+      mk.delete();
+      throw new KernelError("sweep failed: the swept profile could not be closed into a solid");
+    }
     return { shape: downcast(mk.Shape()), maker: mk, caps: { start: mk.FirstShape(), end: mk.LastShape() } };
+  }));
+}
+
+export type HelixOpts = {
+  radius: number;
+  /** Axial distance per turn. */
+  pitch: number;
+  /** Axial length; give this or `turns`. */
+  height?: number;
+  turns?: number;
+  origin?: Vec3;
+  axis?: Vec3;
+  /** Radial direction of the start point (default: perpendicular to the axis, see `helixXDir`). */
+  xDir?: Vec3;
+  leftHanded?: boolean;
+  /** Half-angle (radians) of a conical helix: positive grows the radius along the axis. */
+  taper?: number;
+};
+
+/** Default start direction of a helix around `axis`: Z → +X, X → +Y, Y → +Z, else a perpendicular. */
+export function helixXDir(axis: Vec3): Vec3 {
+  const l = Math.hypot(...axis);
+  const a = axis.map((c) => c / l) as Vec3;
+  const ref: Vec3 = Math.abs(a[2]) > 0.9 ? [1, 0, 0] : Math.abs(a[0]) > 0.9 ? [0, 1, 0] : Math.abs(a[1]) > 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const d = ref[0] * a[0] + ref[1] * a[1] + ref[2] * a[2];
+  const x = ref.map((c, i) => c - d * a[i]) as Vec3;
+  const xl = Math.hypot(...x);
+  return x.map((c) => c / xl) as Vec3;
+}
+
+/** Helix edge (a line in the parameter space of a cylinder, or a cone when tapered). */
+export function helixEdge(o: HelixOpts): Shape {
+  const O = oc();
+  return guard("helix", () => scoped(() => {
+    const { radius, pitch } = o;
+    const taper = o.taper ?? 0;
+    if (!(radius > 0)) throw new KernelError(`helix radius must be positive (got ${radius})`);
+    if (!(pitch > 0)) throw new KernelError(`helix pitch must be positive (got ${pitch})`);
+    if (o.height === undefined && o.turns === undefined) throw new KernelError("helix needs a height or a number of turns");
+    const height = o.height ?? o.turns! * pitch;
+    if (!(height > 0)) throw new KernelError(`helix ${o.height === undefined ? "turns" : "height"} must be positive (got ${o.height ?? o.turns})`);
+    if (!(Math.abs(taper) < Math.PI / 2 - 1e-6)) throw new KernelError(`helix taper must be between -90° and 90° (got ${(taper * 180) / Math.PI}°)`);
+    const axis = o.axis ?? [0, 0, 1];
+    const xDir = o.xDir ?? helixXDir(axis);
+    const ax3 = tmp(new O.gp_Ax3(pnt(o.origin ?? [0, 0, 0]), dir(axis), dir(xDir)));
+    const turns = height / pitch;
+    // cone parameter v runs along the generatrix: z = v cos(taper)
+    const dv = pitch / Math.cos(taper);
+    if (taper && radius + turns * dv * Math.sin(taper) <= 0) throw new KernelError(`helix taper shrinks the radius to zero before height ${height}; use a smaller taper or height`);
+    const surf = tmp(taper ? new O.Geom_ConicalSurface(ax3, taper, radius) : new O.Geom_CylindricalSurface(ax3, radius));
+    const du = 2 * Math.PI * (o.leftHanded ? -1 : 1);
+    const line = tmp(new O.Geom2d_Line(tmp(new O.gp_Pnt2d(0, 0)), tmp(new O.gp_Dir2d(du, dv))));
+    const mk = tmp(new O.BRepBuilderAPI_MakeEdge(line, surf, 0, turns * Math.hypot(du, dv)));
+    if (!mk.IsDone()) throw new KernelError("helix edge could not be built");
+    const e = mk.Edge();
+    O.BRepLib.BuildCurves3d(e, 1e-6, O.GeomAbs_Shape.GeomAbs_C1, 14, 200);
+    return e;
   }));
 }
 

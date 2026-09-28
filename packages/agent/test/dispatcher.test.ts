@@ -15,18 +15,21 @@ afterAll(async () => db?.drop());
 /** A dispatcher whose runs just record what they were given and reply as the built-in agent. */
 function recording() {
   const runs: RunOptions[] = [];
-  const gates: (() => void)[] = [];
+  const gates: (() => Promise<void>)[] = [];
   const fake = async (_deps: unknown, o: RunOptions): Promise<RunOutcome> => {
     runs.push(o);
-    await new Promise<void>((r) => gates.push(r));
+    let replied!: () => void;
+    const done = new Promise<void>((r) => (replied = r));
+    await new Promise<void>((r) => gates.push(() => (r(), done)));
     const sessionID = await builtinSession({ db }, o.userID, o.documentID);
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID: o.noteID, text: "Which side?", kind: "message" } as any), { userID: o.userID, agentSessionID: sessionID });
+    replied();
     return "open";
   };
   const d = createAgentDispatcher(toolDeps(db), { run: fake, sweepMs: 0, log: () => {} });
   const finish = async () => {
     while (!gates.length) await Bun.sleep(5);
-    gates.shift()!();
+    await gates.shift()!(); // until the run has replied
     await Bun.sleep(30);
     await d.scan();
   };
@@ -147,6 +150,8 @@ test("runs interrupted by a restart are given back and picked up again", async (
   const sessionID = await builtinSession({ db }, ada, documentID);
   await run(db, mutators.note.assignAgent({ noteID, assign: true }), { userID: ada });
   await run(db, mutators.note.claim({ noteID }), { userID: ada, agentSessionID: sessionID });
+  // it had already logged progress when it was cut off
+  await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "render front", kind: "activity" } as any), { userID: ada, agentSessionID: sessionID });
 
   const { d, runs, finish } = recording();
   try {
