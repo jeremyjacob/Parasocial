@@ -1,26 +1,30 @@
 <script lang="ts">
 	import { Bot, KeyRound, ArrowRight } from '@lucide/svelte';
-	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
 
-	/** Shown until the user has an agent: their own provider key (built-in agent) or a coding agent over MCP. */
+	/** Shown until the user has an agent: their own provider key (built-in agent) or a coding agent over MCP. Flat tiles; the page supplies the heading. */
 	let { onConnect, class: className }: { onConnect: () => void; class?: string } = $props();
-	const option = 'flex flex-col gap-2 rounded-control border border-line-subtle bg-canvas p-4 text-left';
+	const tile =
+		'group flex items-start gap-3 rounded-panel border border-line bg-panel p-4 text-left transition-colors hover:border-line-strong focus-visible:outline-none focus-ring';
+	const chip = 'grid size-8 shrink-0 place-items-center rounded-control bg-accent-subtle text-accent-fg';
+	const arrow = 'mt-0.5 shrink-0 text-fg-tertiary transition-transform group-hover:translate-x-0.5 group-hover:text-fg';
 </script>
 
-<section class={cn('rounded-panel border border-line bg-panel p-5 text-left', className)} data-testid="agent-setup">
-	<h2 class="text-section">Set up an agent to start designing</h2>
-	<p class="mt-1 text-ui text-fg-secondary">Agents write and edit the models in Parasocial. Pick one way in; you can add the other later.</p>
-	<div class="mt-4 grid gap-3 sm:grid-cols-2">
-		<div class={option}>
-			<span class="flex items-center gap-2 text-ui font-medium"><KeyRound size={14} class="text-fg-secondary" /> Use your API key</span>
-			<p class="flex-1 text-label text-fg-secondary">Run the built-in agent on Anthropic, OpenAI, Google or a local model. Hand it notes right from the document.</p>
-			<Button variant="primary" size="sm" class="self-start" href="/settings#agent" data-testid="setup-api-key">Add API key <ArrowRight size={14} /></Button>
-		</div>
-		<div class={option}>
-			<span class="flex items-center gap-2 text-ui font-medium"><Bot size={14} class="text-fg-secondary" /> Connect a coding agent</span>
-			<p class="flex-1 text-label text-fg-secondary">Add Parasocial as an MCP server in Claude Code, Codex or OpenCode and work from your terminal.</p>
-			<Button size="sm" class="self-start" onclick={onConnect} data-testid="setup-connect-agent">Connect agent <ArrowRight size={14} /></Button>
-		</div>
-	</div>
-</section>
+<div class={cn('grid gap-3 sm:grid-cols-2', className)} data-testid="agent-setup">
+	<a class={tile} href="/settings#agent" data-testid="setup-api-key">
+		<span class={chip}><KeyRound size={16} /></span>
+		<span class="flex min-w-0 flex-1 flex-col gap-1">
+			<span class="text-ui font-medium">Use your API key</span>
+			<span class="text-label text-fg-secondary">Run the built-in agent on Anthropic, OpenAI, Google or a local model.</span>
+		</span>
+		<ArrowRight size={16} class={arrow} />
+	</a>
+	<button type="button" class={tile} onclick={onConnect} data-testid="setup-connect-agent">
+		<span class={chip}><Bot size={16} /></span>
+		<span class="flex min-w-0 flex-1 flex-col gap-1">
+			<span class="text-ui font-medium">Connect a coding agent</span>
+			<span class="text-label text-fg-secondary">Add Parasocial over MCP in Claude Code, Codex or OpenCode.</span>
+		</span>
+		<ArrowRight size={16} class={arrow} />
+	</button>
+</div>

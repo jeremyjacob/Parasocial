@@ -33,9 +33,9 @@ export class WorkspaceState {
 	readonly userID: string;
 	userName = '';
 	/** this user has a built-in agent provider set up (Settings) */
-	agentConfigured = false;
+	agentConfigured = $state(false);
 	/** a coding agent (Claude Code, Codex, …) has signed in over MCP */
-	mcpConnected = false;
+	mcpConnected = $state(false);
 	/** with neither, nothing can act on notes or build models */
 	get agentReady() {
 		return this.agentConfigured || this.mcpConnected;

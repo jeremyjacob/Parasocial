@@ -49,6 +49,11 @@
 	ws.userName = user.name;
 	ws.agentConfigured = agentConfigured;
 	ws.mcpConnected = mcpConnected;
+	// follows the layout data, so a key saved from the setup dialog (invalidateAll) shows up here
+	$effect.pre(() => {
+		ws.agentConfigured = agentConfigured;
+		ws.mcpConnected = mcpConnected;
+	});
 	(globalThis as any).__ws = ws; // test hook
 
 	const docQ = useQuery(() => queries.documents.byID({ documentID }));
@@ -203,11 +208,10 @@
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
 	// ---- actions ----
-	/** "Add a studio": with the built-in agent set up, offer to have it build the part first. */
+	/** "Add a studio": describe the part for the agent, or start blank. */
 	let newStudioOpen = $state(false);
 	function addStudio() {
-		if (ws.agentConfigured) newStudioOpen = true;
-		else void createStudio();
+		newStudioOpen = true;
 	}
 
 	/** Writes the next studios/studioN.ts from the template; `forAgent` marks it as a placeholder to replace. */
@@ -497,7 +501,7 @@
 
 <CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} documentName={ws.doc?.name} />
-<NewStudioDialog bind:open={newStudioOpen} onPrompt={promptStudio} onBlank={async () => void (await createStudio())} />
+<NewStudioDialog bind:open={newStudioOpen} onPrompt={promptStudio} onBlank={async () => void (await createStudio())} onConnect={() => (connectOpen = true)} />
 <PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} bind:scroll={trackpadScroll} bind:additiveSelection={ws.additiveSelection} />
 <ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={async () => void (await exportZip())} />
 <ConfirmDialog bind:open={deleteOpen} title={`Delete “${ws.doc?.name}”?`} description="This can't be undone." onconfirm={deleteDocument} />

@@ -207,11 +207,18 @@
 				{#if agentReady}
 					<Button variant="primary" size="lg" class="mt-5" onclick={() => (newOpen = true)}><Plus size={14} /> New document</Button>
 				{:else}
-					<AgentSetup class="mt-6 w-full max-w-[720px]" onConnect={() => (connectOpen = true)} />
+					<p class="mt-2 text-ui text-fg-secondary">Set up an agent first. It writes and edits the models for you.</p>
+					<AgentSetup class="mt-6 w-full max-w-[640px]" onConnect={() => (connectOpen = true)} />
 				{/if}
 			</section>
 		{:else}
-			{#if !agentReady}<AgentSetup class="mb-8" onConnect={() => (connectOpen = true)} />{/if}
+			{#if !agentReady}
+				<section class="mb-8">
+					<h2 class="text-section">Set up an agent</h2>
+					<p class="mt-1 mb-3 text-ui text-fg-secondary">Agents write and edit the models. Pick one; you can add the other later.</p>
+					<AgentSetup onConnect={() => (connectOpen = true)} />
+				</section>
+			{/if}
 			<h1 class="mb-4 text-title">Documents</h1>
 			<!-- Figma-style grid: click selects (⌘ toggles, ⇧ extends), double-click opens -->
 			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

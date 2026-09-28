@@ -83,7 +83,7 @@
 				</Button>
 			</form>
 			<p class="mt-4 rounded-md bg-hover px-3 py-2 text-label text-fg-secondary">
-				Your passkey is the only way to sign in. Save it to a synced keychain.
+				Don’t lose it, someone didn’t build a recovery flow.
 			</p>
 			{#if !data.needsSetup}
 				<div class="mt-4 text-center text-ui text-fg-secondary">

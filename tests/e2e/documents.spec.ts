@@ -17,6 +17,7 @@ test("create an empty document, add a studio", async ({ page, user }) => {
   await page.waitForURL(/\/d\//);
   await expect(page.getByTestId("empty-document")).toBeVisible();
   await page.getByTestId("add-studio").click();
+  await page.getByTestId("new-studio-blank").click();
   await page.waitForFunction(() => (globalThis as any).__ws?.results?.studio1?.ok, null, { timeout: 45_000 });
   await expect(page.getByTestId("parts-panel")).toContainText("Studio 1");
   await expect(page.getByTestId("parts-panel")).toContainText("Part 1");
@@ -157,4 +158,25 @@ test("Delete key confirms the selected documents and Escape cancels", async ({ p
   await page.keyboard.press("Delete");
   await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(cards).toHaveCount(0);
+});
+
+test("building a studio with no agent asks for one, then carries on", async ({ page, user }) => {
+  void user;
+  await page.getByTestId("new-document").click();
+  await page.getByTestId("new-document-name").fill("Hook");
+  await page.getByTestId("create-document").click();
+  await page.waitForURL(/\/d\//);
+  await page.getByTestId("add-studio").click();
+  await page.getByTestId("new-studio-prompt").fill("A wall hook");
+  await page.getByTestId("new-studio-submit").click();
+  const setup = page.getByTestId("agent-setup-dialog");
+  await expect(setup).toBeVisible();
+  await setup.getByRole("button", { name: "Provider" }).click();
+  await page.getByRole("option", { name: /OpenAI-compatible/ }).click();
+  await setup.getByPlaceholder(/qwen3-coder/).fill("test-model");
+  await setup.getByPlaceholder("http://localhost:11434/v1").fill("http://127.0.0.1:9/v1");
+  await page.getByTestId("agent-setup-save").click();
+  await expect(setup).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__ws?.notes?.[0]?.agentAssignedBy), { timeout: 45_000 }).toBeTruthy();
+  await expect(page.getByTestId("new-studio")).toBeHidden();
 });

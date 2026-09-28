@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { KeyRound, Plus, Trash2, Bot, Copy, Link, Sparkles } from '@lucide/svelte';
+	import { KeyRound, Plus, Trash2, Bot, Copy, Link, Sparkles, Globe } from '@lucide/svelte';
 	import { Button, IconButton } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
 	import { SegmentedControl } from '$lib/components/ui/segmented-control';
 	import { Input } from '$lib/components/ui/input';
 	import { Select } from '$lib/components/ui/select';
@@ -11,20 +12,21 @@
 	import { addPasskey, isCancel } from '$lib/auth';
 	import { relativeTime } from '$lib/format';
 	import ConnectAgentDialog from '$lib/workspace/ConnectAgentDialog.svelte';
+	import { providers, defaultModel, modelHint, providerLabel } from '$lib/agent-providers';
 
 	let { data, form } = $props();
 	let connectOpen = $state(false);
 
 	// built-in agent: the provider it runs on (key stays on the server; only its last 4 come back)
-	const providers = [
-		{ value: 'anthropic', label: 'Anthropic' },
-		{ value: 'openai', label: 'OpenAI' },
-		{ value: 'google', label: 'Google' },
-		{ value: 'openai-compatible', label: 'OpenAI-compatible (Ollama, OpenRouter, …)' }
-	];
-	const modelHint: Record<string, string> = { anthropic: 'claude-opus-5', openai: 'Model id', google: 'Model id', 'openai-compatible': 'Model id, e.g. qwen3-coder' };
 	let provider = $state(data.builtinAgent?.provider ?? 'anthropic');
-	let model = $state(data.builtinAgent?.model ?? '');
+	let model = $state(data.builtinAgent?.model ?? defaultModel[data.builtinAgent?.provider ?? 'anthropic'] ?? '');
+	// switching provider swaps in its default model, unless the user typed their own
+	$effect(() => {
+		const next = defaultModel[provider] ?? '';
+		untrack(() => {
+			if (!model.trim() || Object.values(defaultModel).includes(model)) model = next;
+		});
+	});
 	let baseURL = $state(data.builtinAgent?.baseURL ?? '');
 	let apiKey = $state('');
 	let agentBusy = $state(false);
@@ -84,116 +86,131 @@
 		refresh();
 	}
 	const section = 'rounded-panel border border-line-subtle bg-panel';
+	const group = 'flex flex-col gap-3';
+	const groupLabel = 'px-1 text-label font-medium text-fg-tertiary';
 </script>
 
 <svelte:head><title>Settings · Parasocial</title></svelte:head>
 
 <div class="flex min-h-dvh flex-col bg-canvas">
 	<AppHeader user={data.user} title="Settings" />
-	<main class="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-6 py-8">
-		{#if !data.agents.length && !data.builtinAgent}
-			<p class="rounded-panel border border-line bg-accent-subtle px-4 py-3 text-ui" data-testid="agent-required">Parasocial needs an agent to build models. Connect a coding agent over MCP, or add an API key for the built-in agent below.</p>
-		{/if}
-		<section class={section} data-testid="connected-agents">
-			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
-				<Bot size={16} class="text-fg-secondary" /><h2 class="text-section">Coding agents</h2>
-				<Button size="sm" class="ml-auto" onclick={() => (connectOpen = true)} data-testid="connect-agent-button"><Plus size={14} /> Connect agent</Button>
-			</header>
-			<ul class="divide-y divide-line-subtle">
-				{#each data.agents as a (a.id)}
-					<li class="flex h-12 items-center gap-3 px-4 text-ui">
-						<span class="font-medium">{a.name}</span>
-						<span class="text-label text-fg-tertiary">connected {relativeTime(a.connectedAt)}</span>
-						<form method="POST" action="?/revoke" use:enhance class="ml-auto"><input type="hidden" name="client" value={a.id} /><Button size="sm" variant="ghost" type="submit">Revoke</Button></form>
-					</li>
-				{:else}
-					<li class="px-4 py-4 text-ui text-fg-secondary">None connected. Add Parasocial as an MCP server in Claude Code, Codex or OpenCode to work on your documents from the terminal.</li>
-				{/each}
-			</ul>
-		</section>
-
-		<section id="agent" class="{section} scroll-mt-6" data-testid="builtin-agent">
-			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
-				<Sparkles size={16} class="text-fg-secondary" /><h2 class="text-section">Built-in agent</h2>
-			</header>
-			<form method="POST" action="?/saveAgent" use:enhance={agentForm} class="flex flex-col gap-3 p-4">
-				<p class="text-label text-fg-secondary">Runs inside Parasocial on your own provider, billed to your key. Hand it notes from a document, or turn on agent pickup to send it every open note. The model needs tool calling and image input.</p>
-				<input type="hidden" name="provider" value={provider} />
-				<div class="flex items-center gap-3 text-ui">
-					<span class="w-28 shrink-0 text-fg-secondary">Provider</span>
-					<Select bind:value={provider} items={providers} aria-label="Provider" class="min-w-0 flex-1" />
-				</div>
-				<label class="flex items-center gap-3 text-ui">
-					<span class="w-28 shrink-0 text-fg-secondary">Model</span>
-					<Input name="model" bind:value={model} placeholder={modelHint[provider]} class="flex-1" autocomplete="off" spellcheck="false" />
-				</label>
-				{#if provider === 'openai-compatible' || baseURL}
-					<label class="flex items-center gap-3 text-ui">
-						<span class="w-28 shrink-0 text-fg-secondary">Base URL</span>
-						<Input name="baseURL" bind:value={baseURL} placeholder={provider === 'openai-compatible' ? 'http://localhost:11434/v1' : 'Provider default'} class="flex-1" autocomplete="off" spellcheck="false" />
-					</label>
+	<main class="mx-auto flex w-full max-w-[640px] flex-col gap-8 px-6 py-8">
+		<div class={group}>
+			<div class="flex flex-col gap-0.5 px-1">
+				<h2 class="text-label font-medium text-fg-tertiary">Agents</h2>
+				{#if !data.agents.length && !data.builtinAgent}
+					<p class="text-label text-fg-secondary" data-testid="agent-required">Parasocial needs an agent to build models. Set up either one below.</p>
 				{/if}
-				<label class="flex items-center gap-3 text-ui">
-					<span class="w-28 shrink-0 text-fg-secondary">API key</span>
-					<Input
-						name="apiKey"
-						type="password"
-						bind:value={apiKey}
-						placeholder={data.builtinAgent?.keyHint ? `Saved ••••${data.builtinAgent.keyHint} · type to replace` : provider === 'openai-compatible' ? 'Optional for local servers' : 'Paste your key'}
-						class="flex-1"
-						autocomplete="off"
-					/>
-				</label>
-				{#if form?.agentError}<p class="text-label text-error" role="alert">{form.agentError}</p>{/if}
-				<div class="flex items-center gap-2">
-					<Button size="sm" type="submit" disabled={agentBusy || !model.trim()}>Save</Button>
-					{#if data.builtinAgent}
-						<Button size="sm" variant="ghost" type="submit" formaction="?/testAgent" disabled={agentBusy}>Test connection</Button>
-						{#if data.builtinAgent.keyHint}<Button size="sm" variant="ghost" type="submit" name="clearKey" value="1" disabled={agentBusy}>Remove key</Button>{/if}
-						<Button size="sm" variant="ghost" type="submit" formaction="?/removeAgent" class="ml-auto" disabled={agentBusy}>Turn off</Button>
-					{/if}
-				</div>
-			</form>
-		</section>
+			</div>
+			<section class={section} data-testid="connected-agents">
+				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
+					<Bot size={16} class="text-fg-secondary" /><h3 class="text-section">Coding agents</h3>
+					{#if data.agents.length}<Badge tone="ok">{data.agents.length} connected</Badge>{/if}
+					<Button size="sm" class="ml-auto" onclick={() => (connectOpen = true)} data-testid="connect-agent-button"><Plus size={14} /> Connect agent</Button>
+				</header>
+				<ul class="divide-y divide-line-subtle">
+					{#each data.agents as a (a.id)}
+						<li class="flex h-12 items-center gap-3 px-4 text-ui">
+							<span class="font-medium">{a.name}</span>
+							<span class="text-label text-fg-tertiary">connected {relativeTime(a.connectedAt)}</span>
+							<form method="POST" action="?/revoke" use:enhance class="ml-auto"><input type="hidden" name="client" value={a.id} /><Button size="sm" variant="ghost" type="submit">Revoke</Button></form>
+						</li>
+					{:else}
+						<li class="px-4 py-3.5 text-label text-fg-secondary">Add Parasocial as an MCP server in Claude Code, Codex or OpenCode to work on your documents from the terminal.</li>
+					{/each}
+				</ul>
+			</section>
 
-		<section class={section} data-testid="passkeys">
-			<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
-				<KeyRound size={16} class="text-fg-secondary" /><h2 class="text-section">Passkeys</h2>
-				<Button size="sm" class="ml-auto" onclick={add}><Plus size={14} /> Add passkey</Button>
-			</header>
-			<ul class="divide-y divide-line-subtle">
-				{#each passkeys as p (p.id)}
-					<li class="flex h-12 items-center gap-3 px-4 text-ui">
-						<span class="font-medium">{p.name ?? 'Passkey'}</span>
-						<span class="text-label text-fg-tertiary">{p.synced ? 'Synced' : 'This device only'} · added {relativeTime(new Date(p.createdAt).getTime())}</span>
-						<IconButton label="Remove passkey" size="sm" class="ml-auto" onclick={() => remove(p.id)} disabled={passkeys.length <= 1}><Trash2 /></IconButton>
-					</li>
-				{/each}
-			</ul>
-			{#if passkeys.length === 1}
-				<p class="border-t border-line-subtle px-4 py-3 text-label text-warning">Add a backup passkey in case you lose this one.</p>
-			{/if}
-		</section>
+			<section id="agent" class="{section} scroll-mt-6" data-testid="builtin-agent">
+				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
+					<Sparkles size={16} class="text-fg-secondary" /><h3 class="text-section">Built-in agent</h3>
+					{#if data.builtinAgent}<Badge tone="ok" class="ml-auto">{providerLabel(data.builtinAgent.provider)} · {data.builtinAgent.model}</Badge>{/if}
+				</header>
+				<form method="POST" action="?/saveAgent" use:enhance={agentForm} class="flex flex-col gap-3 p-4">
+					<p class="mb-1 text-label text-fg-secondary">Runs inside Parasocial on your own provider, billed to your key. Hand it notes from a document, or turn on agent pickup to send it every open note. Pick a model with tool calling and image input.</p>
+					<input type="hidden" name="provider" value={provider} />
+					<div class="flex items-center gap-3 text-ui">
+						<span class="w-28 shrink-0 text-fg-secondary">Provider</span>
+						<Select bind:value={provider} items={providers} aria-label="Provider" class="min-w-0 flex-1" />
+					</div>
+					<label class="flex items-center gap-3 text-ui">
+						<span class="w-28 shrink-0 text-fg-secondary">Model</span>
+						<Input name="model" bind:value={model} placeholder={modelHint[provider]} class="flex-1" autocomplete="off" spellcheck="false" />
+					</label>
+					{#if provider === 'openai-compatible' || baseURL}
+						<label class="flex items-center gap-3 text-ui">
+							<span class="w-28 shrink-0 text-fg-secondary">Base URL</span>
+							<Input name="baseURL" bind:value={baseURL} placeholder={provider === 'openai-compatible' ? 'http://localhost:11434/v1' : 'Provider default'} class="flex-1" autocomplete="off" spellcheck="false" />
+						</label>
+					{/if}
+					<label class="flex items-center gap-3 text-ui">
+						<span class="w-28 shrink-0 text-fg-secondary">API key</span>
+						<Input
+							name="apiKey"
+							type="password"
+							bind:value={apiKey}
+							placeholder={data.builtinAgent?.keyHint ? `Saved ••••${data.builtinAgent.keyHint} · type to replace` : provider === 'openai-compatible' ? 'Optional for local servers' : 'Paste your key'}
+							class="flex-1"
+							autocomplete="off"
+						/>
+					</label>
+					{#if form?.agentError}<p class="text-label text-error" role="alert">{form.agentError}</p>{/if}
+					<div class="-mx-4 mt-1 -mb-4 flex items-center gap-1 border-t border-line-subtle px-4 py-3">
+						{#if data.builtinAgent}
+							<Button size="sm" variant="ghost" type="submit" formaction="?/testAgent" disabled={agentBusy}>Test connection</Button>
+							{#if data.builtinAgent.keyHint}<Button size="sm" variant="ghost" type="submit" name="clearKey" value="1" disabled={agentBusy}>Remove key</Button>{/if}
+							<Button size="sm" variant="ghost" type="submit" formaction="?/removeAgent" disabled={agentBusy}>Turn off</Button>
+						{/if}
+						<Button size="md" variant="primary" type="submit" class="ml-auto" disabled={agentBusy || !model.trim()}>Save</Button>
+					</div>
+				</form>
+			</section>
+		</div>
+
+		<div class={group}>
+			<h2 class={groupLabel}>Account</h2>
+			<section class={section} data-testid="passkeys">
+				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
+					<KeyRound size={16} class="text-fg-secondary" /><h3 class="text-section">Passkeys</h3>
+					<Button size="sm" class="ml-auto" onclick={add}><Plus size={14} /> Add passkey</Button>
+				</header>
+				<ul class="divide-y divide-line-subtle">
+					{#each passkeys as p (p.id)}
+						<li class="flex h-12 items-center gap-3 px-4 text-ui">
+							<span class="font-medium">{p.name ?? 'Passkey'}</span>
+							<span class="text-label text-fg-tertiary">{p.synced ? 'Synced' : 'This device only'} · added {relativeTime(new Date(p.createdAt).getTime())}</span>
+							<IconButton label="Remove passkey" size="sm" class="ml-auto" onclick={() => remove(p.id)} disabled={passkeys.length <= 1}><Trash2 /></IconButton>
+						</li>
+					{/each}
+				</ul>
+				{#if passkeys.length === 1}
+					<p class="border-t border-line-subtle px-4 py-3 text-label text-warning">Add a backup passkey in case you lose this one.</p>
+				{/if}
+			</section>
+		</div>
 
 		{#if data.user?.isAdmin}
-			<section class={section} data-testid="admin">
-				<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4"><h2 class="text-section">Instance</h2></header>
-				<div class="flex flex-col gap-4 p-4">
-					<div class="flex items-center gap-3 text-ui">
-						<span class="w-28 text-fg-secondary">Sign-up</span>
-						<SegmentedControl value={signupMode} items={[{ value: 'open', text: 'Open' }, { value: 'invite', text: 'Invite only' }]} onValueChange={setMode} class="w-48" />
-					</div>
-					{#if signupMode === 'invite'}
+			<div class={group}>
+				<h2 class={groupLabel}>Admin</h2>
+				<section class={section} data-testid="admin">
+					<header class="flex h-12 items-center gap-2 border-b border-line-subtle px-4"><Globe size={16} class="text-fg-secondary" /><h3 class="text-section">Instance</h3></header>
+					<div class="flex flex-col gap-4 p-4">
 						<div class="flex items-center gap-3 text-ui">
-							<span class="w-28 text-fg-secondary">Invites</span>
-							<Button size="sm" onclick={invite}><Link size={14} /> Create invite link</Button>
+							<span class="w-28 text-fg-secondary">Sign-up</span>
+							<SegmentedControl value={signupMode} items={[{ value: 'open', text: 'Open' }, { value: 'invite', text: 'Invite only' }]} onValueChange={setMode} class="w-48" />
 						</div>
-						{#if inviteURL}
-							<div class="flex items-center gap-1 rounded-control bg-input pl-2.5"><code class="min-w-0 flex-1 truncate font-mono text-label">{inviteURL}</code><IconButton label="Copy" size="sm" onclick={() => navigator.clipboard.writeText(inviteURL)}><Copy /></IconButton></div>
+						{#if signupMode === 'invite'}
+							<div class="flex items-center gap-3 text-ui">
+								<span class="w-28 text-fg-secondary">Invites</span>
+								<Button size="sm" onclick={invite}><Link size={14} /> Create invite link</Button>
+							</div>
+							{#if inviteURL}
+								<div class="flex items-center gap-1 rounded-control bg-input pl-2.5"><code class="min-w-0 flex-1 truncate font-mono text-label">{inviteURL}</code><IconButton label="Copy" size="sm" onclick={() => navigator.clipboard.writeText(inviteURL)}><Copy /></IconButton></div>
+							{/if}
 						{/if}
-					{/if}
-				</div>
-			</section>
+					</div>
+				</section>
+			</div>
 		{/if}
 	</main>
 </div>

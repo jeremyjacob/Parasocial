@@ -3,10 +3,15 @@
 	import { Dialog } from '$lib/components/ui/dialog';
 	import { Button } from '$lib/components/ui/button';
 	import { Kbd } from '$lib/components/ui/kbd';
+	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
+	import AgentSetupDialog from './AgentSetupDialog.svelte';
 
-	// Shown for "Add a studio" when the built-in agent is set up: describe the part and hand it over,
-	// or start from the blank template.
-	let { open = $bindable(false), onPrompt, onBlank }: { open?: boolean; onPrompt: (text: string) => Promise<boolean>; onBlank: () => Promise<void> } = $props();
+	// Shown for "Add a studio": describe the part and hand it over, or start from the blank template.
+	// With no agent yet, Build opens the setup dialog on top and carries on once a key is saved.
+	let { open = $bindable(false), onPrompt, onBlank, onConnect }: { open?: boolean; onPrompt: (text: string) => Promise<boolean>; onBlank: () => Promise<void>; onConnect: () => void } = $props();
+	let setupOpen = $state(false);
+	const hasAgent = () => !!(page.data.agentConfigured || page.data.mcpConnected);
 
 	const ideas = [
 		{ label: 'Wall hook', text: 'A wall hook for a coat: 60 mm tall, with two countersunk holes for M4 screws.' },
@@ -28,6 +33,11 @@
 	async function submit(e?: Event) {
 		e?.preventDefault();
 		if (!ready) return;
+		if (!hasAgent()) {
+			// maybe they connected one in another tab since the page loaded
+			await invalidateAll();
+			if (!hasAgent()) return void (setupOpen = true);
+		}
 		busy = 'prompt';
 		const ok = await onPrompt(text.trim());
 		busy = '';
@@ -83,6 +93,7 @@
 			{/each}
 		</div>
 	</form>
+	<AgentSetupDialog bind:open={setupOpen} onSaved={() => submit()} {onConnect} />
 	{#snippet footer()}
 		<Button variant="ghost" class="mr-auto -ml-2 text-fg-secondary" onclick={blank} loading={busy === 'blank'} disabled={!!busy} data-testid="new-studio-blank">{#if busy !== 'blank'}<FilePlus2 size={14} />{/if} Start blank</Button>
 		<Button variant="ghost" onclick={() => (open = false)} disabled={!!busy}>Cancel</Button>
