@@ -506,7 +506,11 @@ export class PartObject {
     this.markers.visible = ok.length > 0;
   }
 
+  /** Agent-presence glow; kept here so a restyle (e.g. hover) doesn't drop it for a frame. */
+  private glow = 0;
   setEmissive(amount: number) {
+    this.glow = amount;
+    if (!this.faceMaterial.vertexColors) return; // flat fill owns emissive
     this.faceMaterial.emissive.setRGB(amount * 0.35, amount * 0.55, amount);
   }
 
@@ -547,7 +551,7 @@ export class PartObject {
     } else {
       this.faceMaterial.vertexColors = true;
       this.faceMaterial.color.set(0xffffff);
-      this.faceMaterial.emissive.set(0x000000);
+      this.faceMaterial.emissive.setRGB(this.glow * 0.35, this.glow * 0.55, this.glow);
     }
     this.faceMaterial.needsUpdate = true;
   }

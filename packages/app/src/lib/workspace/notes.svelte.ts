@@ -103,31 +103,13 @@ export class NotesController {
 
 	async post(text: string) {
 		const d = this.draft;
-		const ws = this.ws;
-		if (!d || !ws.viewer || this.posting) return false;
+		if (!d || !this.ws.viewer || this.posting) return false;
 		this.posting = true;
 		try {
-			// names for the targets (stable names are how notes find their geometry again)
-			const targets = await Promise.all(d.targets.map((t) => this.anchorTarget(t)));
-			// snapshot of the view (with markup) → upload first, then reference (§3)
-			const blob = await ws.viewer.snapshot('image/webp', 0.85);
-			const up = await fetch(`/api/blobs?document=${encodeURIComponent(ws.documentID)}`, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/webp' } });
-			if (!up.ok) throw new Error("Couldn't save the note. Try again.");
-			const { hash } = await up.json();
-			const cam = ws.viewer.cameraState();
-			const id = newID();
-			const anchor = {
-				targets,
-				camera: { position: cam.position as Vec3, target: cam.target as Vec3, up: cam.up as Vec3, fov: cam.fov, ortho: cam.ortho },
-				version: ws.versions[0]?.id ?? '',
-				configuration: ws.activeConfig?.name ?? 'Default',
-				sectionPlane: ws.viewer.getSection() ?? undefined,
-				snapshot: hash
-			};
-			await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs: this.draftStrokeIDs } as any), 'Add note').then((r) => r.client);
+			const id = await this.create(d.targets, text, this.draftStrokeIDs);
 			this.draft = null;
 			this.active = id;
-			if (ws.tool === 'note') ws.tool = 'select';
+			if (this.ws.tool === 'note') this.ws.tool = 'select';
 			return true;
 		} catch (e) {
 			toast.error((e as Error).message);
@@ -135,6 +117,49 @@ export class NotesController {
 		} finally {
 			this.posting = false;
 		}
+	}
+
+	/**
+	 * A note on a whole studio, handed straight to the built-in agent (a new studio built from a
+	 * prompt). Waits briefly for the studio's first geometry so the snapshot shows it.
+	 */
+	async postToAgent(file: string, text: string) {
+		const ws = this.ws;
+		ws.setActiveStudio(file);
+		const ids = () => ws.partTree.find((g) => g.file === file)?.ids ?? [];
+		for (let t = 0; t < 40 && !(ids().length && ids().every((p) => ws.results[p])); t++) await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+		const target = this.studioTarget(file);
+		if (!target) throw new Error("Couldn't open the new studio. Try again.");
+		const id = await this.create([target], text, []);
+		await this.assignAgent(id, true).then((r) => r.client);
+		this.active = id;
+		ws.rightTab = 'notes';
+		return id;
+	}
+
+	/** Names the targets, uploads the view snapshot (upload first, then reference: §3), creates the note. */
+	private async create(targets: Draft['targets'], text: string, strokeIDs: string[]) {
+		const ws = this.ws;
+		const viewer = ws.viewer!;
+		// names for the targets (stable names are how notes find their geometry again)
+		const named = await Promise.all(targets.map((t) => this.anchorTarget(t)));
+		const blob = await viewer.snapshot('image/webp', 0.85);
+		const up = await fetch(`/api/blobs?document=${encodeURIComponent(ws.documentID)}`, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/webp' } });
+		if (!up.ok) throw new Error("Couldn't save the note. Try again.");
+		const { hash } = await up.json();
+		const cam = viewer.cameraState();
+		const id = newID();
+		const anchor = {
+			targets: named,
+			camera: { position: cam.position as Vec3, target: cam.target as Vec3, up: cam.up as Vec3, fov: cam.fov, ortho: cam.ortho },
+			version: ws.versions[0]?.id ?? '',
+			configuration: ws.activeConfig?.name ?? 'Default',
+			sectionPlane: viewer.getSection() ?? undefined,
+			snapshot: hash
+		};
+		await ws.mutate(mutators.note.create({ id, documentID: ws.documentID, anchor, text, strokeIDs } as any), 'Add note').then((r) => r.client);
+		return id;
 	}
 
 	private async anchorTarget(t: Draft['targets'][number]): Promise<NoteTarget> {

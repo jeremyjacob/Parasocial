@@ -32,7 +32,9 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
         FROM notes n JOIN documents d ON d.id = n.document_id
        WHERE n.status = 'Open' AND n.claimed_by IS NULL AND n.removed_at IS NULL
          AND (${documentID}::text IS NULL OR n.document_id = ${documentID})
-         AND (n.agent_assigned_by IS NOT NULL OR (d.settings->'agent'->>'autoHandoff' = 'true' AND n.author_agent_id IS NULL))
+         AND (n.agent_assigned_by IS NOT NULL OR (d.settings->'agent'->>'autoHandoff' = 'true' AND n.author_agent_id IS NULL
+                  -- pickup is on by default: it waits for runAs to set up a provider instead of nagging on every note
+                  AND EXISTS (SELECT 1 FROM user_agent_settings u WHERE u.user_id = d.settings->'agent'->>'runAs')))
          AND EXISTS (SELECT 1 FROM document_members m WHERE m.document_id = n.document_id AND m.role IN ('editor', 'owner')
                       AND m.user_id = COALESCE(n.agent_assigned_by, d.settings->'agent'->>'runAs'))
          AND NOT EXISTS (

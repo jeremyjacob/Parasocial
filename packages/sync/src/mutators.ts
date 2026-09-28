@@ -573,6 +573,11 @@ async function setAgentStatus(tx: Tx, sessionID: string | null | undefined, stat
   await tx.mutate.agentSessions.update({ id: sessionID, status, detail, lastSeenAt: Date.now() });
 }
 
+/** New documents start with agent pickup on, run as their creator (see setAgentAutoHandoff). */
+function defaultAgent(c: MutatorContext) {
+  return c.agentSessionID ? { autoHandoff: false } : { autoHandoff: true, runAs: c.userID };
+}
+
 // ───────────────────────────── the registry ─────────────────────────────
 
 export const mutators = defineMutators({
@@ -587,7 +592,7 @@ export const mutators = defineMutators({
           name: args.name,
           ownerID: c.userID,
           units: args.units ?? "mm",
-          settings: {},
+          settings: { agent: defaultAgent(c) },
           headVersion: 0,
           createdAt: now,
           updatedAt: now,
@@ -722,7 +727,7 @@ export const mutators = defineMutators({
           name: args.name,
           ownerID: c.userID,
           units: args.units ?? "mm",
-          settings: args.settings ?? {},
+          settings: { ...(args.settings ?? {}), agent: defaultAgent(c) },
           headVersion: 0,
           createdAt: now,
           updatedAt: now,

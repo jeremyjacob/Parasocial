@@ -177,7 +177,8 @@ export async function exportDocument(db: Db, documentID: string, userID: string,
     format: FORMAT,
     name: doc.name,
     units: doc.units,
-    settings: doc.settings as Record<string, unknown>,
+    // settings.agent names a user of this instance; an import gets its own (document.import)
+    settings: (({ agent: _agent, ...rest }) => rest)(doc.settings as Record<string, unknown>),
     configurations: configs.map((c) => ({
       name: c.name,
       overrides: [...c.overrides]

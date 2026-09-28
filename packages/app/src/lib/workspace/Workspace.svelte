@@ -34,6 +34,7 @@
 	import CodeEditor from './CodeEditor.svelte';
 	import { prefetchMonaco } from './monaco';
 	import ConnectAgentDialog from './ConnectAgentDialog.svelte';
+	import NewStudioDialog from './NewStudioDialog.svelte';
 	import ExportDialog from './ExportDialog.svelte';
 	import PreferencesDialog from './PreferencesDialog.svelte';
 	import { NotesController } from './notes.svelte';
@@ -202,13 +203,37 @@
 	const notFound = $derived(docQ.status === 'complete' && !docQ.data);
 
 	// ---- actions ----
-	async function addStudio() {
+	/** "Add a studio": with the built-in agent set up, offer to have it build the part first. */
+	let newStudioOpen = $state(false);
+	function addStudio() {
+		if (ws.agentConfigured) newStudioOpen = true;
+		else void createStudio();
+	}
+
+	/** Writes the next studios/studioN.ts from the template; `forAgent` marks it as a placeholder to replace. */
+	async function createStudio(forAgent = false) {
 		const existing = new Set(ws.scripts.map((s) => s.path));
 		let n = 1;
 		while (existing.has(`studios/studio${n}.ts`)) n++;
-		const content = `import { part, param, sketch, plane, mm } from "parasocial";\n\nexport const name = "Studio ${n}";\n\nexport default part("Part 1", ({ color }) => {\n  const size = param("size", 20, { min: 1, max: 200, unit: mm });\n  return sketch(plane.XY)\n    .rect(size, size, { tag: "outline" })\n    .extrude(size / 2, { tag: "body" })\n    .color(color.auto());\n});\n`;
-		await ws.zero.mutate(mutators.script.write({ documentID, path: `studios/studio${n}.ts`, content, baseVersion: null, message: `Add Studio ${n}` })).client;
-		toast(`Added Studio ${n}`);
+		const file = `studios/studio${n}.ts`;
+		const header = forAgent ? `// Placeholder: replace it with the part described in this studio's note, and rename the studio.\n` : '';
+		const content = `${header}import { part, param, sketch, plane, mm } from "parasocial";\n\nexport const name = "Studio ${n}";\n\nexport default part("Part 1", ({ color }) => {\n  const size = param("size", 20, { min: 1, max: 200, unit: mm });\n  return sketch(plane.XY)\n    .rect(size, size, { tag: "outline" })\n    .extrude(size / 2, { tag: "body" })\n    .color(color.auto());\n});\n`;
+		await ws.zero.mutate(mutators.script.write({ documentID, path: file, content, baseVersion: null, message: `Add Studio ${n}` })).client;
+		ws.setActiveStudio(file);
+		if (!forAgent) toast(`Added Studio ${n}`);
+		return { file, name: `Studio ${n}` };
+	}
+
+	async function promptStudio(text: string) {
+		try {
+			const { file, name } = await createStudio(true);
+			await nc.postToAgent(file, text);
+			toast(`The agent is building ${name}`);
+			return true;
+		} catch (e) {
+			toast.error((e as Error).message || "Couldn't hand the part to the agent. Try again.");
+			return false;
+		}
 	}
 
 	async function exportZip() {
@@ -311,7 +336,7 @@
 		const appUndo = numeric || (e.target as HTMLElement | null)?.hasAttribute?.('data-app-undo');
 		if (isTyping(e) && combo.includes('+z') && !appUndo) return;
 		if (numeric && combo.includes('+z')) (e.target as HTMLElement).blur();
-		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || prefsOpen || exportOpen)) return;
+		if (combo === 'escape' && (paletteOpen || cheatsOpen || connectOpen || prefsOpen || exportOpen || newStudioOpen)) return;
 		e.preventDefault();
 		cmd.run();
 	}
@@ -472,6 +497,7 @@
 
 <CommandPalette bind:open={paletteOpen} hotkey={false} groups={paletteGroups} placeholder="Search…" />
 <ConnectAgentDialog bind:open={connectOpen} {documentID} documentName={ws.doc?.name} />
+<NewStudioDialog bind:open={newStudioOpen} onPrompt={promptStudio} onBlank={async () => void (await createStudio())} />
 <PreferencesDialog bind:open={prefsOpen} {commands} bind:custom bind:nav={navPreset} bind:scroll={trackpadScroll} bind:additiveSelection={ws.additiveSelection} />
 <ExportDialog {ws} bind:open={exportOpen} target={exportTarget} onZip={async () => void (await exportZip())} />
 <ConfirmDialog bind:open={deleteOpen} title={`Delete “${ws.doc?.name}”?`} description="This can't be undone." onconfirm={deleteDocument} />

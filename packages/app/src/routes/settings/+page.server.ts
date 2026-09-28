@@ -1,5 +1,6 @@
 import { redirect, fail } from "@sveltejs/kit";
 import { deleteAgentSettings, getAgentSettings, loadAgentCredentials, PROVIDERS, saveAgentSettings, SettingsError, testProvider, type Provider } from "@parasocial/agent";
+import { agent } from "$lib/server/agent";
 import { mcp } from "$lib/server/mcp";
 import { platform } from "$lib/server/platform";
 
@@ -40,6 +41,8 @@ export const actions = {
       if (e instanceof SettingsError) return fail(400, { agentError: e.message });
       throw e;
     }
+    // agent pickup waits for a provider: start on this user's waiting notes now, not at the next sweep
+    void agent().then((d) => d.scan());
     return { agentSaved: true };
   },
 

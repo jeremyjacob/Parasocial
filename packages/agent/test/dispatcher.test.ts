@@ -41,7 +41,7 @@ test("hand-off, one run per document, and waiting for the human after the agent 
   const { d, runs, finish } = recording();
   try {
     await d.ready;
-    expect(runs).toHaveLength(0); // nothing handed over, auto hand-off off
+    expect(runs).toHaveLength(0); // nothing handed over; pickup is on by default but Ada has no provider
 
     await run(db, mutators.note.assignAgent({ noteID: n1, assign: true }), { userID: ada });
     await run(db, mutators.note.assignAgent({ noteID: n2, assign: true }), { userID: ada });
@@ -72,6 +72,8 @@ test("auto hand-off runs as whoever switched it on, and only while they can edit
   const ada = await createUser(db, "Ada");
   const bob = await createUser(db, "Bob");
   const documentID = await newDoc(db, ada);
+  const [created] = await db.sql`SELECT settings FROM documents WHERE id = ${documentID}`;
+  expect(created!.settings.agent).toEqual({ autoHandoff: true, runAs: ada }); // on by default, as the creator
   await db.sql`INSERT INTO document_members (document_id, user_id, role) VALUES (${documentID}, ${bob}, 'editor')`;
   const note = await newNote(db, ada, documentID);
   const { d, runs, finish } = recording();
@@ -83,6 +85,9 @@ test("auto hand-off runs as whoever switched it on, and only while they can edit
     expect(runs).toHaveLength(0);
 
     await run(db, mutators.document.setAgentAutoHandoff({ id: documentID, enabled: true }), { userID: bob });
+    await d.scan(documentID);
+    expect(runs).toHaveLength(0); // pickup waits for Bob to set up a provider
+    await db.sql`INSERT INTO user_agent_settings (user_id, provider, model) VALUES (${bob}, 'anthropic', 'm')`;
     const [doc] = await db.sql`SELECT settings FROM documents WHERE id = ${documentID}`;
     expect(doc!.settings.agent).toEqual({ autoHandoff: true, runAs: bob });
     await d.scan(documentID);
