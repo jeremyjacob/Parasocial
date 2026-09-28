@@ -46,7 +46,7 @@
 >
 	<div class="flex min-w-0 items-center gap-1">
 		<a href="/" class="grid size-7 shrink-0 place-items-center rounded-control transition-colors-fast hover:bg-hover focus-ring" aria-label="All documents" data-testid="home-logo">
-			<Logo size={20} />
+			<Logo size={18} />
 		</a>
 		<DropdownMenu items={documentMenu}>
 			{#snippet trigger(props)}
