@@ -118,6 +118,7 @@
 	$effect(() => {
 		ws.results;
 		ws.notes;
+		ws.scripts;
 		ws.kernelReady;
 		clearTimeout(resolveTimer);
 		resolveTimer = setTimeout(() => nc.resolveAll(), 60);
@@ -127,7 +128,12 @@
 		nc.active = id;
 		ws.rightTab = 'notes';
 		const n = ws.notes.find((x) => x.id === id);
-		if (fly && n) ws.viewer?.setCameraState({ position: n.anchor.camera.position, target: n.anchor.camera.target, up: n.anchor.camera.up, ortho: n.anchor.camera.ortho });
+		if (fly && n) {
+			const target = n.anchor.targets[0];
+			const studio = target?.kind === 'studio' ? target.studio : target?.part ? ws.studioOf(target.part) : undefined;
+			if (studio && ws.partTree.some((g) => g.file === studio)) ws.setActiveStudio(studio);
+			ws.viewer?.setCameraState({ position: n.anchor.camera.position, target: n.anchor.camera.target, up: n.anchor.camera.up, ortho: n.anchor.camera.ortho });
+		}
 	}
 
 	/** C with a selection: note the selection directly, staying in the current tool (Figma convention). */
@@ -422,7 +428,7 @@
 			<aside class={cn('flex min-h-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
 				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
-						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} onAddNote={(parts) => noteTool(parts.map((part) => ({ part, kind: 'part' as any, index: 0 })))} />
+						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} onAddStudioNote={(file) => nc.startFromStudio(file)} onAddNote={(parts) => noteTool(parts.map((part) => ({ part, kind: 'part' as any, index: 0 })))} />
 						{:else if tab === 'scripts'}<ScriptsPanel {ws} />
 						{:else}<HistoryPanel {ws} onOpen={(id) => cmp.view(id)} onCompare={(id) => cmp.open(id)} viewing={cmp.viewing} />{/if}
 					{/snippet}

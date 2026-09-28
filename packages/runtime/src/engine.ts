@@ -1,7 +1,7 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, exportSTL, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
@@ -190,6 +190,8 @@ export class Engine {
   /** Dragged assembly positions: instance -> transform from its modeled pose. */
   private poses = new Map<string, PartPose>();
   private interferenceCache = new Map<string, { volume: number; mesh?: MeshData }>();
+  /** Parts another engine regenerates (multi-worker engine page): their shapes, for measure, interference and export. */
+  private foreign = new Map<string, ForeignShape>();
 
   setDocument(doc: DocumentState) {
     this.scripts = new Map(Object.entries(doc.scripts));
@@ -427,7 +429,7 @@ export class Engine {
   }
 
   /** A part's shape where it's shown: moved by its assembly pose, if any. */
-  private posedShape(part: string, shape = this.need(part).shape) {
+  private posedShape(part: string, shape = this.body(part).shape) {
     const p = this.poses.get(part);
     return p ? placed(shape, p.r, p.t) : shape;
   }
@@ -442,7 +444,7 @@ export class Engine {
     const items = parts.flatMap((p) => {
       // a part whose last run failed shows its last good geometry; the failed run's partial
       // result may already be released by the op cache
-      const rec = this.runs.get(sourcePart(p))?.ok ? this.shown(p) : this.lastGood.get(sourcePart(p));
+      const rec = this.foreign.get(sourcePart(p)) ?? (this.runs.get(sourcePart(p))?.ok ? this.shown(p) : this.lastGood.get(sourcePart(p)));
       if (!rec) return [];
       try {
         const bb = boundingBox(rec.shape);
@@ -496,6 +498,7 @@ export class Engine {
     // an assembly instance is its source part's geometry
     if (sourcePart(part) !== part) return { ...this.regenerate(sourcePart(part), quality, known), part };
     const t0 = performance.now();
+    this.dropForeign(part);
     const infos = this.partInfos();
     const info = infos.find((p) => p.id === part);
     const colon = part.indexOf(":");
@@ -743,8 +746,8 @@ export class Engine {
 
   /** Volume shared by two parts (0 when they don't interfere). */
   interference(a: string, b: string): number {
-    const A = this.need(a),
-      B = this.need(b);
+    const A = this.body(a),
+      B = this.body(b);
     try {
       const r = kBoolean("intersect", this.posedShape(a, A.shape), this.posedShape(b, B.shape));
       r.maker?.delete?.();
@@ -761,13 +764,18 @@ export class Engine {
     return this.exportParts([part], format);
   }
 
-  /** Export parts together: STEP/STL as one compound, 3MF as one object per part. */
+  /** Export parts together: STEP as one compound, STL as one binary mesh, 3MF as one object per part. Meshes are the fine display tessellation, welded. */
   exportParts(parts: string[], format: "step" | "stl" | "3mf"): Uint8Array {
     if (!parts.length) throw new Error("nothing to export: no parts given");
-    if (format === "3mf") return export3MF(parts.map((p) => (this.need(p), posedMesh(this.regenerate(p, "fine"), this.poses.get(p)))));
-    const shapes = parts.map((p) => this.posedShape(p));
-    const shape = shapes.length === 1 ? shapes[0] : compound(shapes);
-    return format === "step" ? exportSTEP(shape) : exportSTL(shape);
+    if (format === "step") {
+      const shapes = parts.map((p) => this.posedShape(p));
+      return exportSTEP(shapes.length === 1 ? shapes[0] : compound(shapes));
+    }
+    const meshes = parts.map((p) => {
+      const r = posedMesh(this.meshOf(p), this.poses.get(p));
+      return { name: r.name, ...weld(r.mesh!) };
+    });
+    return format === "3mf" ? export3MF(meshes) : exportSTL(meshes);
   }
 
   /** Closest point on an entity to `p` (pins follow their geometry across regenerations). */
@@ -779,10 +787,49 @@ export class Engine {
   measure(a: { part: string; kind: EntityKind | "part"; index?: number }, b: { part: string; kind: EntityKind | "part"; index?: number }) {
     // where the parts are shown: assembly poses apply, so results are in world coordinates
     const shape = (x: typeof a) => {
-      const rec = this.need(x.part);
-      return this.posedShape(x.part, x.kind === "part" ? rec.shape : entityShape(rec, x.kind, x.index!));
+      const b = this.body(x.part);
+      return this.posedShape(x.part, x.kind === "part" ? b.shape : entityShape(b as OpRecord, x.kind, x.index!));
     };
     return kDistance(shape(a), shape(b));
+  }
+
+  /** The shown shape of a part, for B-rep transfer to another engine; null when it has none. */
+  shapeOf(part: string): { key: string; brep: string } | null {
+    const r = this.shown(part);
+    return r ? { key: r.key, brep: writeBrep(r.shape) } : null;
+  }
+
+  /** Take another engine's shape for `part` (it regenerates there); regenerating it here drops it. */
+  adopt(part: string, key: string, brep: string) {
+    this.dropForeign(part);
+    this.foreign.set(sourcePart(part), new ForeignShape(key, readBrep(brep)));
+  }
+
+  private dropForeign(part: string) {
+    const f = this.foreign.get(sourcePart(part));
+    if (!f) return;
+    this.foreign.delete(sourcePart(part));
+    f.dispose();
+  }
+
+  /** A part's shape and topology: adopted from another engine, else regenerated here. */
+  private body(part: string): { key: string; shape: Shape; topo: Topology } {
+    return this.foreign.get(sourcePart(part)) ?? this.need(part);
+  }
+
+  /** A part's fine mesh and name, for 3MF export. */
+  private meshOf(part: string): { name: string; mesh?: MeshData } {
+    const f = this.foreign.get(sourcePart(part));
+    if (!f) {
+      this.need(part);
+      return this.regenerate(part, "fine");
+    }
+    const name = this.partInfos().find((p) => p.id === sourcePart(part))?.name ?? part;
+    return scoped(() => {
+      const bb = boundingBox(f.shape);
+      const tol = meshTolerances(Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]), "fine");
+      return { name, mesh: tessellate(f.shape, f.topo.faces, f.topo.edges, tol.tolerance, tol.angular) };
+    });
   }
 
   private need(part: string): OpRecord {
@@ -793,6 +840,8 @@ export class Engine {
 
   dispose() {
     this.cache.clear();
+    for (const f of this.foreign.values()) f.dispose();
+    this.foreign.clear();
   }
 }
 
@@ -842,6 +891,22 @@ function sourceOf(stack: string): SourceRef | undefined {
   return undefined;
 }
 
+/** Another engine's part: its shape (read from B-rep) with topology built on first use. */
+class ForeignShape {
+  private _topo?: Topology;
+  constructor(
+    readonly key: string,
+    readonly shape: Shape,
+  ) {}
+  get topo() {
+    return (this._topo ??= topology(this.shape));
+  }
+  dispose() {
+    if (this._topo) deleteTopology(this._topo);
+    this.shape.delete?.();
+  }
+}
+
 const IDENTITY: PartPose = { r: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 const validPose = (p: PartPose) => !!p && Array.isArray(p.r) && p.r.length === 9 && Array.isArray(p.t) && p.t.length === 3 && [...p.r, ...p.t].every(Number.isFinite);
 const applyPose = (p: PartPose, v: Vec3): Vec3 => [
@@ -873,7 +938,7 @@ const boxesOverlap = (a: Box, b: Box) => [0, 1, 2].every((k) => a.min[k] < b.max
 const cloneMesh = (m: MeshData): MeshData => ({ positions: m.positions.slice(), normals: m.normals.slice(), indices: m.indices.slice(), faceRanges: m.faceRanges.slice(), edgePositions: m.edgePositions.slice(), edgeRanges: m.edgeRanges.slice() });
 
 /** A regeneration result with its mesh moved by an assembly pose (3MF export). */
-function posedMesh(r: PartResult, p?: PartPose): PartResult {
+function posedMesh<R extends { mesh?: MeshData }>(r: R, p?: PartPose): R {
   if (!p || !r.mesh) return r;
   const pos = r.mesh.positions.slice();
   for (let i = 0; i < pos.length; i += 3) {
@@ -911,15 +976,67 @@ function scriptProblem(e: unknown, part: string, file: string): Problem {
 
 export { compound };
 
+type WeldedMesh = { name: string; positions: Float64Array; indices: Uint32Array };
+
+/** Merge vertices that coincide (the display mesh splits them per face, for flat normals) and drop triangles that collapse: a watertight, indexed mesh on a 0.1 µm grid. */
+function weld(m: MeshData): { positions: Float64Array; indices: Uint32Array } {
+  const q = 1e4; // 0.1 µm: far under tessellation tolerance, above float32 noise at part scale
+  const ids = new Map<string, number>();
+  const remap = new Uint32Array(m.positions.length / 3);
+  const pos: number[] = [];
+  for (let i = 0; i < remap.length; i++) {
+    const x = Math.round(m.positions[i * 3] * q), y = Math.round(m.positions[i * 3 + 1] * q), z = Math.round(m.positions[i * 3 + 2] * q);
+    const key = `${x},${y},${z}`;
+    let id = ids.get(key);
+    if (id === undefined) {
+      id = pos.length / 3;
+      ids.set(key, id);
+      pos.push(x / q, y / q, z / q);
+    }
+    remap[i] = id;
+  }
+  const idx: number[] = [];
+  for (let i = 0; i < m.indices.length; i += 3) {
+    const a = remap[m.indices[i]], b = remap[m.indices[i + 1]], c = remap[m.indices[i + 2]];
+    if (a !== b && b !== c && a !== c) idx.push(a, b, c);
+  }
+  return { positions: new Float64Array(pos), indices: new Uint32Array(idx) };
+}
+
+/** Binary STL: every part's triangles in one solid, millimeters. */
+function exportSTL(meshes: WeldedMesh[]): Uint8Array {
+  const count = meshes.reduce((n, m) => n + m.indices.length / 3, 0);
+  const out = new Uint8Array(84 + count * 50);
+  const dv = new DataView(out.buffer);
+  out.set(strToU8("Parasocial binary STL".padEnd(80, " ")));
+  dv.setUint32(80, count, true);
+  let o = 84;
+  for (const { positions: p, indices: t } of meshes) {
+    for (let i = 0; i < t.length; i += 3) {
+      const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+      const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2];
+      const vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      nx /= l; ny /= l; nz /= l;
+      for (const v of [nx, ny, nz, p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2], p[c], p[c + 1], p[c + 2]]) {
+        dv.setFloat32(o, v, true);
+        o += 4;
+      }
+      o += 2; // attribute byte count
+    }
+  }
+  return out;
+}
+
 /** Minimal 3MF (core spec): one mesh object per part, millimeters. */
-function export3MF(results: PartResult[]): Uint8Array {
-  const objects = results.map((r, k) => {
-    const m = r.mesh!;
+function export3MF(results: WeldedMesh[]): Uint8Array {
+  const objects = results.map((m, k) => {
     const v: string[] = [];
     for (let i = 0; i < m.positions.length; i += 3) v.push(`<vertex x="${m.positions[i]}" y="${m.positions[i + 1]}" z="${m.positions[i + 2]}"/>`);
     const t: string[] = [];
     for (let i = 0; i < m.indices.length; i += 3) t.push(`<triangle v1="${m.indices[i]}" v2="${m.indices[i + 1]}" v3="${m.indices[i + 2]}"/>`);
-    return `<object id="${k + 1}" name="${r.name.replace(/[<&"]/g, "")}" type="model"><mesh><vertices>${v.join("")}</vertices><triangles>${t.join("")}</triangles></mesh></object>`;
+    return `<object id="${k + 1}" name="${m.name.replace(/[<&"]/g, "")}" type="model"><mesh><vertices>${v.join("")}</vertices><triangles>${t.join("")}</triangles></mesh></object>`;
   });
   const items = results.map((_, k) => `<item objectid="${k + 1}"/>`).join("");
   const model = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>${objects.join("")}</resources><build>${items}</build></model>`;

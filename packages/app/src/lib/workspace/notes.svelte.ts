@@ -1,16 +1,18 @@
 // Notes (§6): drafting from a pick, a selection or pencil strokes; snapshot upload then
 // note.create; anchor resolution on every regeneration (name/query → nearest → orphaned);
 // pin positions that follow their geometry.
-import { mutators, type Note, type MarkupStroke } from '@parasocial/sync';
+import { mutators, type Note, type NoteTarget, type MarkupStroke } from '@parasocial/sync';
 import type { EntityRef } from '@parasocial/viewer';
 import type { Vec3 } from '@parasocial/kernel';
+import { Vector3 } from 'three';
 import { newID } from '$lib/zero';
 import { toast } from '$lib/components/ui/toast';
 import type { WorkspaceState } from './state.svelte';
 
-export type DraftTarget = { ref: EntityRef; point: Vec3; normal?: Vec3 };
-export type Draft = { targets: DraftTarget[]; strokeIDs: string[]; screen: { x: number; y: number }; text?: string };
-export type Pin = { noteID: string; number: number; status: Note['status']; orphaned: boolean; removed: boolean; point: Vec3; part: string; resolution: string; authorKind: 'human' | 'agent'; authorName: string };
+export type DraftTarget = { ref: Omit<EntityRef, 'kind'> & { kind: EntityRef['kind'] | 'part' }; point: Vec3; normal?: Vec3 };
+export type StudioDraftTarget = { ref: { kind: 'studio'; studio: string; part?: never; index?: never }; point: Vec3 };
+export type Draft = { targets: (DraftTarget | StudioDraftTarget)[]; strokeIDs: string[]; screen: { x: number; y: number }; text?: string };
+export type Pin = { noteID: string; number: number; status: Note['status']; orphaned: boolean; removed: boolean; point: Vec3; part?: string; studio?: string; resolution: string; authorKind: 'human' | 'agent'; authorName: string };
 
 export const STROKE_COLORS = ['#e5484d', '#3e63dd', '#30a46c', '#18181b'] as const;
 
@@ -46,7 +48,17 @@ export class NotesController {
 	}
 
 	// ---------- drafting ----------
-	startFromTargets(targets: DraftTarget[], screen: { x: number; y: number }, text?: string) {
+	startFromStudio(file: string) {
+		const ws = this.ws;
+		if (ws.dirty.length) return toast('Save to add notes');
+		if (!ws.viewer || !ws.partTree.some((g) => g.file === file)) return;
+		ws.setActiveStudio(file);
+		const bounds = ws.viewer.bounds();
+		const center = bounds.isEmpty() ? new Vector3(...ws.viewer.cameraState().target) : bounds.getCenter(new Vector3());
+		this.startFromTargets([{ ref: { kind: 'studio', studio: file }, point: center.toArray() as Vec3 }], ws.viewer.project(center) ?? { x: 200, y: 200 });
+	}
+
+	startFromTargets(targets: Draft['targets'], screen: { x: number; y: number }, text?: string) {
 		if (!targets.length) return;
 		this.draft = { targets, strokeIDs: this.draft?.strokeIDs ?? [], screen, text };
 		// a new note, not the one already on this geometry
@@ -58,7 +70,7 @@ export class NotesController {
 
 	addStrokeToDraft(strokeID: string, crossed: DraftTarget[], screen: { x: number; y: number }) {
 		const cur = this.draft;
-		const seen = new Set((cur?.targets ?? []).map((t) => `${t.ref.part}:${t.ref.kind}:${t.ref.index}`));
+		const seen = new Set((cur?.targets ?? []).filter((t) => t.ref.kind !== 'studio').map((t) => `${t.ref.part}:${t.ref.kind}:${t.ref.index}`));
 		const targets = [...(cur?.targets ?? [])];
 		for (const t of crossed) {
 			const k = `${t.ref.part}:${t.ref.kind}:${t.ref.index}`;
@@ -92,11 +104,11 @@ export class NotesController {
 		try {
 			// names for the targets (stable names are how notes find their geometry again)
 			const targets = await Promise.all(
-				d.targets.map(async (t) => {
+				d.targets.map(async (t): Promise<NoteTarget> => {
 					const r = t.ref;
-					if ((r.kind as string) === 'part') return { kind: 'part' as const, part: r.part, name: r.part, point: t.point, normal: t.normal };
+					if (r.kind === 'studio') return { kind: 'studio', studio: r.studio, name: this.ws.partTree.find((g) => g.file === r.studio)?.name ?? r.studio, point: t.point };
 					const name = await this.targetName(r);
-					return { kind: r.kind, part: r.part, name, point: t.point, normal: t.normal };
+					return { kind: r.kind, part: r.part, name, point: t.point, normal: 'normal' in t ? t.normal : undefined };
 				})
 			);
 			// snapshot of the view (with markup) → upload first, then reference (§3)
@@ -128,8 +140,8 @@ export class NotesController {
 	}
 
 	/** Names belong to the displayed mesh, which may be available before the engine boots. */
-	private async targetName(ref: EntityRef): Promise<string> {
-		if ((ref.kind as string) === 'part') return ref.part;
+	private async targetName(ref: DraftTarget['ref']): Promise<string> {
+		if (ref.kind === 'part') return ref.part;
 		const names = this.ws.results[ref.part]?.names;
 		const cached = ref.kind === 'face' || ref.kind === 'edge' ? names?.[ref.kind]?.[ref.index] : undefined;
 		if (cached) return cached;
@@ -173,15 +185,18 @@ export class NotesController {
 		const pins: Pin[] = [];
 		for (const n of ws.notes) {
 			const t = n.anchor.targets[0];
-			const part = t?.part ?? ws.parts[0];
-			if (!t || !part) continue;
+			if (!t) continue;
+			const studio = t.kind === 'studio' ? t.studio : undefined;
+			const part = t.kind === 'studio' ? undefined : t.part ?? ws.parts[0];
+			if (!studio && !part) continue;
 			let point = t.point as Vec3;
 			const unresolved = n.orphaned ? 'orphaned' : 'unknown';
 			let status = 'orphaned';
 			if (!ws.engine || !ws.kernelReady) status = unresolved;
-			const partOk = !!ws.results[part] && !ws.results[part].empty;
-			if (partOk && (t.kind === 'part' || t.kind === 'point')) status = 'name';
-			else if (partOk && ws.engine && ws.kernelReady) {
+			const partOk = !!part && !!ws.results[part] && !ws.results[part].empty;
+			if (t.kind === 'studio') status = ws.scripts.some((s) => s.path === t.studio) ? 'name' : 'orphaned';
+			else if (partOk && (t.kind === 'part' || t.kind === 'point')) status = 'name';
+			else if (part && partOk && ws.engine && ws.kernelReady) {
 				try {
 					const [res] = await ws.engine.resolve(part, [{ kind: t.kind, name: t.name, query: t.query, point: t.point, normal: t.normal } as any]);
 					status = res.status;
@@ -196,7 +211,7 @@ export class NotesController {
 			}
 			if (run !== this.resolving) return; // a newer resolution started
 			const orphaned = status === 'orphaned';
-			if (status !== 'unknown' && orphaned !== n.orphaned && partOk) ws.zero.mutate(mutators.note.setOrphaned({ noteID: n.id, orphaned }));
+			if (status !== 'unknown' && orphaned !== n.orphaned && (studio || partOk)) ws.zero.mutate(mutators.note.setOrphaned({ noteID: n.id, orphaned }));
 			const agent = (n as any).authorAgent ?? (n.authorAgentID ? ws.agents.find((a) => a.id === n.authorAgentID) : null);
 			pins.push({
 				noteID: n.id,
@@ -206,10 +221,19 @@ export class NotesController {
 				removed: !!n.removedAt,
 				point,
 				part,
+				studio,
 				resolution: status,
 				authorKind: agent ? 'agent' : 'human',
 				authorName: agent ? agent.clientName : ((n as any).authorUser?.name ?? (n.authorUserID === ws.userID ? ws.userName : 'Someone'))
 			});
+		}
+		// A local or synced resolution ends the previous interaction. Only clear on
+		// the transition, so a resolved thread can still be deliberately revealed later.
+		const previouslyOpen = new Set(this.pins.filter((p) => p.status !== 'Resolved').map((p) => p.noteID));
+		for (const p of pins) {
+			if (p.status !== 'Resolved' || !previouslyOpen.has(p.noteID)) continue;
+			if (this.active === p.noteID) this.active = null;
+			if (this.hovered === p.noteID) this.hovered = null;
 		}
 		this.pins = pins;
 	}
@@ -217,16 +241,21 @@ export class NotesController {
 	/** Refs of a note's targets on the current geometry (for hover highlight). */
 	async targetRefs(n: Note): Promise<EntityRef[]> {
 		const ws = this.ws;
-		if (!ws.engine || !ws.kernelReady) return [];
 		const out: EntityRef[] = [];
 		for (const t of n.anchor.targets) {
+			if (t.kind === 'studio') {
+				for (const part of ws.partTree.find((g) => g.file === t.studio)?.ids ?? []) {
+					if (ws.results[part] && !ws.results[part].empty) out.push({ part, kind: 'part' as any, index: 0 });
+				}
+				continue;
+			}
 			const part = t.part ?? ws.parts[0];
 			if (!part || !ws.results[part]) continue;
 			if (t.kind === 'part') {
 				out.push({ part, kind: 'part' as any, index: 0 });
 				continue;
 			}
-			if (t.kind === 'point') continue;
+			if (t.kind === 'point' || !ws.engine || !ws.kernelReady) continue;
 			try {
 				const [r] = await ws.engine.resolve(part, [{ kind: t.kind, name: t.name, query: t.query, point: t.point } as any]);
 				for (const index of r.indices) out.push({ part, kind: t.kind as any, index });

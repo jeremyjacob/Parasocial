@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { mutators, newID } from "@parasocial/sync";
+import { mutators, newID, type NoteTarget } from "@parasocial/sync";
 import { runMutator, readVersion, exportDocument, importDocument, buildDocumentZip, parseDocumentZip, signBlobURL, type Db, type BlobStore } from "@parasocial/sync/server";
 import type { PoolClient } from "@parasocial/engine-pool/client";
 import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
@@ -157,9 +157,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     throw new ToolError(`No entity named or matching "${name}" on ${part}. Names come from list_notes, describe_model or query.`);
   }
 
-  async function describeTargets(d: DocState, targets: any[]) {
+  async function describeTargets(d: DocState, targets: NoteTarget[]) {
     const out = [];
     for (const t of targets) {
+      if (t.kind === "studio") {
+        out.push({ kind: t.kind, studio: t.studio, name: t.name, status: d.scripts.some((s) => s.path === t.studio) ? "name" : "orphaned", point: vec(t.point) });
+        continue;
+      }
       const part = t.part ?? (await partsOf(d))[0];
       if (t.kind === "part" || t.kind === "point") {
         out.push({ kind: t.kind, part, point: vec(t.point) });
@@ -293,12 +297,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   tool(
     "list_notes",
     "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link.",
-    { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional() },
-    async ({ document: dd, status, part }) => {
+    { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional(), studio: z.string().optional().describe("Filter studio-level notes by studio script path, e.g. studios/model.ts.") },
+    async ({ document: dd, status, part, studio }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const rows = await db.sql`SELECT * FROM notes WHERE document_id = ${documentID} AND removed_at IS NULL ORDER BY created_at`;
-      const want = rows.filter((n: any) => (!status || status === "all" ? n.status !== "Resolved" : n.status === status) && (!part || n.anchor.targets.some((t: any) => t.part === part)));
+      const want = rows.filter((n: any) => (!status || status === "all" ? n.status !== "Resolved" : n.status === status) && (!part || n.anchor.targets.some((t: NoteTarget) => t.part === part)) && (!studio || n.anchor.targets.some((t: NoteTarget) => t.kind === "studio" && t.studio === studio)));
       const out = [];
       for (const n of want) out.push(await noteView(documentID, n, d));
       return text({ notes: out });
@@ -507,7 +511,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (!n) throw new ToolError(`No note ${view.slice(5)}.`);
         cam = n.anchor.camera;
         v = undefined;
-        highlight ??= n.anchor.targets.filter((t: any) => t.kind !== "point" && t.kind !== "part").map((t: any) => ({ part: t.part, name: t.name }));
+        highlight ??= n.anchor.targets.filter((t: NoteTarget) => t.kind === "face" || t.kind === "edge" || t.kind === "vertex").map((t: NoteTarget) => ({ part: t.part, name: t.name }));
       } else if (v && !VIEWS.includes(v as any)) throw new ToolError(`Unknown view "${v}". Use ${VIEWS.join(", ")} or note:<id>.`);
       const refs: any[] = [];
       for (const h of highlight ?? []) {

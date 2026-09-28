@@ -26,7 +26,7 @@
 				if (f.status === 'all' && n.status === 'Resolved') return false;
 				if (f.status === 'open' && !(n.status === 'Open' || n.status === 'AgentWorking')) return false;
 				if (f.status === 'resolved' && n.status !== 'Resolved') return false;
-				if (f.part !== 'all' && n.anchor.targets[0]?.part !== f.part) return false;
+				if (f.part !== 'all' && !n.anchor.targets.some((t) => t.kind === 'studio' ? `studio:${t.studio}` === f.part : t.part === f.part)) return false;
 				const who = (n as any).authorAgent ? (n as any).authorAgent.clientName : ((n as any).authorUser?.name ?? 'You');
 				if (f.author !== 'all' && who !== f.author) return false;
 				return true;
@@ -40,7 +40,7 @@
 	{#if ws.notes.length}
 		<div class="grid grid-cols-3 gap-1 border-b border-line-subtle p-2">
 			<Select size="sm" items={statusItems} value={nc.filter.status} onValueChange={(v) => (nc.filter = { ...nc.filter, status: v as any })} aria-label="Filter by status" />
-			<Select size="sm" items={[{ value: 'all', label: 'All parts' }, ...ws.allParts.map((p) => ({ value: p, label: ws.results[p]?.name ?? p }))]} value={nc.filter.part} onValueChange={(v) => (nc.filter = { ...nc.filter, part: v })} aria-label="Filter by part" />
+			<Select size="sm" items={[{ value: 'all', label: 'All targets' }, ...ws.partTree.map((g) => ({ value: `studio:${g.file}`, label: `Studio: ${g.name}` })), ...ws.allParts.map((p) => ({ value: p, label: ws.results[p]?.name ?? p }))]} value={nc.filter.part} onValueChange={(v) => (nc.filter = { ...nc.filter, part: v })} aria-label="Filter by target" />
 			<Select size="sm" items={[{ value: 'all', label: 'Anyone' }, ...authors.map((a) => ({ value: a, label: a }))]} value={nc.filter.author} onValueChange={(v) => (nc.filter = { ...nc.filter, author: v })} aria-label="Filter by author" />
 		</div>
 	{/if}

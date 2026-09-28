@@ -13,7 +13,7 @@
 	import { cn } from '$lib/utils';
 	import type { WorkspaceState } from './state.svelte';
 
-	let { ws, onAddStudio, onExport, onAddNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void } = $props();
+	let { ws, onAddStudio, onExport, onAddNote, onAddStudioNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void; onAddStudioNote: (file: string) => void } = $props();
 	let filter = $state('');
 	/** Collapsed studios (by path). */
 	let collapsed = $state<Set<string>>(new Set());
@@ -24,7 +24,7 @@
 	const LABEL: Record<Status, string> = { ok: 'OK', pending: 'Pending', warning: 'Warning', error: 'Error' };
 
 	const agentBusy = (file: string, id: string) =>
-		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ((a.detail as any)?.path === file || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.part === id)));
+		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ((a.detail as any)?.path === file || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.kind === 'studio' ? t.studio === file : t.part === id)));
 
 	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? id;
 
@@ -90,7 +90,7 @@
 		const instance = sourcePart(id) !== id;
 		return [
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote([id]) },
-			{ label: 'Export…', icon: Download, onSelect: () => onExport([id]) },
+			{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
 			{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
 			...(instance ? ([{ label: 'Open part code', icon: Code2, onSelect: () => openScript(ws.scriptOf(sourcePart(id))) }] as MenuEntry[]) : []),
 			// a part that shares its studio with others is removed by editing the studio
@@ -100,7 +100,7 @@
 
 	function studioMenu(file: string, name: string, ids: string[]): MenuEntry[] {
 		return [
-			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote(ids) },
+			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddStudioNote(file) },
 			{ label: 'Open code', icon: Code2, onSelect: () => openScript(file) },
 			{ label: 'Export…', icon: Download, onSelect: () => onExport(ids) },
 			{ type: 'separator' },
@@ -125,7 +125,7 @@
 		<h2 class="text-section text-fg">Studios</h2>
 		<IconButton label="Add studio" size="sm" class="ml-auto" onclick={onAddStudio}><Plus /></IconButton>
 	</div>
-	<ul class="flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio">
+	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio">
 		{#each tree as g (g.file)}
 			{@const open = !collapsed.has(g.file) || !!filter.trim()}
 			<li in:rise={{ y: -4 }} role="treeitem" aria-expanded={open} aria-selected={false} aria-current={active === g.file ? 'true' : undefined} data-studio={g.file}>

@@ -309,3 +309,28 @@
 		transform: scale(1);
 	}
 }
+
+/* Slim, trackless scrollbar. WebKit/Blink get a 6px thumb via the pseudo-elements (Chrome ignores
+   them once scrollbar-width/-color are set, so those are Firefox-only). */
+@utility scrollbar-slim {
+	&::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+		background: transparent;
+	}
+	&::-webkit-scrollbar-track,
+	&::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+	&::-webkit-scrollbar-thumb {
+		background: var(--color-line-strong);
+		border-radius: 9999px;
+	}
+	&::-webkit-scrollbar-thumb:hover {
+		background: var(--color-fg-tertiary);
+	}
+	@supports not selector(::-webkit-scrollbar) {
+		scrollbar-width: thin;
+		scrollbar-color: var(--color-line-strong) transparent;
+	}
+}

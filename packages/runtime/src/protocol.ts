@@ -41,6 +41,9 @@ export type EngineRequest =
   | { op: "closestPoint"; part: string; kind: EntityKind; index: number; point: Vec3 }
   /** Regenerate a snapshot (another version) in a separate engine: compare ghosts, viewing old versions. */
   | { op: "regenerateSnapshot"; key: string; doc: DocumentState; part: string }
+  /** Engine page internal (multi-worker): a part's shown shape as B-rep, and taking one from another worker. */
+  | { op: "shapeOf"; part: string }
+  | { op: "adopt"; part: string; key: string; brep: string }
   | { op: "ping" };
 
 export type MeasureRef = { part: string; kind: EntityKind | "part"; index?: number };
@@ -51,6 +54,8 @@ export type EngineInfo = {
   wasmBytes?: number;
   kernelMs: number;
   build: string;
+  /** Engine workers regenerating parts in parallel. */
+  workers?: number;
 };
 
 /** worker/iframe -> app */

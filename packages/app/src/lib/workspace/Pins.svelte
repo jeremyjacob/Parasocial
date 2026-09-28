@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Note pins (§6 UX): sit on their geometry, hide when occluded, cluster when zoomed out,
+	// Note pins (§6 UX): sit on their geometry, stay visible through parts, cluster when zoomed out,
 	// ghost (dashed) when orphaned. Numbers indicate cluster counts. Hovering a pin
 	// for a beat expands it into a peek at the note (Figma-style).
 	import { onMount, onDestroy } from 'svelte';
@@ -47,20 +47,18 @@
 
 	type Placed = { pins: Pin[]; x: number; y: number };
 	let placed = $state.raw<Placed[]>([]);
-	let occluded = new Set<string>();
 	let raf = 0;
 	let offs: (() => void)[] = [];
 
 	// only the studio in the viewport: pins on other studios' parts (or other assemblies' copies) wait there
-	const shown = $derived(nc.pins.filter((p) => ws.shownParts.includes(p.part) && !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
-	/** Pins are in part coordinates; assembly parts may have moved. */
-	const at = (p: Pin) => viewer.toWorld(p.part, new THREE.Vector3(...p.point));
+	const shown = $derived(nc.pins.filter((p) => (p.studio ? ws.studio?.file === p.studio : !!p.part && ws.shownParts.includes(p.part)) && !p.removed && (p.status !== 'Resolved' || nc.hovered === p.noteID || nc.active === p.noteID)));
+	/** Studio pins use world coordinates; geometry pins move with their parts. */
+	const at = (p: Pin) => p.part ? viewer.toWorld(p.part, new THREE.Vector3(...p.point)) : new THREE.Vector3(...p.point);
 
 	function layout() {
 		raf = 0;
 		const out: Placed[] = [];
 		for (const p of shown) {
-			if (occluded.has(p.noteID) && !p.orphaned && nc.active !== p.noteID) continue;
 			const s = viewer.project(at(p));
 			if (!s) continue;
 			// cluster pins that land within 22px of each other
@@ -72,21 +70,11 @@
 	}
 	const schedule = () => (raf ||= requestAnimationFrame(layout));
 
-	function occlusion() {
-		const next = new Set<string>();
-		const vis = viewer.pointsVisible(shown.map(at));
-		shown.forEach((p, i) => !vis[i] && next.add(p.noteID));
-		occluded = next;
-		schedule();
-	}
-
 	onMount(() => {
 		offs.push(viewer.on('camera', schedule));
-		// dragging an assembly moves pins with their parts; occlusion once it settles
-		let settle: ReturnType<typeof setTimeout> | undefined;
-		offs.push(viewer.on('poses', () => (schedule(), clearTimeout(settle), (settle = setTimeout(occlusion, 150)))));
-		offs.push(viewer.on('moving', (on: boolean) => !on && occlusion()));
-		occlusion();
+		// Dragging an assembly moves pins with their parts.
+		offs.push(viewer.on('poses', schedule));
+		schedule();
 	});
 	onDestroy(() => {
 		clearTimeout(peekTimer);
@@ -95,8 +83,7 @@
 	});
 	$effect(() => {
 		shown;
-		nc.active;
-		queueMicrotask(occlusion);
+		schedule();
 	});
 
 	function zoomTo(c: Placed) {
@@ -142,7 +129,7 @@
 						<span class="ml-auto shrink-0 text-label text-fg-tertiary">{peeked.time}</span>
 					</span>
 					{#if peeked.text}<span class="line-clamp-3 text-body text-fg [overflow-wrap:anywhere]">{peeked.text}</span>{/if}
-					{#if p.orphaned}<span class="text-label text-error">Lost its geometry</span>{/if}
+					{#if p.orphaned}<span class="text-label text-error">{p.studio ? 'Lost its studio' : 'Lost its geometry'}</span>{/if}
 					{#if peeked.working}<span class="flex items-center gap-1.5 text-label font-medium text-accent-fg"
 							><LoaderCircle size={12} strokeWidth={2} class="shrink-0 animate-[ps-spin_1s_linear_infinite] motion-reduce:animate-none" /><span class="truncate">{peeked.working} is working on this…</span></span
 						>{/if}
@@ -223,7 +210,7 @@
 			color var(--duration-fast) var(--ease-out),
 			opacity var(--duration-fast) var(--ease-out),
 			box-shadow var(--duration-fast) var(--ease-out);
-		/* Drops onto its geometry when it appears (placed, un-occluded, or un-clustered). */
+		/* Drops onto its geometry when it appears (placed or un-clustered). */
 		animation: pin-drop var(--duration-base) var(--ease-out);
 		cursor: default;
 	}

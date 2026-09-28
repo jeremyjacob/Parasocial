@@ -69,7 +69,7 @@ describe('hot edits', () => {
 		const lid = ws.results['mechanism/lid'];
 		const mesh = ws.meshOf('mechanism/lid');
 		ws.hidden = ['mechanism/lid@copy'];
-		ws.selection = [{ part: 'mechanism/lid', kind: 'part', index: 0 }];
+		ws.selection = [{ part: 'mechanism/lid', kind: 'face', index: 0 }];
 		ws.scripts = ws.scripts.map((s) => s.path === 'studios/body.ts' ? { ...s, content: 'edited' } : s);
 		await ws.sync();
 		expect([...visible]).toEqual(assembly.instances.map((i) => i.id));
@@ -81,7 +81,7 @@ describe('hot edits', () => {
 		expect(setPart).toHaveBeenCalledTimes(1);
 		expect(ws.results['mechanism/lid']).toBe(lid);
 		expect(ws.meshOf('mechanism/lid')).toBe(mesh);
-		expect(ws.selection).toEqual([{ part: 'mechanism/lid', kind: 'part', index: 0 }]);
+		expect(ws.selection).toEqual([{ part: 'mechanism/lid', kind: 'face', index: 0 }]);
 		expect(ws.hidden).toEqual(['mechanism/lid@copy']);
 		expect(removePart).not.toHaveBeenCalled();
 	});
@@ -122,5 +122,36 @@ describe('hot edits', () => {
 		second.resolve(result('body', 'newest'));
 		await vi.waitFor(() => expect(ws.regen.body).toBe('idle'));
 		expect(ws.results.body.key).toBe('newest');
+	});
+
+	it('does not roll back a newer result when an older request completes late', async () => {
+		const older = deferred<PartResult | null>();
+		regenerate.mockReturnValueOnce(older.promise).mockResolvedValueOnce(result('body', 'newest'));
+		ws.live = { body: { width: 20 } };
+		await ws.sync();
+		ws.live = { body: { width: 30 } };
+		await ws.sync();
+		await vi.waitFor(() => expect(ws.results.body.key).toBe('newest'));
+		older.resolve(result('body', 'older'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ws.results.body.key).toBe('newest');
+		expect(ws.regen.body).toBe('idle');
+	});
+
+	it('does not resurrect a deleted part when its regeneration finishes', async () => {
+		const pending = deferred<PartResult | null>();
+		regenerate.mockReturnValueOnce(pending.promise);
+		ws.live = { lid: { width: 20 } };
+		await ws.sync();
+		infos = infos.filter((p) => p.id !== 'lid');
+		assembly = { ...assembly, instances: assembly.instances.filter((i) => i.part !== 'lid') };
+		ws.scripts = ws.scripts.filter((s) => s.path !== 'studios/lid.ts');
+		await ws.sync();
+		pending.resolve(result('lid', 'late'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ws.results.lid).toBeUndefined();
+		expect(ws.meshOf('lid')).toBeUndefined();
+		expect(ws.regen.lid).toBeUndefined();
+		expect([...visible]).toEqual(['mechanism/body']);
 	});
 });

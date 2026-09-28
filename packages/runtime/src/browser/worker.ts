@@ -5,7 +5,7 @@ import { Engine, type PartResult, type Interference, type PartPose } from "../en
 import { LatestWins } from "../scheduler";
 import type { EngineRequest, EngineInfo } from "../protocol";
 
-export type WorkerInit = { type: "init"; glueSingle: string; glueMulti: string; wasmSingle: string; wasmMulti: string; threads: boolean; build: string };
+export type WorkerInit = { type: "init"; glueSingle: string; glueMulti: string; wasmSingle: string; wasmMulti: string; threads: boolean; build: string; /** compiled once by the engine page for all its workers */ wasmModule?: WebAssembly.Module };
 
 const engine = new Engine();
 // snapshots (other versions) regenerate in their own engine so the live document's cache stays warm
@@ -19,7 +19,7 @@ async function boot(cfg: WorkerInit): Promise<EngineInfo> {
   const glue = useThreads ? cfg.glueMulti : cfg.glueSingle;
   const wasmUrl = useThreads ? cfg.wasmMulti : cfg.wasmSingle;
   // compileStreaming lets the browser cache compiled code for the content-hashed URL
-  const [mod, wasmModule] = await Promise.all([import(/* @vite-ignore */ glue), WebAssembly.compileStreaming(fetch(wasmUrl))]);
+  const [mod, wasmModule] = await Promise.all([import(/* @vite-ignore */ glue), cfg.wasmModule ?? WebAssembly.compileStreaming(fetch(wasmUrl))]);
   const oc = await loadKernel({ init: mod.default, wasmModule, mainScriptUrlOrBlob: useThreads ? glue : undefined });
   let threads = 1;
   if (useThreads) {
@@ -117,6 +117,11 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       if (!r) return { value: null };
       return { value: r, transfer: r.flatMap((x) => (x.mesh ? meshTransferables(x.mesh) : [])) };
     }
+    case "shapeOf":
+      return { value: engine.shapeOf(req.part) };
+    case "adopt":
+      engine.adopt(req.part, req.key, req.brep);
+      return { value: true };
     case "closestPoint":
       return { value: engine.closestPoint(req.part, req.kind, req.index, req.point) };
     default:

@@ -18,16 +18,27 @@ export type Stroke = {
   width?: number;
 };
 
-/** PLAN §6 anchor model. `markup` is stored in markup_strokes rows, not inline. */
-export type NoteAnchor = {
-  targets: Array<{
+export type NoteTarget = {
     kind: "face" | "edge" | "vertex" | "part" | "point";
     name: string;
     query?: string;
     part?: string;
+    studio?: never;
     point: Vec3;
     normal?: Vec3;
-  }>;
+  } | {
+    kind: "studio";
+    /** Studio script path, independent of its current exports or display name. */
+    studio: string;
+    name: string;
+    /** Studio/world coordinates, not coordinates of one of its parts. */
+    point: Vec3;
+    part?: never;
+  };
+
+/** PLAN §6 anchor model. `markup` is stored in markup_strokes rows, not inline. */
+export type NoteAnchor = {
+  targets: NoteTarget[];
   camera: { position: Vec3; target: Vec3; up: Vec3; fov: number; ortho: boolean };
   version: string;
   configuration: string;

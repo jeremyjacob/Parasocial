@@ -6,15 +6,38 @@
 	import { SegmentedControl } from '$lib/components/ui/segmented-control';
 	import { toast } from '$lib/components/ui/toast';
 	import type { WorkspaceState } from './state.svelte';
+	import { sourcePart } from '@parasocial/runtime/protocol';
 
 	/** `target`: the parts to export when the dialog opens (a part, a studio's parts, the selection); empty = the studio in the viewport. */
 	let { ws, open = $bindable(false), target = [], onZip }: { ws: WorkspaceState; open?: boolean; target?: string[]; onZip: () => Promise<void> } = $props();
 	let what = $state('parts');
 	let scope = $state('all');
-	let format = $state<'step' | 'stl' | '3mf'>('step');
+	type Format = 'step' | 'stl' | '3mf';
+	const FORMAT_PREF = 'parasocial:export-format';
+	let format = $state<Format>(
+		(() => {
+			try {
+				const v = localStorage.getItem(FORMAT_PREF);
+				if (v === 'step' || v === 'stl' || v === '3mf') return v;
+			} catch {}
+			return 'step';
+		})()
+	);
+	$effect(() => {
+		try {
+			localStorage.setItem(FORMAT_PREF, format);
+		} catch {}
+	});
 	let busy = $state(false);
 
-	const nameOf = (p: string) => ws.results[p]?.name ?? p;
+	const nameOf = (p: string) => ws.results[p]?.name ?? ws.partInfos.find((i) => i.id === sourcePart(p))?.name ?? p;
+	/** File name base: the part's name for one part, the studio's when they all come from one studio, else the document's. */
+	function baseName(parts: string[]) {
+		if (parts.length === 1) return nameOf(parts[0]);
+		const studios = new Set(parts.map((p) => ws.partTree.find((g) => g.ids.includes(p))?.name));
+		const [only] = studios;
+		return studios.size === 1 && only ? only : (ws.doc?.name ?? 'parts');
+	}
 	const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 	/** Scopes: all parts, each multi-part studio (an assembly: its instances, where they're posed), each part, and the opening target when it's none of those. */
 	const scopes = $derived.by(() => {
@@ -54,13 +77,13 @@
 		try {
 			if (what === 'document') await onZip();
 			else {
-				const bytes = await ws.engine!.exportParts(chosen, format);
-				const base = chosen.length === 1 ? nameOf(chosen[0]) : scope.startsWith('studio:') ? (ws.partTree.find((g) => `studio:${g.file}` === scope)?.name ?? 'parts') : (ws.doc?.name ?? 'parts');
-				const name = base.replace(/[^\w.-]+/g, '-');
+				const bytes = await ws.engine!.exportParts($state.snapshot(chosen), format);
+				const name = baseName(chosen).replace(/[^\w .()-]+/g, '-').replace(/\s+/g, ' ').trim() || 'parts';
 				download(bytes, `${name}.${format}`, format === 'step' ? 'model/step' : format === 'stl' ? 'model/stl' : 'model/3mf');
 			}
 			open = false;
-		} catch {
+		} catch (e) {
+			console.error("export failed", e);
 			toast.error("Couldn't export. Try again.");
 		} finally {
 			busy = false;

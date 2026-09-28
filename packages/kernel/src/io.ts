@@ -2,7 +2,7 @@
 import { oc } from "./oc";
 import { scoped, tmp } from "./memory";
 import { KernelError } from "./ops";
-import type { Shape } from "./topo";
+import { downcast, type Shape } from "./topo";
 
 function readAndRemove(path: string): Uint8Array {
   const O = oc() as any;
@@ -32,4 +32,17 @@ export function exportSTL(shape: Shape, tolerance = 0.01, angular = 0.2): Uint8A
     if (!w.Write(shape, path, tmp(new O.Message_ProgressRange()))) throw new KernelError("STL export failed");
     return readAndRemove(path);
   });
+}
+
+/** OCCT's native B-rep text: a lossless copy of a shape (sub-shape order included) for another kernel instance. */
+export function writeBrep(shape: Shape): string {
+  return (oc() as any).BRepToolsWrapper.Write(shape);
+}
+
+export function readBrep(brep: string): Shape {
+  const s = (oc() as any).BRepToolsWrapper.Read(brep);
+  if (!s || s.IsNull()) throw new KernelError("B-rep read failed");
+  const d = downcast(s);
+  if (d !== s) s.delete();
+  return d;
 }

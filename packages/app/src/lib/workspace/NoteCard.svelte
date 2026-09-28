@@ -14,7 +14,7 @@
 
 	const status = $derived<NoteStatus>(note.orphaned ? 'orphaned' : note.status === 'Open' ? 'open' : note.status === 'AgentWorking' ? 'working' : 'resolved');
 	const t0 = $derived(note.anchor.targets[0]);
-	const partName = $derived(t0?.part ? (ws.results[t0.part]?.name ?? t0.part) : '');
+	const partName = $derived(t0?.kind === 'studio' ? (ws.partTree.find((g) => g.file === t0.studio)?.name ?? t0.name) : t0?.part ? (ws.results[t0.part]?.name ?? t0.part) : '');
 	const kind = $derived(`${t0 ? t0.kind[0].toUpperCase() + t0.kind.slice(1) : 'Point'}${note.anchor.targets.length > 1 ? ` +${note.anchor.targets.length - 1}` : ''}`);
 	const resolved = $derived(note.status === 'Resolved');
 	const claimant = $derived(status === 'working' ? ((note as any).claimant ?? ws.agents.find((a) => a.id === note.claimedBy)) : null);
@@ -120,7 +120,7 @@
 	</header>
 	{#if note.orphaned}
 		<div class="flex items-center gap-2 border-b border-line-subtle bg-error-subtle px-3 py-2 text-label text-error">
-			<Unlink size={12} /> Can't find its geometry. <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click the model…' : 'Reattach'}</Button>
+			<Unlink size={12} /> {t0?.kind === 'studio' ? "Can't find its studio." : "Can't find its geometry."} <Button variant="ghost" size="sm" class="ml-auto" onclick={() => ((ws.tool = 'note'), (nc.active = note.id), (nc.reanchoring = note.id))}>{nc.reanchoring === note.id ? 'Click the model…' : 'Reattach'}</Button>
 		</div>
 	{/if}
 	<div class="flex flex-col gap-4 px-3 py-3">

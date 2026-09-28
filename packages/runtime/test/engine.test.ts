@@ -4,6 +4,7 @@ import { Engine, LatestWins } from "../src";
 import { Glob } from "bun";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { unzipSync, strFromU8 } from "fflate";
 
 beforeAll(async () => { await loadKernel(); });
 
@@ -150,6 +151,59 @@ test("describeAll, interference, exports", () => {
   for (const f of ["step", "stl", "3mf"] as const) expect(e.exportPart("enclosure", f).byteLength).toBeGreaterThan(100);
 });
 
+test("mesh exports are welded and watertight; STL is binary", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: docFrom("knob") });
+  e.regenerate("knob");
+  const model = strFromU8(unzipSync(e.exportPart("knob", "3mf"))["3D/3dmodel.model"]);
+  const tris = [...model.matchAll(/v1="(\d+)" v2="(\d+)" v3="(\d+)"/g)].map((m) => [+m[1], +m[2], +m[3]]);
+  const directed = new Set<string>();
+  for (const [a, b, c] of tris) for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+    expect(directed.has(`${u},${v}`)).toBe(false); // consistently oriented
+    directed.add(`${u},${v}`);
+  }
+  for (const k of directed) expect(directed.has(k.split(",").reverse().join(","))).toBe(true); // closed: no open edges
+  expect(model).not.toMatch(/="-?\d+\.\d{5,}"/); // no float32 noise digits
+  const stl = e.exportPart("knob", "stl");
+  const n = new DataView(stl.buffer, stl.byteOffset).getUint32(80, true);
+  expect(n).toBe(tris.length);
+  expect(stl.byteLength).toBe(84 + 50 * n);
+});
+
+test("adopted shapes (another worker's parts) answer cross-part requests like local ones", () => {
+  const local = new Engine();
+  local.setDocument({ scripts: docFrom("enclosure") });
+  for (const p of local.parts()) local.regenerate(p);
+  // `hub` regenerates only the enclosure; the lid and mount come from `other` as B-rep
+  const hub = new Engine(),
+    other = new Engine();
+  hub.setDocument({ scripts: docFrom("enclosure") });
+  other.setDocument({ scripts: docFrom("enclosure") });
+  hub.regenerate("enclosure");
+  for (const p of ["enclosure:lid", "mount"]) {
+    other.regenerate(p);
+    const s = other.shapeOf(p)!;
+    expect(s.key).toBe(local.shown(p)!.key);
+    hub.adopt(p, s.key, s.brep);
+  }
+  const pose = { r: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [3, 0, 2] as [number, number, number] };
+  for (const e of [local, hub]) e.setPoses({ mount: pose });
+  expect(hub.interference("enclosure", "mount")).toBeCloseTo(local.interference("enclosure", "mount"), 6);
+  expect(hub.interferences(["enclosure", "enclosure:lid", "mount"]).map((i) => [i.a, i.b, i.volume])).toEqual(local.interferences(["enclosure", "enclosure:lid", "mount"]).map((i) => [i.a, i.b, i.volume]));
+  // entity indices survive the round trip
+  const faces = local.describeAll("mount").faces.length;
+  for (const index of [0, Math.floor(faces / 2), faces - 1]) {
+    const a = { part: "enclosure", kind: "face" as const, index: 0 },
+      b = { part: "mount", kind: "face" as const, index };
+    expect(hub.measure(a, b).distance).toBeCloseTo(local.measure(a, b).distance, 9);
+  }
+  expect(hub.exportParts(["enclosure", "mount"], "step").byteLength).toBeGreaterThan(100);
+  expect(hub.exportParts(["enclosure:lid", "mount"], "3mf").byteLength).toBeGreaterThan(1000);
+  // regenerating a part here drops the adopted copy
+  hub.regenerate("mount");
+  expect(hub.measure({ part: "enclosure", kind: "part" }, { part: "mount", kind: "part" }).distance).toBeCloseTo(local.measure({ part: "enclosure", kind: "part" }, { part: "mount", kind: "part" }).distance, 9);
+});
+
 test("tangent chain and loop", () => {
   const e = new Engine();
   e.setDocument({ scripts: docFrom("bracket") });
@@ -196,7 +250,6 @@ export const only = part("Only", () => box(1, 1, 1));`,
   expect(e.names("case:lid").face[0]).toStartWith("case:lid/");
   // exported together: one STEP/STL compound, one 3MF object per part
   for (const f of ["step", "stl"] as const) expect(e.exportParts(["case", "case:lid", "case:clip"], f).byteLength).toBeGreaterThan(e.exportPart("case:clip", f).byteLength);
-  const { unzipSync, strFromU8 } = require("fflate");
   const model = strFromU8(unzipSync(e.exportParts(["case", "case:lid"], "3mf"))["3D/3dmodel.model"]);
   expect(model.match(/<object /g)?.length).toBe(2);
 

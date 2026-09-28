@@ -8,17 +8,18 @@
 	let text = $state(nc.draft?.text ?? '');
 	let el: HTMLTextAreaElement;
 	const d = $derived(nc.draft!);
-	const PLURAL = { face: 'faces', edge: 'edges', vertex: 'vertices' } as const;
+	const PLURAL = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', studio: 'studios' } as const;
 	// "Edge of Drawer", "2 faces on Drawer", "3 features on Drawer, Lid"
 	const label = $derived.by(() => {
-		const parts = [...new Set(d.targets.map((t) => ws.results[t.ref.part]?.name ?? t.ref.part))].join(', ');
+		const parts = [...new Set(d.targets.map(({ ref }) => ref.kind === 'studio' ? (ws.partTree.find((g) => g.file === ref.studio)?.name ?? ref.studio) : (ws.results[ref.part]?.name ?? ref.part)))].join(', ');
 		const kinds = new Set(d.targets.map((t) => t.ref.kind));
 		if (d.targets.length === 1) {
 			const k = d.targets[0].ref.kind;
+			if (k === 'studio' || k === 'part') return `${k === 'studio' ? 'Studio' : 'Part'}: ${parts}`;
 			return `${k[0].toUpperCase()}${k.slice(1)} of ${parts}`;
 		}
 		const noun = kinds.size === 1 ? PLURAL[[...kinds][0]] : 'features';
-		return `${d.targets.length} ${noun} on ${parts}`;
+		return `${d.targets.length} ${noun}${kinds.size === 1 && (kinds.has('part') || kinds.has('studio')) ? ':' : ' on'} ${parts}`;
 	});
 	// focus on appear (incl. after a pencil pause) and whenever the draft grows
 	$effect(() => {

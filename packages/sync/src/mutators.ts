@@ -295,14 +295,19 @@ const snapshotOverride = paramKey.extend({ expression: z.string(), value: paramV
 const anchorSchema = z.object({
   targets: z
     .array(
-      z.object({
+      z.discriminatedUnion("kind", [z.object({
         kind: z.enum(["face", "edge", "vertex", "part", "point"]),
         name: z.string(),
         query: z.string().optional(),
         part: z.string().optional(),
         point: vec3,
         normal: vec3.optional(),
-      }),
+      }), z.object({
+        kind: z.literal("studio"),
+        studio: z.string().refine((path) => path.startsWith("studios/") && validateScriptPath(path) === null, "Invalid studio script path"),
+        name: z.string(),
+        point: vec3,
+      })]),
     )
     .min(1),
   camera: z.object({ position: vec3, target: vec3, up: vec3, fov: z.number(), ortho: z.boolean() }),

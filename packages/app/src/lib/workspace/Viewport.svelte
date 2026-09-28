@@ -369,7 +369,7 @@
 			if (!s.points.length) return renderMarkup();
 			// Marks beside the model still belong to the current part; they needn't cross a face.
 			if (!s.part) {
-				s.part = nc.draft?.targets.find((t) => ws.shownParts.includes(t.ref.part))?.ref.part ?? ws.shownParts[0];
+				s.part = nc.draft?.targets.find((t) => t.ref.kind !== 'studio' && ws.shownParts.includes(t.ref.part))?.ref.part ?? ws.shownParts[0];
 				if (!s.part) return renderMarkup();
 				s.crossed.push({ ref: { part: s.part, kind: 'part' as any, index: 0 }, point: s.points[0] });
 			}
@@ -409,7 +409,7 @@
 			// shift adds to the draft's targets (a note can point at many entities)
 			const all = e.shiftKey && nc.draft ? [...nc.draft.targets, ...targets] : targets;
 			nc.startFromTargets(all, { x, y });
-			ws.select(all.map((t) => t.ref));
+			ws.select(all.flatMap((t) => t.ref.kind === 'studio' ? [] : [t.ref as EntityRef]));
 			return;
 		}
 		// a Tab-cycled preselection is what a click selects
