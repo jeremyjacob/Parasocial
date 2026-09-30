@@ -730,11 +730,10 @@ export class WorkspaceState {
 	}
 
 	async resetParam(part: string, name: string) {
-		if (this.readOnly) {
-			const { [name]: _, ...rest } = this.live[part] ?? {};
-			return void (this.live = { ...this.live, [part]: rest });
-		}
-		if (!this.activeConfigID) return;
+		this.endScrub();
+		const { [name]: _, ...rest } = this.live[part] ?? {};
+		this.live = { ...this.live, [part]: rest };
+		if (this.readOnly || !this.activeConfigID) return;
 		return this.mutate(mutators.param.reset({ documentID: this.documentID, configurationID: this.activeConfigID, part, name } as any), `Reset ${name}`);
 	}
 

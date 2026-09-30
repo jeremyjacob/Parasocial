@@ -80,7 +80,7 @@ describe('NumberField', () => {
 		expect(input.className).toContain('text-override');
 		await fireEvent.click(getByLabelText('Reset to default'));
 		expect(onreset).toHaveBeenCalled();
-		expect(oncommit).toHaveBeenLastCalledWith(3, undefined);
+		expect(oncommit).not.toHaveBeenCalled();
 		expect(input.getAttribute('aria-valuenow')).toBe('3');
 		expect(queryByLabelText('Reset to default')).toBeNull();
 	});
@@ -99,7 +99,13 @@ describe('NumberField', () => {
 		await fireEvent.doubleClick(getByTitle('Drag to adjust · Double-click to reset to 15 °'));
 		expect(input.value).toBe('15');
 		expect(onreset).toHaveBeenCalledOnce();
-		expect(oncommit).toHaveBeenCalledExactlyOnceWith(15, undefined);
+		expect(oncommit).not.toHaveBeenCalled();
+	});
+
+	it('commits the default on reset when there is no onreset', async () => {
+		const { getByLabelText, oncommit } = setup({ value: 4, defaultValue: 3, onreset: undefined });
+		await fireEvent.click(getByLabelText('Reset to default'));
+		expect(oncommit).toHaveBeenLastCalledWith(3, undefined);
 	});
 
 	it('does not reset disabled handles or handles without defaults', async () => {

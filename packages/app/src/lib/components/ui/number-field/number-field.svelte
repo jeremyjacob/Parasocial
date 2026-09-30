@@ -59,6 +59,7 @@
 		oninput?: (value: number) => void;
 		/** Gesture end / Enter / blur — commit the override here. */
 		oncommit?: (value: number, expression: string | undefined) => void;
+		/** Reset to the default. When set, it replaces the commit a reset would otherwise send. */
 		onreset?: () => void;
 	};
 
@@ -201,8 +202,9 @@
 			expression = undefined;
 		}
 		draft = restText;
-		onreset?.();
-		oncommit?.(value, expression);
+		// onreset clears the override itself; committing the default too would re-create it
+		if (onreset) onreset();
+		else oncommit?.(value, expression);
 	}
 
 	/* ---------------------------------------------------------------- scrubbing */
