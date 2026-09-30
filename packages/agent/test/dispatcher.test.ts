@@ -193,3 +193,27 @@ test("runs interrupted by a restart are given back and picked up again", async (
     await d.stop();
   }
 });
+
+test("a run that fails without a word in the thread is retried after a wait, not at once", async () => {
+  const ada = await createUser(db, "Ada");
+  const documentID = await newDoc(db, ada);
+  const note = await newNote(db, ada, documentID, "doomed");
+  await run(db, mutators.note.assignAgent({ noteID: note, assign: true }), { userID: ada });
+  let runs = 0;
+  const d = createAgentDispatcher(toolDeps(db), {
+    run: async () => {
+      runs++;
+      throw new Error("boom");
+    },
+    sweepMs: 0,
+    log: () => {},
+  });
+  try {
+    await d.ready;
+    await Bun.sleep(300);
+    await d.scan(documentID);
+    expect(runs).toBe(1);
+  } finally {
+    await d.stop();
+  }
+});

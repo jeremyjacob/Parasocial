@@ -274,7 +274,6 @@ export class Viewer {
 
   // ---------- parts ----------
   private fading: { group: THREE.Group; t0: number; obj: PartObject }[] = [];
-  private shimmer = new Set<string>();
 
   /**
    * Set a part's geometry. `crossfade` fades the old mesh out over the new one (discrete changes:
@@ -1501,9 +1500,9 @@ export class Viewer {
     const now = performance.now();
     const dt = now - this.lastTick;
     this.lastTick = now;
-    // only a camera animation moves the camera; fades and shimmer just redraw
+    // only a camera animation moves the camera; fades just redraw
     if (this.controls.tick(now)) this.syncCameras();
-    if (this.tickFades(now) || this.tickShimmer(now)) this.needsRender = true;
+    if (this.tickFades(now)) this.needsRender = true;
     if (!this.needsRender) return;
     // motion that can't hold ~45 fps drops to 1× pixel ratio until the camera stops
     if (this.moving && !this.lowRes && this.baseDpr > 1) {
@@ -1617,24 +1616,6 @@ export class Viewer {
       }
       return true;
     });
-    return true;
-  }
-
-  /** Parts an agent is working on shimmer subtly (§8 Agent presence). */
-  setShimmer(ids: string[]) {
-    this.shimmer = new Set(ids);
-    for (const [id, p] of this.parts) if (!this.shimmer.has(id)) p.setEmissive(0);
-    this.requestRender();
-  }
-
-  private shimmerAt = 0;
-  private tickShimmer(now: number): boolean {
-    if (!this.shimmer.size || this.controls.reducedMotion) return false;
-    // a slow sine: ~24 steps a second is smooth, and spares full shaded frames in between
-    if (now - this.shimmerAt < 40) return false;
-    this.shimmerAt = now;
-    const k = 0.5 + 0.5 * Math.sin(now / 420);
-    for (const id of this.shimmer) this.parts.get(id)?.setEmissive(0.06 + 0.08 * k);
     return true;
   }
 

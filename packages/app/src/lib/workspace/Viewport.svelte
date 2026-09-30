@@ -145,20 +145,6 @@
 		viewer?.setTheme(viewerTheme(d));
 		ws.untracked(() => ws.retheme(d));
 	});
-	// parts an agent is working on shimmer (from its claimed notes' targets or the file it's writing)
-	$effect(() => {
-		const working = new Set<string>();
-		for (const a of ws.agents) {
-			if (a.status !== 'working' && a.status !== 'writing') continue;
-			const d = (a.detail ?? {}) as any;
-			if (typeof d.path === 'string') for (const p of ws.parts) if (ws.scriptOf(p) === d.path) working.add(p);
-			if (d.noteID) for (const t of ws.notes.find((n) => n.id === d.noteID)?.anchor.targets ?? []) if (t.part) working.add(t.part);
-			// a part's copies in assemblies are the same geometry
-			for (const p of [...working]) for (const c of ws.copiesOf(p)) working.add(c);
-		}
-		viewer?.setShimmer([...working]);
-	});
-
 	// the active studio's parts (or an assembly's instances) are what the viewer holds
 	$effect(() => {
 		ws.shownParts;

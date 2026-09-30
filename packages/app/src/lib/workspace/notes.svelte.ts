@@ -290,7 +290,10 @@ export class NotesController {
 			}
 			if (run !== this.resolving) return; // a newer resolution started
 			const orphaned = status === 'orphaned';
-			if (status !== 'unknown' && orphaned !== n.orphaned && (studio || partOk)) ws.zero.mutate(mutators.note.setOrphaned({ noteID: n.id, orphaned }));
+			// the stored flag is about the saved Default geometry: a tab looking at a configuration,
+			// scrub or unsaved edit would fight other tabs over it (each write re-resolves them all)
+			const canonical = ws.activeConfigID === null && !Object.keys(ws.live).length && !ws.dirty.length;
+			if (canonical && status !== 'unknown' && orphaned !== n.orphaned && (studio || partOk)) ws.zero.mutate(mutators.note.setOrphaned({ noteID: n.id, orphaned }));
 			const agent = (n as any).authorAgent ?? (n.authorAgentID ? ws.agents.find((a) => a.id === n.authorAgentID) : null);
 			pins.push({
 				noteID: n.id,

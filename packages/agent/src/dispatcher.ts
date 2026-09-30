@@ -9,6 +9,10 @@ import { runNote, type RunOptions, type RunOutcome } from "./run";
 /** Notes worked at once in one document; the rest wait their turn. */
 export const MAX_RUNS_PER_DOCUMENT = 8;
 
+/** First wait before retrying a note whose run failed without a word in the thread; doubles per failure. */
+const RETRY_MS = 5_000;
+const MAX_RETRY_MS = 10 * 60_000;
+
 export type DispatcherOptions = {
   /** re-scan everything this often, in case a wake-up was missed (ms; 0 disables) */
   sweepMs?: number;
@@ -33,6 +37,9 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
   let chain: Promise<void> = Promise.resolve();
   // notes whose run a restart cut off: they go again even though the agent already wrote in them
   const resume = new Set<string>();
+  // notes whose last run failed without writing in the thread (so they're still candidates):
+  // retried after a growing wait instead of at once, which would spin
+  const backoff = new Map<string, { failures: number; until: number }>();
 
   /** Notes waiting for the agent, oldest first (in every document, or just `documentID`). */
   async function candidates(documentID: string | null) {
@@ -61,7 +68,7 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
       const perDocument = new Map<string, number>();
       for (const r of running.values()) perDocument.set(r.documentID, (perDocument.get(r.documentID) ?? 0) + 1);
       for (const c of await candidates(documentID)) {
-        if (running.has(c.id)) continue;
+        if (running.has(c.id) || (backoff.get(c.id)?.until ?? 0) > Date.now()) continue;
         const n = perDocument.get(c.document_id) ?? 0;
         if (n >= maxPerDocument) continue;
         perDocument.set(c.document_id, n + 1);
@@ -74,12 +81,29 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
 
   function start(documentID: string, noteID: string, userID: string) {
     const abort = new AbortController();
+    let failed = false;
     const done = run(deps, { documentID, noteID, userID, signal: abort.signal })
-      .then((outcome) => log(`note ${noteID}: ${outcome}`))
-      .catch((e) => log(`note ${noteID} failed`, e))
+      .then((outcome) => {
+        log(`note ${noteID}: ${outcome}`);
+        failed = outcome === "claimed";
+      })
+      .catch((e) => {
+        log(`note ${noteID} failed`, e);
+        failed = true;
+      })
       .finally(() => {
         running.delete(noteID);
-        if (!stopped) void scan(documentID);
+        if (stopped) return;
+        if (!failed) {
+          backoff.delete(noteID);
+          return void scan(documentID);
+        }
+        const failures = (backoff.get(noteID)?.failures ?? 0) + 1;
+        const wait = Math.min(MAX_RETRY_MS, RETRY_MS * 2 ** (failures - 1));
+        backoff.set(noteID, { failures, until: Date.now() + wait });
+        // other notes in the document may be waiting for this slot
+        void scan(documentID);
+        (setTimeout(() => void scan(documentID), wait + 10) as any).unref?.();
       });
     running.set(noteID, { documentID, abort, done });
   }
