@@ -36,6 +36,19 @@
 		].filter((g) => g.params.length);
 	});
 
+	/** Panel label: the declared label, else the identifier split into words ("spoolRopeD" → "Spool rope D"). */
+	function labelOf(p: ParamDecl) {
+		if (p.label) return p.label;
+		const words = p.name
+			.replace(/_+/g, ' ')
+			.replace(/([a-z\d])([A-Z])/g, '$1 $2')
+			.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+			.trim()
+			.split(/\s+/)
+			.map((w, i) => (/^[A-Z]+$/.test(w) ? w : i ? w.toLowerCase() : w));
+		return words.join(' ').replace(/^./, (c) => c.toUpperCase());
+	}
+
 	/** Code default for a param: its declared default in base units. */
 	function factor(p: ParamDecl) {
 		return p.unit ? (UNITS[p.unit]?.factor ?? 1) : 1;
@@ -134,10 +147,10 @@
 				{#each g.params as p (p.name)}
 					{@const changed = codeDefaultChanged(g.part, p)}
 					{#if p.options}
-						<div class="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2">
-							<span class="relative flex h-7 min-w-0 items-center text-ui transition-colors duration-[var(--duration-fast)] {p.overridden ? 'text-fg' : 'text-fg-secondary'}">
+						<div class="grid grid-cols-[minmax(0,3fr)_minmax(0,2fr)] items-center gap-2">
+							<span title="{labelOf(p)}{p.label ? ` (${p.name})` : ''}{p.source ? ` · ${p.source.file.split('/').pop()}:${p.source.line}` : ''}" class="relative flex h-7 min-w-0 items-center text-ui transition-colors duration-[var(--duration-fast)] {p.overridden ? 'text-fg' : 'text-fg-secondary'}">
 								<span aria-hidden="true" class="override-dot" data-on={p.overridden ? '' : undefined}></span>
-								<span class="truncate">{p.label ?? p.name}</span>
+								<span class="truncate">{labelOf(p)}</span>
 							</span>
 							<Select
 								size="sm"
@@ -149,7 +162,8 @@
 						</div>
 					{:else}
 						<NumberField
-							rowLabel={p.label ?? p.name}
+							rowLabel={labelOf(p)}
+							rowName={p.name}
 							value={typeof p.value === 'number' ? p.value / factor(p) : 0}
 							expression={p.overridden && p.expression && !/^\s*-?\d*\.?\d+\s*$/.test(p.expression) ? p.expression : undefined}
 							unit={p.unit}

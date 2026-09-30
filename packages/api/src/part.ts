@@ -78,6 +78,7 @@ export type ParamOptions = {
   unit?: Unit;
   /** Discrete choices (numbers or strings). */
   options?: (number | string)[];
+  /** What the params panel shows: short, plain language, sentence case, no abbreviations ("Rope diameter" for `ropeD`). */
   label?: string;
   description?: string;
   /**

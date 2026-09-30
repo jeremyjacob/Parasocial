@@ -21,6 +21,8 @@
 		expression?: string;
 		/** Full-width row label outside the field (params panel); also the scrub handle. */
 		rowLabel?: string;
+		/** Identifier behind the row label, shown in its tooltip ("ropeD"), for expressions. */
+		rowName?: string;
 		/** Short leading label (Figma's "W", "X") — drag it to scrub. */
 		label?: string;
 		/** Leading icon instead of a letter (also a scrub handle). */
@@ -65,6 +67,7 @@
 		expression = $bindable(),
 		label,
 		rowLabel,
+		rowName,
 		icon: Icon,
 		unit,
 		min = -Infinity,
@@ -241,11 +244,11 @@
 </script>
 
 <div class={cn('flex min-w-0 flex-col gap-1', className)}>
-	<div class={rowLabel ? 'grid grid-cols-[88px_minmax(0,1fr)] items-center gap-2' : 'contents'}>
+	<div class={rowLabel ? 'grid grid-cols-[minmax(0,3fr)_minmax(0,2fr)] items-center gap-2' : 'contents'}>
 	{#if rowLabel}
 		<span
 			class={cn('relative flex h-7 min-w-0 touch-none items-center text-ui transition-colors duration-[var(--duration-fast)] select-none', overridden ? 'text-fg' : 'text-fg-secondary', scrubbing && 'text-fg')}
-			title={defaultValue !== undefined ? `${rowLabel} · default ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}${source ? ` · ${source}` : ''}` : rowLabel}
+			title={`${rowLabel}${rowName && rowName !== rowLabel ? ` (${rowName})` : ''}${defaultValue !== undefined ? ` · default ${fmt(defaultValue)}${unit ? ` ${unit}` : ''}` : ''}${source ? ` · ${source}` : ''}`}
 			onpointerdown={onScrubDown}
 			style:cursor={scrubCursor}
 			data-testid="param-label"
@@ -308,7 +311,7 @@
 				class={cn(
 					'pointer-events-none shrink-0 pr-2 pl-1 text-ui tabular text-fg-tertiary',
 					// Overridden: make room for the reset button, which only appears on hover/focus.
-					overridden && !disabled && 'transition-[padding] duration-[var(--duration-fast)] ease-out group-hover/nf:pr-7 group-focus-within/nf:pr-7'
+					overridden && !disabled && 'transition-[padding] duration-[var(--duration-fast)] ease-out group-hover/nf:pr-8 group-focus-within/nf:pr-8'
 				)}>{trailing}</span
 			>
 		{/if}
