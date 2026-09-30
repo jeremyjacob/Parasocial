@@ -11,6 +11,7 @@
 	import { theme } from '$lib/theme.svelte';
 	import { rise } from '$lib/styles/motion';
 	import { cn } from '$lib/utils';
+	import { tick, untrack } from 'svelte';
 	import type { WorkspaceState } from './state.svelte';
 
 	let { ws, onAddStudio, onExport, onAddNote, onAddStudioNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void; onAddStudioNote: (file: string) => void } = $props();
@@ -84,6 +85,18 @@
 		showStudio(file);
 		ws.select(partRefs(rows.slice(a, b + 1)), ws.additiveSelection || e.metaKey || e.ctrlKey ? 'add' : 'replace');
 	}
+	/** Selecting a part (or one of its faces, edges, features) reveals its row: its studio expands and the row scrolls into view. */
+	let list: HTMLUListElement | undefined = $state();
+	$effect(() => {
+		const part = ws.selection.at(-1)?.part;
+		if (!part) return;
+		untrack(() => {
+			const g = tree.find((g) => g.rows.some((r) => r.id === part));
+			if (!g) return;
+			if (!expanded.has(g.file)) expanded = new Set(expanded).add(g.file);
+			tick().then(() => list?.querySelector(`[data-part="${CSS.escape(part)}"]`)?.scrollIntoView({ block: 'nearest' }));
+		});
+	});
 	const openScript = (path: string) => ((ws.openScript = path), (ws.revealLine = null), (ws.mode = 'code'));
 
 	function toggleExpanded(file: string) {
@@ -157,7 +170,7 @@
 		<h2 class="text-section text-fg">Studios</h2>
 		{#if !ws.readOnly}<IconButton label="Add studio" size="sm" class="ml-auto" onclick={onAddStudio}><Plus /></IconButton>{/if}
 	</div>
-	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio">
+	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio" bind:this={list}>
 		{#each tree as g (g.file)}
 			{@const open = expanded.has(g.file) || !!filter.trim()}
 			<li in:rise={{ y: -4 }} role="treeitem" aria-expanded={open} aria-selected={false} aria-current={active === g.file ? 'true' : undefined} data-studio={g.file}>
@@ -192,7 +205,7 @@
 				{#if open}
 					<ul class="flex flex-col gap-px pt-px" role="group">
 						{#each g.rows as r (r.id)}
-							<li role="treeitem" aria-selected={selectedPart.has(r.id)}>
+							<li role="treeitem" aria-selected={selectedPart.has(r.id)} data-part={r.id}>
 								<ContextMenu items={menuFor(r.id, r.name, g.file, g.ids.length)} onOpen={() => ctxSelect(g.file, r.id)}>
 									<ListRow
 										name={r.name}
