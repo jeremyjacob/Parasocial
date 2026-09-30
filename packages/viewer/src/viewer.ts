@@ -69,6 +69,13 @@ const FACE_LAYER = 2;
 /** Pick snap radii, CSS px: a vertex this close to the cursor wins, then an edge. */
 const VERTEX_SNAP = 3;
 const EDGE_SNAP = 6;
+/** Floor for the edge snap on small faces, CSS px: the cursor on a drawn edge still picks it. */
+const EDGE_SNAP_MIN = 2;
+/**
+ * The edge snap band may take at most this fraction of the face's on-screen width from each
+ * side. Zoomed out, faces shrink but a fixed pixel snap doesn't, so edges would swallow them.
+ */
+const EDGE_SNAP_FACE_FRACTION = 0.25;
 /** The grid renders before the scene, without contributing depth. */
 const BACKGROUND_LAYER = 3;
 
@@ -89,6 +96,8 @@ export class Viewer {
   private pixelRatio = { value: 1 };
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
   private pickBuf = new Uint8Array(4 * 13 * 13);
+  private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
+  private facePickBuf = new Uint8Array(4);
   private needsRender = true;
   private raf = 0;
   private useOrtho = false;
@@ -1095,6 +1104,11 @@ export class Viewer {
       }
     // the disc proxies cover the cursor well beyond the vertex itself: only a snapped vertex counts
     if (center?.kind === "vertex") center = null;
+    // an edge only wins within a band proportional to the face under the cursor, so small faces stay pickable
+    if (bestEdge && !bestVert && this.filter.face) {
+      const under = this.faceUnder(px, py, eSnap, W, H);
+      if (under && bestEdge.d > under.snap * under.snap) (bestEdge = null), (center = under.id);
+    }
     const best = { id: bestVert?.id ?? bestEdge?.id ?? center ?? (bestAny && bestAny.d <= 4 * dpr * dpr ? bestAny.id : null) };
     this.stats.lastPickMs = performance.now() - t0;
     if (!best?.id) return null;
@@ -1103,6 +1117,59 @@ export class Viewer {
     if (this.filter.part && !this.filter.face && !this.filter.edge && !this.filter.vertex) return { part, kind: "part" as any, index: 0 };
     if (best.id.kind === "face" && !this.filter.face) return this.filter.part ? { part, kind: "part" as any, index: 0 } : null;
     return { part, kind: best.id.kind, index: best.id.index };
+  }
+
+  /**
+   * The face under device pixel (px, py), from a faces-only ID pass, with the edge snap radius it
+   * allows: a fraction of the face's width across the cursor, measured toward its nearest boundary
+   * and away from it. Faces wide enough for the full `eSnap` measure as such.
+   */
+  private faceUnder(px: number, py: number, eSnap: number, W: number, H: number): { id: NonNullable<ReturnType<typeof decodeId>>; snap: number } | null {
+    const full = eSnap / EDGE_SNAP_FACE_FRACTION;
+    const R = Math.ceil(full);
+    const size = R * 2 + 1;
+    if (this.facePickTarget.width !== size) this.facePickTarget.setSize(size, size);
+    if (this.facePickBuf.length !== size * size * 4) this.facePickBuf = new Uint8Array(size * size * 4);
+    this.camera.setViewOffset(W, H, px - R, py - R, size, size);
+    this.renderIds(this.facePickTarget, false, true);
+    this.camera.clearViewOffset();
+    const buf = this.facePickBuf;
+    this.renderer.readRenderTargetPixels(this.facePickTarget, 0, 0, size, size, buf);
+    const at = (i: number, j: number) => (j * size + i) * 4;
+    const c = at(R, R);
+    const id = decodeId(buf[c], buf[c + 1], buf[c + 2], buf[c + 3]);
+    if (id?.kind !== "face") return null;
+    const same = (i: number, j: number) => {
+      const o = at(i, j);
+      return buf[o] === buf[c] && buf[o + 1] === buf[c + 1] && buf[o + 2] === buf[c + 2] && buf[o + 3] === buf[c + 3];
+    };
+    // nearest pixel off this face
+    let bi = -1,
+      bj = -1,
+      bd = Infinity;
+    for (let j = 0; j < size; j++)
+      for (let i = 0; i < size; i++) {
+        const d = (i - R) ** 2 + (j - R) ** 2;
+        if (d < bd && !same(i, j)) (bd = d), (bi = i), (bj = j);
+      }
+    if (bi < 0) return { id, snap: eSnap };
+    const near = Math.sqrt(bd);
+    // walk away from that boundary until leaving the face (or the window: wide enough)
+    const ux = (R - bi) / near,
+      uy = (R - bj) / near;
+    let far = Infinity;
+    for (let t = 0.5; t <= R * 1.5; t += 0.5) {
+      const i = Math.round(R + ux * t),
+        j = Math.round(R + uy * t);
+      if (i < 0 || j < 0 || i >= size || j >= size) break;
+      if (!same(i, j)) {
+        far = t;
+        break;
+      }
+    }
+    const width = near + far;
+    const floor = EDGE_SNAP_MIN * this.renderer.getPixelRatio();
+    return { id, snap: Math.min(eSnap, Math.max(floor, width * EDGE_SNAP_FACE_FRACTION)) };
   }
 
   /** A vertex disc can extend beyond an occluder's silhouette even when its center is hidden. */
@@ -1657,6 +1724,7 @@ export class Viewer {
     this.groundGrid.dispose();
     for (const p of this.parts.values()) p.dispose();
     this.pickTarget.dispose();
+    this.facePickTarget.dispose();
     this.visTarget?.dispose();
     this.aoFull?.pass.dispose();
     this.aoFast?.pass.dispose();

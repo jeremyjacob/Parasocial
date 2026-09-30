@@ -58,7 +58,7 @@
 <main class="relative grid min-h-dvh place-items-center overflow-hidden bg-canvas px-4">
 	<HeroArt class="pointer-events-none absolute inset-0" />
 	<div
-		class="animate-enter relative w-full max-w-[360px] rounded-dialog border border-line-subtle bg-panel/92 p-6 shadow-dialog backdrop-blur-xl [--ps-enter-scale:0.97] [--ps-enter-y:10px]"
+		class="animate-enter relative w-full max-w-90 rounded-dialog border border-line-subtle bg-panel/92 p-6 shadow-dialog backdrop-blur-xl [--ps-enter-scale:0.97] [--ps-enter-y:10px]"
 		data-testid="signin-card"
 	>
 		<div class="mb-5 flex items-center gap-2">

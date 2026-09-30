@@ -18,6 +18,7 @@ test("drag the lid open: limits hold, the position is saved, undo puts it back",
   // the assembly studio shows its own copies instead
   await page.locator('[data-studio="studios/mechanism.ts"] .row-main').first().click();
   await expect.poll(() => wsEval<string[]>(page, "ws.viewer.partIds().sort()")).toEqual([...INSTANCES].sort());
+  await page.locator('[data-studio="studios/mechanism.ts"]').getByRole("button", { name: /^Expand / }).click();
   await expect(page.locator('[data-studio="studios/mechanism.ts"]').getByRole("group").getByRole("treeitem").first()).toContainText("Body");
   // its joints show in Properties (the assembly-only studio has no placeholder part)
   await expect(page.locator('[data-joint="lid"]')).toBeVisible();

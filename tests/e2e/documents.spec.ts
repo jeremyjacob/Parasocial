@@ -20,6 +20,7 @@ test("create an empty document, add a studio", async ({ page, user }) => {
   await page.getByTestId("new-studio-blank").click();
   await page.waitForFunction(() => (globalThis as any).__ws?.results?.studio1?.ok, null, { timeout: 45_000 });
   await expect(page.getByTestId("parts-panel")).toContainText("Studio 1");
+  await page.getByTestId("parts-panel").getByRole("button", { name: "Expand Studio 1" }).click();
   await expect(page.getByTestId("parts-panel")).toContainText("Part 1");
 });
 

@@ -23,6 +23,9 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   const studio = panel.locator('[data-studio="studios/bracket.ts"]');
   await expect(studio).toContainText("Stack");
   await expect(studio).not.toContainText("bracket.ts");
+  // studios start collapsed
+  await expect(studio.getByRole("group")).toHaveCount(0);
+  await studio.getByRole("button", { name: "Expand Stack" }).click();
   await expect(studio.getByRole("group").getByRole("treeitem")).toHaveText([/Base/, /Lid/, /Clip/]);
   await page.screenshot({ path: "test-results/parts-tree.png" });
 
@@ -81,6 +84,7 @@ test("visibility toggles share undo and redo, with one entry per selection actio
   }, null, { timeout: 45_000 });
   await wsEval(page, "ws.additiveSelection = false");
   const studio = page.getByTestId("parts-panel").locator('[data-studio="studios/bracket.ts"]');
+  await studio.getByRole("button", { name: "Expand Stack" }).click();
   const row = (name: string) => studio.locator("div.group\\/row", { hasText: name }).first();
   await row("Clip").getByRole("button", { name: "Hide Clip" }).click();
   expect(await wsEval(page, "ws.hidden")).toEqual(["bracket:clip"]);

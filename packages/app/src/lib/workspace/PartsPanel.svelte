@@ -15,8 +15,8 @@
 
 	let { ws, onAddStudio, onExport, onAddNote, onAddStudioNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void; onAddStudioNote: (file: string) => void } = $props();
 	let filter = $state('');
-	/** Collapsed studios (by path). */
-	let collapsed = $state<Set<string>>(new Set());
+	/** Expanded studios (by path); studios start collapsed. */
+	let expanded = $state<Set<string>>(new Set());
 	const dark = $derived(theme.resolved === 'dark');
 
 	type Status = 'ok' | 'warning' | 'error' | 'pending';
@@ -31,7 +31,9 @@
 	// Each studio with what it shows in the viewport: its parts, or an assembly's instances (joints are in Properties).
 	const tree = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
-		return ws.partTree.flatMap(({ file, name, assemblies, ids }) => {
+		// assemblies first, otherwise in document order
+		const studios = [...ws.partTree].sort((a, b) => Number(b.assemblies.length > 0) - Number(a.assemblies.length > 0));
+		return studios.flatMap(({ file, name, assemblies, ids }) => {
 			const asmError = ws.asm.problems.some((p) => assemblies.some((a) => a.id === p.assembly));
 			const rows = ids.map((id) => {
 				// an instance shows its source part's state
@@ -84,10 +86,10 @@
 	}
 	const openScript = (path: string) => ((ws.openScript = path), (ws.revealLine = null), (ws.mode = 'code'));
 
-	function toggleCollapsed(file: string) {
-		const next = new Set(collapsed);
+	function toggleExpanded(file: string) {
+		const next = new Set(expanded);
 		if (!next.delete(file)) next.add(file);
-		collapsed = next;
+		expanded = next;
 	}
 
 	let deleteOpen = $state(false);
@@ -157,7 +159,7 @@
 	</div>
 	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio">
 		{#each tree as g (g.file)}
-			{@const open = !collapsed.has(g.file) || !!filter.trim()}
+			{@const open = expanded.has(g.file) || !!filter.trim()}
 			<li in:rise={{ y: -4 }} role="treeitem" aria-expanded={open} aria-selected={false} aria-current={active === g.file ? 'true' : undefined} data-studio={g.file}>
 				<ContextMenu items={studioMenu(g.file, g.name, g.ids)} onOpen={() => showStudio(g.file)}>
 					<!-- Figma-style: the chevron hangs in the row's left padding, the type icon takes the leading cell -->
@@ -178,7 +180,7 @@
 								class="focus-ring absolute top-1/2 left-0.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg"
 								aria-label="{open ? 'Collapse' : 'Expand'} {g.name}"
 								onpointerdown={(e) => e.stopPropagation()}
-								onclick={(e) => (e.stopPropagation(), toggleCollapsed(g.file))}
+								onclick={(e) => (e.stopPropagation(), toggleExpanded(g.file))}
 							>
 								<ChevronRight size={14} class={cn(open && 'rotate-90')} />
 							</button>
