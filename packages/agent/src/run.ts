@@ -45,12 +45,21 @@ export type RunOptions = {
 };
 
 const ADDENDUM = `Built-in agent
-You are the agent built into Parasocial, working one note that a person handed to you (it is already claimed for you). Your tools act on this document only; their document argument is filled in for you. Nobody watches this run live and you can't wait for answers: never ask for permission. If you need a decision or information from a person, reply_to_note with status "Open" and a short, specific question, then stop. When the work is done and verified, resolve the note (set_note_status "Resolved", or reply_to_note if there's something worth saying) and stop.
+You are the agent built into Parasocial, working one note that a person handed to you (it is already claimed for you). Other runs of you may be working other notes in this document at the same time: stick to your note, and if a write fails on a stale baseVersion, re-read and redo your edit on top of the newer version. Your tools act on this document only; their document argument is filled in for you. Nobody watches this run live and you can't wait for answers: never ask for permission. If you need a decision or information from a person, reply_to_note with status "Open" and a short, specific question, then stop. When the work is done and verified, resolve the note (set_note_status "Resolved", or reply_to_note if there's something worth saying) and stop.
 Keep note replies short: a sentence or two, three at most, in plain words. Say what changed or what you need, not how you did it; the linked version already shows the details. No headings, lists, or step-by-step recaps.`;
 
-/** The user's built-in agent session in a document (one per user and document), created on first use. */
-export async function builtinSession(deps: Pick<ToolDeps, "db">, userID: string, documentID: string, label?: string) {
-  const [prior] = await deps.db.sql`SELECT id FROM agent_sessions WHERE user_id = ${userID} AND document_id = ${documentID} AND builtin ORDER BY last_seen_at DESC LIMIT 1`;
+/**
+ * The user's built-in agent session for one note, created on first use. Each note gets its own
+ * session (avatar, status, claim), so several notes in a document can be worked at once; a note
+ * the agent comes back to reuses the session that worked it before.
+ */
+export async function builtinSession(deps: Pick<ToolDeps, "db">, userID: string, documentID: string, noteID: string, label?: string) {
+  const [prior] = await deps.db.sql`
+    SELECT a.id FROM agent_sessions a
+     WHERE a.user_id = ${userID} AND a.document_id = ${documentID} AND a.builtin
+       AND (a.id = (SELECT claimed_by FROM notes WHERE id = ${noteID})
+            OR EXISTS (SELECT 1 FROM note_messages m WHERE m.note_id = ${noteID} AND m.author_agent_id = a.id))
+     ORDER BY a.last_seen_at DESC LIMIT 1`;
   const id: string = prior?.id ?? crypto.randomUUID();
   const r = await runMutator(deps.db, mutators.agent.start({ id, clientName: BUILTIN_CLIENT_NAME, label, documentID } as any), { userID });
   if (!r.ok) throw new Error(r.message);
@@ -77,7 +86,7 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
   const { documentID, noteID, userID } = opts;
   const creds = opts.model ? null : await loadAgentCredentials(db, deps.config.secret, userID);
   const modelName = opts.model ? undefined : creds?.model;
-  const sessionID = await builtinSession(deps, userID, documentID, modelName);
+  const sessionID = await builtinSession(deps, userID, documentID, noteID, modelName);
   const as = { userID, agentSessionID: sessionID };
   // why a run stopped is a message (people need to see it); routine entries are collapsed activity
   const post = (text: string, kind: "message" | "activity" = "activity", data?: Record<string, unknown>) =>

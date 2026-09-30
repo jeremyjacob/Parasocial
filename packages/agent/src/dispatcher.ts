@@ -1,10 +1,13 @@
 // Hands notes to the built-in agent: notes a person handed over (agent_assigned_by), and every open
-// note in documents with auto hand-off on (settings.agent). One run per document at a time, oldest
-// note first. A note goes back to the agent only after new human activity (a reply, or handing it
+// note in documents with auto hand-off on (settings.agent). One run per note, up to
+// MAX_RUNS_PER_DOCUMENT at a time in each document, oldest notes first. A note goes back to the agent only after new human activity (a reply, or handing it
 // over again) since the agent last wrote in its thread, so a note the agent left open with a
 // question waits for the answer instead of looping.
 import type { ToolDeps } from "@parasocial/mcp/tools";
 import { runNote, type RunOptions, type RunOutcome } from "./run";
+
+/** Notes worked at once in one document; the rest wait their turn. */
+export const MAX_RUNS_PER_DOCUMENT = 8;
 
 export type DispatcherOptions = {
   /** re-scan everything this often, in case a wake-up was missed (ms; 0 disables) */
@@ -12,25 +15,29 @@ export type DispatcherOptions = {
   /** for tests */
   run?: (deps: ToolDeps, opts: RunOptions) => Promise<RunOutcome>;
   log?: (msg: string, err?: unknown) => void;
+  /** defaults to MAX_RUNS_PER_DOCUMENT */
+  maxPerDocument?: number;
 };
 
-type Running = { noteID: string; abort: AbortController; done: Promise<void> };
+type Running = { documentID: string; abort: AbortController; done: Promise<void> };
 
 export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = {}) {
   const { db } = deps;
   const run = opts.run ?? runNote;
   const log = opts.log ?? ((m, e) => (e ? console.error(`agent: ${m}`, e) : console.log(`agent: ${m}`)));
+  const maxPerDocument = opts.maxPerDocument ?? MAX_RUNS_PER_DOCUMENT;
+  /** note id → its run */
   const running = new Map<string, Running>();
   let stopped = false;
-  // scans run one after another, so two can't start the same document
+  // scans run one after another, so two can't start the same note
   let chain: Promise<void> = Promise.resolve();
   // notes whose run a restart cut off: they go again even though the agent already wrote in them
   const resume = new Set<string>();
 
-  /** The next note to work in each idle document (or just `documentID`). */
+  /** Notes waiting for the agent, oldest first (in every document, or just `documentID`). */
   async function candidates(documentID: string | null) {
     return (await db.sql`
-      SELECT DISTINCT ON (n.document_id) n.id, n.document_id, COALESCE(n.agent_assigned_by, d.settings->'agent'->>'runAs') AS run_as
+      SELECT n.id, n.document_id, COALESCE(n.agent_assigned_by, d.settings->'agent'->>'runAs') AS run_as
         FROM notes n JOIN documents d ON d.id = n.document_id
        WHERE n.status = 'Open' AND n.claimed_by IS NULL AND n.removed_at IS NULL
          AND (${documentID}::text IS NULL OR n.document_id = ${documentID})
@@ -45,14 +52,19 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
               AND b.created_at >= GREATEST(
                 COALESCE(n.agent_assigned_at, n.created_at),
                 COALESCE((SELECT max(h.created_at) FROM note_messages h WHERE h.note_id = n.id AND h.author_agent_id IS NULL AND h.kind = 'message'), n.created_at))))
-       ORDER BY n.document_id, n.created_at, n.id`) as unknown as { id: string; document_id: string; run_as: string }[];
+       ORDER BY n.created_at, n.id`) as unknown as { id: string; document_id: string; run_as: string }[];
   }
 
   function scan(documentID: string | null = null): Promise<void> {
     chain = chain.then(async () => {
       if (stopped) return;
+      const perDocument = new Map<string, number>();
+      for (const r of running.values()) perDocument.set(r.documentID, (perDocument.get(r.documentID) ?? 0) + 1);
       for (const c of await candidates(documentID)) {
-        if (running.has(c.document_id)) continue;
+        if (running.has(c.id)) continue;
+        const n = perDocument.get(c.document_id) ?? 0;
+        if (n >= maxPerDocument) continue;
+        perDocument.set(c.document_id, n + 1);
         resume.delete(c.id);
         start(c.document_id, c.id, c.run_as);
       }
@@ -66,10 +78,10 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
       .then((outcome) => log(`note ${noteID}: ${outcome}`))
       .catch((e) => log(`note ${noteID} failed`, e))
       .finally(() => {
-        running.delete(documentID);
+        running.delete(noteID);
         if (!stopped) void scan(documentID);
       });
-    running.set(documentID, { noteID, abort, done });
+    running.set(noteID, { documentID, abort, done });
   }
 
   /** Runs don't survive a restart: give their notes back so they're picked up again. */
@@ -89,8 +101,8 @@ export function createAgentDispatcher(deps: ToolDeps, opts: DispatcherOptions = 
   return {
     ready,
     scan,
-    /** document id → note being worked */
-    running: () => new Map([...running].map(([d, r]) => [d, r.noteID])),
+    /** note id → its document, for every note being worked */
+    running: () => new Map([...running].map(([n, r]) => [n, r.documentID])),
     async stop() {
       stopped = true;
       off();

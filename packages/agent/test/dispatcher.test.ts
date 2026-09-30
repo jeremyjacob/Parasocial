@@ -13,7 +13,7 @@ beforeAll(async () => {
 afterAll(async () => db?.drop());
 
 /** A dispatcher whose runs just record what they were given and reply as the built-in agent. */
-function recording() {
+function recording(maxPerDocument?: number) {
   const runs: RunOptions[] = [];
   const gates: (() => Promise<void>)[] = [];
   const fake = async (_deps: unknown, o: RunOptions): Promise<RunOutcome> => {
@@ -21,12 +21,12 @@ function recording() {
     let replied!: () => void;
     const done = new Promise<void>((r) => (replied = r));
     await new Promise<void>((r) => gates.push(() => (r(), done)));
-    const sessionID = await builtinSession({ db }, o.userID, o.documentID);
+    const sessionID = await builtinSession({ db }, o.userID, o.documentID, o.noteID);
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID: o.noteID, text: "Which side?", kind: "message" } as any), { userID: o.userID, agentSessionID: sessionID });
     replied();
     return "open";
   };
-  const d = createAgentDispatcher(toolDeps(db), { run: fake, sweepMs: 0, log: () => {} });
+  const d = createAgentDispatcher(toolDeps(db), { run: fake, sweepMs: 0, log: () => {}, maxPerDocument });
   const finish = async () => {
     while (!gates.length) await Bun.sleep(5);
     await gates.shift()!(); // until the run has replied
@@ -36,7 +36,7 @@ function recording() {
   return { d, runs, finish };
 }
 
-test("hand-off, one run per document, and waiting for the human after the agent speaks", async () => {
+test("hand-off, one run per note, and waiting for the human after the agent speaks", async () => {
   const ada = await createUser(db, "Ada");
   const documentID = await newDoc(db, ada);
   const n1 = await newNote(db, ada, documentID, "first");
@@ -49,22 +49,53 @@ test("hand-off, one run per document, and waiting for the human after the agent 
     await run(db, mutators.note.assignAgent({ noteID: n1, assign: true }), { userID: ada });
     await run(db, mutators.note.assignAgent({ noteID: n2, assign: true }), { userID: ada });
     await d.scan(documentID);
-    expect(runs.map((r) => [r.noteID, r.userID])).toEqual([[n1, ada]]); // oldest first, one at a time
+    expect(runs.map((r) => [r.noteID, r.userID])).toEqual([[n1, ada], [n2, ada]]); // both at once, oldest first
+    expect([...d.running().keys()].sort()).toEqual([n1, n2].sort());
 
     await finish();
-    expect(runs.map((r) => r.noteID)).toEqual([n1, n2]);
     await finish();
     expect(runs).toHaveLength(2); // both asked a question: nothing to do until someone answers
+    expect(d.running().size).toBe(0);
+
+    // each note got its own session
+    const sessions = await db.sql`SELECT DISTINCT author_agent_id FROM note_messages WHERE note_id IN (${n1}, ${n2}) AND author_agent_id IS NOT NULL`;
+    expect(sessions).toHaveLength(2);
 
     await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID: n1, text: "The left one" } as any), { userID: ada });
     await d.scan(documentID);
     expect(runs.map((r) => r.noteID)).toEqual([n1, n2, n1]);
     await finish();
+    // coming back to a note reuses its session
+    const again = await db.sql`SELECT DISTINCT author_agent_id FROM note_messages WHERE note_id = ${n1} AND author_agent_id IS NOT NULL`;
+    expect(again).toHaveLength(1);
 
     // handing a note over again counts as new activity
     await run(db, mutators.note.assignAgent({ noteID: n2, assign: true }), { userID: ada });
     await d.scan(documentID);
     expect(runs.at(-1)?.noteID).toBe(n2);
+    await finish();
+  } finally {
+    await d.stop();
+  }
+});
+
+test("runs per document are capped; the rest wait their turn", async () => {
+  const ada = await createUser(db, "Ada");
+  const documentID = await newDoc(db, ada);
+  const notes: string[] = [];
+  for (const text of ["a", "b", "c"]) {
+    const id = await newNote(db, ada, documentID, text);
+    await run(db, mutators.note.assignAgent({ noteID: id, assign: true }), { userID: ada });
+    notes.push(id);
+  }
+  const { d, runs, finish } = recording(2);
+  try {
+    await d.ready;
+    await d.scan(documentID);
+    expect(runs.map((r) => r.noteID)).toEqual(notes.slice(0, 2));
+    await finish();
+    expect(runs.map((r) => r.noteID)).toEqual(notes);
+    await finish();
     await finish();
   } finally {
     await d.stop();
@@ -115,7 +146,7 @@ test("taking a note back releases the built-in agent's claim; agents can't hand 
   const ada = await createUser(db);
   const documentID = await newDoc(db, ada);
   const noteID = await newNote(db, ada, documentID);
-  const sessionID = await builtinSession({ db }, ada, documentID);
+  const sessionID = await builtinSession({ db }, ada, documentID, noteID);
 
   await run(db, mutators.note.assignAgent({ noteID, assign: true }), { userID: ada });
   await run(db, mutators.note.claim({ noteID }), { userID: ada, agentSessionID: sessionID });
@@ -147,7 +178,7 @@ test("runs interrupted by a restart are given back and picked up again", async (
   const ada = await createUser(db);
   const documentID = await newDoc(db, ada);
   const noteID = await newNote(db, ada, documentID);
-  const sessionID = await builtinSession({ db }, ada, documentID);
+  const sessionID = await builtinSession({ db }, ada, documentID, noteID);
   await run(db, mutators.note.assignAgent({ noteID, assign: true }), { userID: ada });
   await run(db, mutators.note.claim({ noteID }), { userID: ada, agentSessionID: sessionID });
   // it had already logged progress when it was cut off

@@ -1,5 +1,5 @@
 // The built-in agent (server-only): works notes handed to it on the user's own model provider.
-export { createAgentDispatcher, type AgentDispatcher } from "./dispatcher";
+export { createAgentDispatcher, MAX_RUNS_PER_DOCUMENT, type AgentDispatcher } from "./dispatcher";
 export { runNote, builtinSession, BUILTIN_CLIENT_NAME, MAX_STEPS, type RunOutcome, type RunOptions } from "./run";
 export { languageModel, testProvider, ProviderSetupError } from "./providers";
 export { mcpToolSet, toModelOutput, EXCLUDED_TOOLS } from "./tools";

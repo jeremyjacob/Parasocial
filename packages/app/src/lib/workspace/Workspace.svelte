@@ -402,12 +402,14 @@
 		}
 	]);
 
-	// one avatar per agent (client + label); stale connections of the same agent collapse
+	// one avatar per agent (client + label); stale connections of the same agent collapse. The
+	// built-in agent runs one session per note: each one working gets its own avatar.
 	const liveAgents = $derived.by(() => {
 		const byKey = new Map<string, (typeof ws.agents)[number]>();
 		for (const a of ws.agents) {
 			if (a.status === 'disconnected') continue;
-			const k = `${a.clientName}\u0000${a.label ?? ''}`;
+			const busy = a.status === 'working' || a.status === 'writing';
+			const k = a.builtin && busy ? a.id : `${a.clientName}\u0000${a.label ?? ''}`;
 			const cur = byKey.get(k);
 			const rank = (x: typeof a) => (x.status === 'working' || x.status === 'writing' ? 1 : 0) * 1e15 + x.lastSeenAt;
 			if (!cur || rank(a) > rank(cur)) byKey.set(k, a);
