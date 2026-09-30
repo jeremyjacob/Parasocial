@@ -5,7 +5,9 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 const config = {
 	preprocess: vitePreprocess(),
 	kit: {
-		adapter: adapter()
+		adapter: adapter(),
+		// the origin check is done in hooks.server.ts so native OAuth clients can reach /oauth/token
+		csrf: { trustedOrigins: ['*'] }
 	}
 };
 

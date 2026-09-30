@@ -61,3 +61,35 @@ it.each([{ label: 'exported parts', ids: ['base', 'lid', 'handle'] }, { label: '
 	expect(onAddStudioNote).toHaveBeenCalledExactlyOnceWith('studios/model.ts');
 	expect(onAddNote).not.toHaveBeenCalled();
 });
+
+describe('shift span selection', () => {
+	const parts = (ws: WorkspaceState) => ws.selection.map((s) => s.part);
+	const ids = ['a', 'b', 'c', 'd', 'e'];
+
+	it('selects the rows between the anchor and the shift-clicked row, either direction', async () => {
+		const { ws, getByText } = setup(ids);
+		ws.additiveSelection = false;
+		await fireEvent.pointerDown(getByText('b'));
+		await fireEvent.pointerDown(getByText('d'), { shiftKey: true });
+		expect(parts(ws)).toEqual(['b', 'c', 'd']);
+		// the anchor stays on b: shift-clicking above it re-spans from there
+		await fireEvent.pointerDown(getByText('a'), { shiftKey: true });
+		expect(parts(ws)).toEqual(['a', 'b']);
+	});
+
+	it('adds the span to the selection with ⌘ held', async () => {
+		const { ws, getByText } = setup(ids);
+		ws.additiveSelection = false;
+		await fireEvent.pointerDown(getByText('a'));
+		await fireEvent.pointerDown(getByText('c'), { metaKey: true });
+		await fireEvent.pointerDown(getByText('e'), { metaKey: true, shiftKey: true });
+		expect(parts(ws)).toEqual(['a', 'c', 'd', 'e']);
+	});
+
+	it('selects just the row when there is no anchor', async () => {
+		const { ws, getByText } = setup(ids);
+		ws.additiveSelection = false;
+		await fireEvent.pointerDown(getByText('c'), { shiftKey: true });
+		expect(parts(ws)).toEqual(['c']);
+	});
+});

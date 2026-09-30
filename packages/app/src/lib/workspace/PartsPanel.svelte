@@ -60,9 +60,28 @@
 	};
 	/** Clicking a studio's row selects the studio itself: its properties (and joints) show. */
 	const selectStudio = (file: string) => (showStudio(file), ws.clearSelection());
-	const selectParts = (file: string, ids: string[], e?: MouseEvent) => (showStudio(file), ws.select(ids.map((part) => ({ part, kind: 'part' as any, index: 0 })), e ? ws.selectionMode(e) : 'replace'));
+	const partRefs = (ids: string[]) => ids.map((part) => ({ part, kind: 'part' as any, index: 0 }));
+	const selectParts = (file: string, ids: string[], e?: MouseEvent) => ((anchor = ids.at(-1) ?? null), showStudio(file), ws.select(partRefs(ids), e ? ws.selectionMode(e) : 'replace'));
 	/** Right-click selects like a click first, unless the part is already selected as a whole. */
 	const ctxSelect = (file: string, id: string) => ws.selection.some((s) => s.part === id && (s.kind as string) === 'part') || selectParts(file, [id]);
+
+	/** Where shift-click ranges start: the last part clicked without shift. */
+	let anchor: string | null = null;
+	/**
+	 * Shift-click selects the shown rows between the anchor and the clicked part, within its studio (the others aren't in the viewport).
+	 * Shift alone replaces the selection with the range; with ⌘/Ctrl (or additive selection) it's added. The anchor stays put.
+	 */
+	function clickPart(file: string, id: string, e: MouseEvent) {
+		if (!e.shiftKey) return selectParts(file, [id], e);
+		const rows = tree.find((g) => g.file === file)?.rows.map((r) => r.id) ?? [];
+		// a stale anchor (deselected elsewhere, another studio, filtered out) falls back to the studio's last selected part
+		const from = [anchor, ...ws.selection.map((s) => s.part).reverse()].find((p) => p && selectedPart.has(p) && rows.includes(p));
+		if (!from) return selectParts(file, [id]);
+		const [a, b] = [rows.indexOf(from), rows.indexOf(id)].sort((x, y) => x - y);
+		anchor = from;
+		showStudio(file);
+		ws.select(partRefs(rows.slice(a, b + 1)), ws.additiveSelection || e.metaKey || e.ctrlKey ? 'add' : 'replace');
+	}
 	const openScript = (path: string) => ((ws.openScript = path), (ws.revealLine = null), (ws.mode = 'code'));
 
 	function toggleCollapsed(file: string) {
@@ -184,7 +203,7 @@
 										dimmed={active !== g.file}
 										visible={!ws.hidden.includes(r.id)}
 										onVisibleChange={(v) => ws.setHidden(r.id, !v)}
-										onclick={(e) => selectParts(g.file, [r.id], e)}
+										onclick={(e) => clickPart(g.file, r.id, e)}
 									/>
 								</ContextMenu>
 							</li>

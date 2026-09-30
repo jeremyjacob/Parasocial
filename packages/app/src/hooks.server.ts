@@ -1,4 +1,5 @@
 import type { Handle, ServerInit } from "@sveltejs/kit";
+import { dev } from "$app/environment";
 import { platform } from "$lib/server/platform";
 import { agent } from "$lib/server/agent";
 import { renderMeta } from "$lib/server/meta";
@@ -9,7 +10,18 @@ export const init: ServerInit = async () => {
   agent().catch((e) => console.error("agent: failed to start", e));
 };
 
+// SvelteKit's CSRF origin check, minus the OAuth endpoints: native MCP clients (Codex, Claude Code)
+// POST form-encoded token/revoke requests without an Origin header, which the built-in check rejects.
+const FORM_TYPES = ["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"];
+const CSRF_EXEMPT = new Set(["/oauth/token", "/oauth/revoke"]);
+function crossSiteForm({ request, url }: { request: Request; url: URL }) {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method) || CSRF_EXEMPT.has(url.pathname)) return false;
+  const type = request.headers.get("content-type")?.split(";", 1)[0]!.trim().toLowerCase() ?? "";
+  return FORM_TYPES.includes(type) && request.headers.get("origin") !== url.origin;
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
+  if (!dev && crossSiteForm(event)) return new Response(`Cross-site ${event.request.method} form submissions are forbidden`, { status: 403 });
   const p = await platform();
   // (re)starts it after a dev-server module reload; otherwise already running from init
   void agent().catch(() => {});
