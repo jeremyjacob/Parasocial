@@ -13,6 +13,11 @@
     "@parasocial/api": "workspace:*",
     "@parasocial/sync": "workspace:*",
     "zod": "^4.6.5",
-    "@parasocial/engine-pool": "workspace:*"
+    "@parasocial/engine-pool": "workspace:*",
+    "@parasocial/assembly": "workspace:*",
+    "@parasocial/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@parasocial/kernel": "workspace:*"
   }
 }
