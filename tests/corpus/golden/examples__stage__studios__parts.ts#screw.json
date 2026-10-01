@@ -1,0 +1,22 @@
+{
+  "volume": 120.7871,
+  "area": 186.0094,
+  "faces": 12,
+  "edges": 24,
+  "vertices": 16,
+  "valid": true,
+  "faceNames": [
+    "parts:screw/M3x8-ISO4762 · side · head",
+    "parts:screw/M3x8-ISO4762 · side · shank",
+    "parts:screw/M3x8-ISO4762 · side · tip",
+    "parts:screw/M3x8-ISO4762 · side · top",
+    "parts:screw/M3x8-ISO4762 · side · underhead",
+    "parts:screw/M3x8-ISO4762-socket · cap.end",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side1",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side2",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side3",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side4",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side5",
+    "parts:screw/M3x8-ISO4762-socket · side · M3x8-ISO4762-socket/polygon1/side6"
+  ]
+}

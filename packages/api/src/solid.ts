@@ -7,6 +7,7 @@ import { Plane, axisVec, vec, type AxisLike } from "./plane";
 import { sketch } from "./sketch";
 import type { Appearance, ColorSpec, Material } from "./types";
 import { toFrame, transformFrame, type ConnectorFrame, type FrameSpec } from "./connector";
+import { resolveHole, nutTrapTools, freeTag, type HoleSpec, type NutTrapOpts } from "./std/holes";
 
 type EdgesArg = EntitySet | EntitySet[] | string;
 type FacesArg = EntitySet | EntitySet[] | string;
@@ -188,12 +189,25 @@ export class Solid {
    * Drill holes at `points` (world) along `direction` (default: into the part, −Z).
    * Simple, counterbored ({ counterbore: { diameter, depth } }) or countersunk ({ countersink: { diameter, angle } }).
    * `depth` omitted = through all.
+   *
+   * Or by standard, with a spec instead of a diameter (see `HoleSpec`):
+   * `.hole(pts, { screw: "M3", counterbore: "ISO4762" })`, `{ screw: "M4", fit: "tap", depth: 8 }`,
+   * `{ screw: "M5", countersink: "ISO10642" }`, `{ insert: "M3x5.7" }`; `connector: "bolt"` adds a
+   * frame at each hole's screw seat for assemblies.
    */
   hole(
     points: Vec3[] | Vec3,
-    diameter: number,
-    opts: OpOpts & { depth?: number; direction?: AxisLike; counterbore?: { diameter: number; depth: number }; countersink?: { diameter: number; angle?: number } } = {},
+    diameter: number | HoleSpec,
+    opts: OpOpts & { depth?: number; direction?: AxisLike; counterbore?: { diameter: number; depth: number }; countersink?: { diameter: number; angle?: number; recess?: number } } = {},
   ): Solid {
+    let connector: { name: string; seat: number } | undefined;
+    if (typeof diameter === "object" && diameter !== null) {
+      const spec = diameter;
+      const h = resolveHole(spec);
+      opts = { tag: spec.tag ?? freeTag(`${h.label}-hole`, ["-cut", "1"]), depth: h.depth, direction: spec.direction, counterbore: h.counterbore, countersink: h.countersink };
+      diameter = h.diameter;
+      if (spec.connector !== undefined) connector = { name: spec.connector, seat: h.seat };
+    }
     positive(diameter, "hole diameter");
     const pts = (Array.isArray(points[0]) ? points : [points]) as Vec3[];
     if (!pts.length) userError("hole needs at least one point");
@@ -209,7 +223,11 @@ export class Solid {
     } else if (opts.countersink) {
       const sr = opts.countersink.diameter / 2;
       const ang = ((opts.countersink.angle ?? 90) / 2) * (Math.PI / 180);
-      prof.push([sr, 0.01], [r, -(sr - r) / Math.tan(ang)]);
+      const recess = opts.countersink.recess ?? 0;
+      // start 0.01 above the surface on the cone's own line, so the countersink is `diameter` at the surface
+      if (recess > 0) prof.push([sr, 0.01], [sr, -recess]);
+      else prof.push([sr + 0.01 * Math.tan(ang), 0.01]);
+      prof.push([r, -recess - (sr - r) / Math.tan(ang)]);
     } else prof.push([r, 0.01]);
     prof.push([r, -depth], [0, -depth]);
     const tag = opts.tag;
@@ -223,7 +241,25 @@ export class Solid {
       tools.push(sk.revolve(360, { axis: { origin: p, direction: vec.scale(dir, -1) as Vec3 }, tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}` : undefined }));
     });
     result = booleanOp("subtract", this, tools, { tag: tag ? `${tag}-cut` : undefined });
+    if (connector) {
+      const seat = connector.seat;
+      result = result.connector(connector.name, pts.map((p) => ({ origin: vec.add(p, vec.scale(dir, seat)), axis: vec.scale(dir, -1) as Vec3 })));
+    }
     return result;
+  }
+
+  /**
+   * Hex nut pockets (ISO 4032 nuts) at `points`, e.g. `.nutTrap(pts, { size: "M3" })` under the
+   * surface, `{ size: "M3", inset: 4, slot: "X" }` for a captive nut that slides in from the side.
+   * Pair it with `.hole(pts, { screw: "M3" })` for the bolt. See `NutTrapOpts`.
+   */
+  nutTrap(points: Vec3[] | Vec3, opts: NutTrapOpts): Solid {
+    const pts = (Array.isArray(points[0]) ? points : [points]) as Vec3[];
+    if (!pts.length) userError("nutTrap needs at least one point");
+    const { tools, seats, label } = nutTrapTools(this, pts, opts);
+    let out = booleanOp("subtract", this, tools, { tag: opts.tag ?? freeTag(label) });
+    if (opts.connector !== undefined) out = out.connector(opts.connector, seats);
+    return out;
   }
 
   // ---------- appearance ----------
