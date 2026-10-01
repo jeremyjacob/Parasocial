@@ -56,6 +56,20 @@ export type Appearance = {
 };
 export type Material = { name?: string; density?: number /* g/cm³ */ };
 
+/** What a part is, for bills of materials and drawing title blocks (all optional). */
+export type PartMeta = {
+  /** Part (or catalog) number. Parts with the same number are one BOM line, even across studios. */
+  partNumber?: string;
+  /** One line saying what it is, e.g. "M5×12 socket head cap screw". */
+  description?: string;
+  /** Who makes or sells it. */
+  vendor?: string;
+  /** An off-the-shelf part (fastener, bearing): BOMs group its copies by part number, else by name and vendor. */
+  standard?: boolean;
+  /** Its material (`.material()` on the returned solid takes precedence). */
+  material?: Material;
+};
+
 export type EntityRef = { part: string; kind: EntityKind; name: string };
 
 export type Vec = Vec3;

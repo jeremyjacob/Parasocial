@@ -6,3 +6,4 @@ export * from "./mesh";
 export * from "./history";
 export * from "./ops";
 export * from "./io";
+export * from "./projection";

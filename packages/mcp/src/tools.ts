@@ -14,6 +14,7 @@ import { trace } from "./trace";
 import { recordTouch, othersOn, changedUnderYou } from "./awareness";
 import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, jointValues, expandTargets, posedBox, posedPoint, posedDir, type Preview } from "./preview";
 import { sourcePart, type AssemblyInfo, type PartPose } from "@parasocial/runtime/protocol";
+import { registerOutputTools } from "./tools-output";
 
 export type Session = {
   id: string;
@@ -1045,6 +1046,18 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const url = await storeFile(documentID, new Uint8Array(bytes), type);
     return text({ url: downloadURL(url), bytes: bytes.length, format });
   }, { readOnlyHint: true });
+
+  registerOutputTools({
+    tool: tool as any,
+    document,
+    load: (dd) => loadDoc(db, s.userID, docID(dd)),
+    engine,
+    store: async (documentID, bytes, type) => {
+      const url = await storeFile(documentID, bytes, type);
+      return `${deps.config.appOrigin}${url.startsWith("/") ? "" : "/"}${url.replace(/^https?:\/\/[^/]+/, "").replace(/^\//, "")}`;
+    },
+    version: async (documentID) => (await latestVersion(documentID))?.number ?? null,
+  });
 
   tool("export_document", "The whole document as the plain-file zip format; returns a signed download URL (valid 1 hour). Pass base64: true to get the zip inline instead.", { document, notes: z.boolean().optional(), base64: z.boolean().optional().describe("return the zip inline as base64 instead of a URL") }, async ({ document: dd, notes, base64 }) => {
     const documentID = docID(dd);

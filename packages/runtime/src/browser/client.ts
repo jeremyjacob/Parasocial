@@ -5,6 +5,8 @@ import { validateEngineMessage, validatePartResult, validatePartInfos, validateA
 import type { AssemblyInfo, Interference, PartPose } from "../protocol";
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef, Resolution } from "@parasocial/naming";
+import type { DrawingOptions } from "../drawing";
+import type { Bom } from "../bom";
 
 export type EngineClientOptions = {
   /** e.g. https://engine.example.com or http://localhost:5181 */
@@ -164,6 +166,23 @@ export class EngineClient {
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
+  }
+  /** A 2D technical drawing of a part: SVG text, or PDF bytes. */
+  async drawing(part: string, options: DrawingOptions = {}): Promise<{ svg?: string; pdf?: Uint8Array; scaleLabel: string; sheet: string; warnings: string[] }> {
+    const r = await this.call<any>({ op: "drawing", part, options });
+    if (!r || typeof r !== "object" || typeof r.scaleLabel !== "string" || typeof r.sheet !== "string" || !Array.isArray(r.warnings) || (typeof r.svg !== "string" && typeof r.base64 !== "string")) throw new Error("engine returned a malformed drawing");
+    const out = { scaleLabel: r.scaleLabel, sheet: r.sheet, warnings: r.warnings.filter((w: unknown) => typeof w === "string") as string[] };
+    if (typeof r.svg === "string") return { ...out, svg: r.svg };
+    const bin = atob(r.base64);
+    const pdf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) pdf[i] = bin.charCodeAt(i);
+    return { ...out, pdf };
+  }
+  /** Bill of materials: every part once, or an assembly's copies counted. */
+  async bom(assembly?: string, documentName?: string): Promise<Bom> {
+    const b = await this.call<any>({ op: "bom", assembly, documentName });
+    if (!b || typeof b !== "object" || !Array.isArray(b.rows) || !b.rows.every((r: any) => r && typeof r.part === "string" && typeof r.name === "string" && Number.isInteger(r.quantity)) || typeof b.totals !== "object") throw new Error("engine returned a malformed bill of materials");
+    return b as Bom;
   }
   tangentChain(part: string, edge: number) {
     return this.call<number[]>({ op: "tangentChain", part, edge });

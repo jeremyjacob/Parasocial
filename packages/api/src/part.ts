@@ -31,7 +31,8 @@ import { noteKernelFault } from "@parasocial/kernel";
 import { ctx, withContext, PartContext, shortLoc } from "./context";
 import { OpError, userError } from "./op";
 import { Solid } from "./solid";
-import type { Appearance, ColorSpec, Material, ParamDecl, Problem } from "./types";
+import type { Appearance, ColorSpec, Material, PartMeta, ParamDecl, Problem } from "./types";
+import { MATERIALS } from "./solid";
 import { evaluate, UNITS, type Unit } from "./units";
 import type { ConnectorFrame } from "./connector";
 import type { Instance } from "./assembly";
@@ -51,6 +52,8 @@ export type PartDef = {
   readonly __part: true;
   readonly name: string;
   readonly body: PartBody;
+  /** Part number, description, vendor, material (from `part(name, body, options)`). */
+  readonly meta?: PartMeta;
   /**
    * A connector of this part, for assembly joints: `revolute(body, lid, lid.at("hinge"))`, or
    * connector to connector, `revolute(chassis.at("axle"), wheel.at("hub"))`. `index` picks one
@@ -83,19 +86,63 @@ export function connectorRef(part: PartDef, what: string, connector: string, ind
  * or several as named exports, `export const lid = part("Lid", () => ...)` in `studios/case.ts`
  * (part id `case:lid`). Each part regenerates on its own, with its own params, color and ops.
  * The studio's display name is `export const name = "Case"` (the file name when absent).
+ * Options say what the part is, for the bill of materials and drawings:
+ * `part("Pin", () => ..., { material: "steel", partNumber: "PS-104", description: "Hinge pin Ø5", vendor: "McMaster", standard: true })`.
  */
-export function part(name: string, body: PartBody): PartDef {
+export function part(name: string, body: PartBody, options?: PartOptions): PartDef {
   if (typeof name !== "string" || !name.trim()) throw new Error('part(name, body): name must be a non-empty string, e.g. part("Bracket", () => ...)');
   if (typeof body !== "function") throw new Error("part(name, body): body must be a function returning a solid");
+  const meta = partMeta(name, options);
   const def: PartDef = Object.freeze({
     __part: true as const,
     name,
     body,
+    ...(meta && { meta }),
     at(connector: string, index?: number): ConnectorRef {
       return connectorRef(def, name, connector, index);
     },
   });
   return def;
+}
+
+/** Optional third argument of `part()`: what the part is, for the bill of materials and drawings. */
+export type PartOptions = {
+  /** A name from MATERIALS ("aluminum", "steel", "pla", …) or `{ name, density }` (g/cm³). The BOM shows mass only when the density is known. */
+  material?: Material | string;
+  /** Part (or catalog) number; parts with the same number are one BOM line. */
+  partNumber?: string;
+  /** One line saying what it is, e.g. "M5×12 socket head cap screw". */
+  description?: string;
+  /** Who makes or sells it. */
+  vendor?: string;
+  /** Off-the-shelf (fastener, bearing): the BOM groups every copy by part number, else by name and vendor. */
+  standard?: boolean;
+};
+
+function partMeta(name: string, o: PartOptions | undefined): PartMeta | undefined {
+  if (o === undefined) return undefined;
+  const what = `part("${name}", body, options)`;
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${what}: options must be an object, e.g. { material: "steel", partNumber: "PS-104" }`);
+  const known = ["material", "partNumber", "description", "vendor", "standard"];
+  for (const k of Object.keys(o)) if (!known.includes(k)) throw new Error(`${what}: unknown option "${k}"; use ${known.join(", ")}`);
+  const meta: PartMeta = {};
+  for (const k of ["partNumber", "description", "vendor"] as const) {
+    const v: unknown = o[k];
+    if (v === undefined) continue;
+    if (typeof v !== "string" && typeof v !== "number") throw new Error(`${what}: ${k} must be a string`);
+    meta[k] = String(v);
+  }
+  if (o.standard !== undefined) meta.standard = !!o.standard;
+  const m: unknown = o.material;
+  if (m !== undefined) {
+    if (typeof m === "string") {
+      const found = MATERIALS[m.toLowerCase()];
+      if (!found) throw new Error(`${what}: unknown material "${m}"; use one of ${Object.keys(MATERIALS).join(", ")} or { name, density }`);
+      meta.material = found;
+    } else if (m && typeof m === "object" && ((m as Material).density === undefined || (typeof (m as Material).density === "number" && (m as Material).density! > 0))) meta.material = { ...(m as Material) };
+    else throw new Error(`${what}: material must be a name or { name, density } with density in g/cm³`);
+  }
+  return Object.freeze(meta);
 }
 
 export type ParamOptions = {
@@ -198,6 +245,8 @@ export type PartRun = {
   color?: ColorSpec;
   appearance?: Appearance;
   material?: Material;
+  /** Part number, description, vendor (from `part(name, body, options)`). */
+  meta?: PartMeta;
   /** Named frames for assembly joints (part coordinates): one per connector, or several for a pattern. */
   connectors?: Record<string, ConnectorFrame[]>;
   params: ParamDecl[];
@@ -246,7 +295,8 @@ function runOnce(def: PartDef, c: PartContext): PartRun {
     partial: !!error,
     color: out?.meta.color,
     appearance: out?.meta.appearance,
-    material: out?.meta.material,
+    material: out?.meta.material ?? def.meta?.material,
+    meta: def.meta,
     connectors: out?.meta.connectors,
     params: c.params,
     problems: c.problems,
