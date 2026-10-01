@@ -371,6 +371,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         thrown = e;
         const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
+        // traces are dev-only: internal errors must also reach the server log
+        if (!(e instanceof ToolError || e instanceof AccessError)) console.error(`mcp: ${name} failed (document ${s.defaultDocument?.slice(0, 8) ?? "?"})`, e);
         result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data)}` : msg }] };
       }
       traceCall({ session: s.id, client: s.clientName, label: s.label, document: s.defaultDocument, tool: name, args, ms: Date.now() - now, isError: !!result.isError, result: result.content, ...(thrown && !(thrown instanceof ToolError) ? { exception: thrown } : {}) });

@@ -72,10 +72,13 @@ if (import.meta.main) {
       if (u.pathname === "/health") return Response.json({ ok: true, documents: slots.size, build: assets.build });
       if (u.pathname === "/v1/jobs" && req.method === "POST") {
         if (process.env.POOL_TOKEN && req.headers.get("authorization") !== `Bearer ${process.env.POOL_TOKEN}`) return new Response("unauthorized", { status: 401 });
+        let job: JobRequest | undefined;
         try {
-          const job = (await req.json()) as JobRequest;
+          job = (await req.json()) as JobRequest;
           return Response.json({ results: await runJob(job) });
         } catch (e) {
+          const ops = job?.ops?.map((op) => op.op).join(",") ?? "?";
+          console.error(`engine pool: job failed (document ${job?.document?.slice(0, 8) ?? "?"}, ops ${ops})`, e);
           return Response.json({ error: String((e as Error).message ?? e) }, { status: 500 });
         }
       }
