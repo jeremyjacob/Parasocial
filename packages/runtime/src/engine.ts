@@ -42,8 +42,16 @@ export type AssemblyInfo = {
   /** Instances that never move (explicit `fix`; the solver also keeps each group's first part still). */
   fixed: string[];
   joints: AssemblyJoint[];
+  /** Joints tied to each other (gear, rack and pinion, screw, linear), by joint name. */
+  relations: AssemblyRelation[];
   problems: Problem[];
 };
+
+/**
+ * Two joints' values tied together: b = ratio·a + offset, each in its own unit (degrees, mm).
+ * `ia`/`ib` pick the joint variable (a cylindrical joint: 0 angle, 1 travel); the units are already converted.
+ */
+export type AssemblyRelation = { kind: "gear" | "rackPinion" | "screw" | "linear"; a: string; ia: number; b: string; ib: number; ratio: number; offset: number; scope: string; source?: SourceRef };
 
 /** An assembly's copy of a part: same geometry as `part`, moved by the assembly's joints. */
 export type AssemblyInstance = {
@@ -183,7 +191,7 @@ export class Engine {
   /** Last discovered parts per studio: a studio that fails to load keeps its parts (with the error). */
   private lastByFile = new Map<string, PartInfo[]>();
   /** Assemblies found by the last discovery, and which part id each discovered PartDef is. */
-  private assemblyDefs: { info: Omit<AssemblyInfo, "instances" | "subs" | "fixed" | "joints" | "problems">; def: AssemblyDef }[] = [];
+  private assemblyDefs: { info: Omit<AssemblyInfo, "instances" | "subs" | "fixed" | "joints" | "relations" | "problems">; def: AssemblyDef }[] = [];
   private assemblyIdOf = new Map<AssemblyDef, string>();
   private partIdOf = new Map<PartDef, string>();
   private assemblyCache: AssemblyInfo[] | null = null;
@@ -289,7 +297,7 @@ export class Engine {
     if (this.assemblyCache) return this.assemblyCache;
     const out: AssemblyInfo[] = [];
     for (const { info, def } of this.assemblyDefs) {
-      const a: AssemblyInfo = { ...info, instances: [], subs: [], fixed: [], joints: [], problems: [] };
+      const a: AssemblyInfo = { ...info, instances: [], subs: [], fixed: [], joints: [], relations: [], problems: [] };
       out.push(a);
       // a studio holds parts or assemblies, never both
       const own = this.lastByFile.get(info.file) ?? [];
@@ -393,8 +401,11 @@ export class Engine {
       const full = prefix + base;
       const n = (used.get(full) ?? 0) + 1;
       used.set(full, n);
-      a.joints.push({ name: n > 1 ? `${full}#${n}` : full, ...j });
+      const name = n > 1 ? `${full}#${n}` : full;
+      a.joints.push({ name, ...j });
+      return name;
     };
+    const names = new Map<unknown, string>();
     if (scope === a.id) for (const f of fixed) !a.fixed.includes(f) && a.fixed.push(f);
     // in an inserted assembly, its fixed parts stay put relative to each other (the whole moves)
     else for (const f of fixed.slice(1)) push({ named: false, type: "fastened", a: fixed[0], b: f, scope, at: { frame: { origin: [0, 0, 0], z: [0, 0, 1], x: [1, 0, 0] } }, limits: [], value: [], overlap: false }, `${local(fixed[0])}+${local(f)}`);
@@ -419,7 +430,13 @@ export class Engine {
         const [ca, cb] = j.at.mate;
         at = { mate: { a: { connector: ca.name, ...(ca.index !== undefined && { index: ca.index }) }, b: { connector: cb.name, ...(cb.index !== undefined && { index: cb.index }) } }, flip: j.at.flip };
       } else at = { frame: j.at.frame };
-      push({ named: j.name !== undefined, type: j.type, a: ia, b: ib, scope, at, limits: j.limits.map((r) => (r ? { min: r.min, max: r.max } : null)), value: j.value, overlap: j.overlap, source }, j.name ?? `${local(ia)}+${local(ib)}`);
+      names.set(j.handle, push({ named: j.name !== undefined, type: j.type, a: ia, b: ib, scope, at, limits: j.limits.map((r) => (r ? { min: r.min, max: r.max } : null)), value: j.value, overlap: j.overlap, source }, j.name ?? `${local(ia)}+${local(ib)}`));
+    }
+    // relations between this scope's joints (one whose joint had a problem is left out)
+    for (const r of decl.relations) {
+      const na = names.get(r.a),
+        nb = names.get(r.b);
+      if (na && nb) a.relations.push({ kind: r.kind, a: na, ia: r.ia, b: nb, ib: r.ib, ratio: r.ratio, offset: r.offset, scope, source: sourceOf(r.stack) });
     }
   }
 

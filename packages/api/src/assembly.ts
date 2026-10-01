@@ -87,28 +87,61 @@ export type AssemblyTools = {
   /** These never move (a subassembly: all its parts). Without it, each connected group keeps its first part still. */
   fix(...parts: (Body | SubAssembly)[]): void;
   /** Rigidly joined: where they are, or connector to connector. */
-  fastened(a: Body, b: Body, opts?: JointOpts): void;
-  fastened(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts): void;
+  fastened(a: Body, b: Body, opts?: JointOpts): Joint;
+  fastened(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts): Joint;
   /**
    * `b` turns about the joint's z axis relative to `a` (degrees). Positive is counterclockwise
    * looking back down z (right-hand rule: thumb along z). To make "open" or "raise" positive,
    * point the axis the other way (`axis: [-1, 0, 0]` instead of `"X"`). Connector to connector,
    * `revolute(a.at("pin"), b.at("hole"))`, puts b's connector on a's (0 is where they meet).
    */
-  revolute(a: Body, b: Body, at: JointAt, opts?: Range & JointOpts): void;
-  revolute(a: ConnectorRef, b: ConnectorRef, opts?: Range & JointOpts & MateOpts): void;
+  revolute(a: Body, b: Body, at: JointAt, opts?: Range & JointOpts): Joint;
+  revolute(a: ConnectorRef, b: ConnectorRef, opts?: Range & JointOpts & MateOpts): Joint;
   /** `b` slides along the joint's z axis relative to `a` (mm); positive moves it toward +z. */
-  slider(a: Body, b: Body, at: JointAt, opts?: Range & JointOpts): void;
-  slider(a: ConnectorRef, b: ConnectorRef, opts?: Range & JointOpts & MateOpts): void;
+  slider(a: Body, b: Body, at: JointAt, opts?: Range & JointOpts): Joint;
+  slider(a: ConnectorRef, b: ConnectorRef, opts?: Range & JointOpts & MateOpts): Joint;
   /** Turns about and slides along the joint's z axis. */
-  cylindrical(a: Body, b: Body, at: JointAt, opts?: JointOpts & { angle?: Range; travel?: Range }): void;
-  cylindrical(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts & { angle?: Range; travel?: Range }): void;
+  cylindrical(a: Body, b: Body, at: JointAt, opts?: JointOpts & { angle?: Range; travel?: Range }): Joint;
+  cylindrical(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts & { angle?: Range; travel?: Range }): Joint;
   /** Slides in the joint's xy plane and turns about its z axis. */
-  planar(a: Body, b: Body, at: JointAt, opts?: JointOpts & { x?: Range; y?: Range; angle?: Range }): void;
-  planar(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts & { x?: Range; y?: Range; angle?: Range }): void;
+  planar(a: Body, b: Body, at: JointAt, opts?: JointOpts & { x?: Range; y?: Range; angle?: Range }): Joint;
+  planar(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts & { x?: Range; y?: Range; angle?: Range }): Joint;
   /** Turns freely about the joint's origin. */
-  ball(a: Body, b: Body, at: JointAt, opts?: JointOpts): void;
-  ball(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts): void;
+  ball(a: Body, b: Body, at: JointAt, opts?: JointOpts): Joint;
+  ball(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts): Joint;
+  /**
+   * Gear relation: `b` turns `ratio` degrees for each degree `a` turns (revolute or cylindrical
+   * joints, the joints the calls above return). Gears meshing on the outside turn opposite ways:
+   * with na teeth on a's gear and nb on b's and both axes pointing the same way,
+   * `gear(small, big, -na / nb)`. Dragging either turns both; a limit on one stops the other.
+   */
+  gear(a: Joint, b: Joint, ratio: number, opts?: RelationOpts): void;
+  /**
+   * Rack and pinion: the rack (a slider, or a cylindrical joint's travel) moves 2π·radius mm per
+   * turn of the pinion (revolute or cylindrical), toward the slider's +z as the pinion turns
+   * positively; `{ reverse: true }` for the other way. `radius` is the pinion's pitch radius (mm).
+   */
+  rackPinion(pinion: Joint, rack: Joint, radius: number, opts?: RelationOpts): void;
+  /**
+   * Screw relation: `lead` mm of travel per turn (negative: left-handed). On one cylindrical joint,
+   * `screw(nut, 2)` ties its travel to its angle; with two joints, `screw(leadScrew, carriage, 2)`
+   * moves the slider (or cylindrical travel) as the revolute (or cylindrical) turns.
+   */
+  screw(joint: Joint, lead: number, opts?: RelationOpts): void;
+  screw(screw: Joint, nut: Joint, lead: number, opts?: RelationOpts): void;
+  /**
+   * Any linear relation between two joints' values: b = ratio·a + offset, in their own units
+   * (degrees, mm; a cylindrical joint's angle).
+   */
+  linear(a: Joint, b: Joint, ratio: number, opts?: RelationOpts & { offset?: number }): void;
+};
+
+/** A joint, from revolute(), slider(), cylindrical() and the rest: tie joints together with gear(), rackPinion(), screw() or linear(). */
+export type Joint = { readonly __joint: true; readonly type: JointType; readonly name?: string };
+
+export type RelationOpts = {
+  /** The follower moves the other way. */
+  reverse?: boolean;
 };
 
 export type AssemblyBody = (tools: AssemblyTools) => void;
@@ -150,20 +183,32 @@ export type JointDecl = {
   value: number[];
   name?: string;
   overlap: boolean;
+  /** What the call returned: relations name joints by it. */
+  handle: Joint;
   /** Stack at the call, for mapping problems to source. */
   stack: string;
 };
+
+/** @internal */
+export type RelationKind = "gear" | "rackPinion" | "screw" | "linear";
+
+/**
+ * @internal A relation between two joint variables, b = ratio·a + offset (degrees or mm; `ia`/`ib`
+ * pick the variable, e.g. a cylindrical joint's travel is 1). The units are converted here.
+ */
+export type RelationDecl = { kind: RelationKind; a: Joint; ia: number; b: Joint; ib: number; ratio: number; offset: number; stack: string };
 
 /** @internal A copy made with insert(). */
 export type InsertDecl = { handle: Instance | SubAssembly; place?: PlacePose; stack: string };
 
 /** @internal `order`: inserts and the parts named, in the order the script makes or first names them. */
-export type AssemblyDecl = { fixed: (Body | SubAssembly)[]; joints: JointDecl[]; inserts: InsertDecl[]; order: ({ insert: InsertDecl } | { body: Body })[] };
+export type AssemblyDecl = { fixed: (Body | SubAssembly)[]; joints: JointDecl[]; relations: RelationDecl[]; inserts: InsertDecl[]; order: ({ insert: InsertDecl } | { body: Body })[] };
 
 const isPart = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;
 const isAssembly = (v: unknown): v is AssemblyDef => !!v && typeof v === "object" && (v as any).__assembly === true;
 const isInstance = (v: unknown): v is Instance => !!v && typeof v === "object" && (v as any).__instance === true;
 const isSub = (v: unknown): v is SubAssembly => !!v && typeof v === "object" && (v as any).__subassembly === true;
+const isJoint = (v: unknown): v is Joint => !!v && typeof v === "object" && (v as any).__joint === true;
 const isConnector = (v: unknown): v is ConnectorRef => !!v && typeof v === "object" && (v as any).__connector === true;
 const isBody = (v: unknown): v is Body => isPart(v) || isInstance(v);
 /** @internal A connector's body: the copy it's on, else its part. */
@@ -233,7 +278,7 @@ function placement(p: Placement): PlacePose {
 
 /** @internal Run an assembly body and collect its copies and joints. Throws (with the call's stack) on misuse. */
 export function declareAssembly(def: AssemblyDef): AssemblyDecl {
-  const out: AssemblyDecl = { fixed: [], joints: [], inserts: [], order: [] };
+  const out: AssemblyDecl = { fixed: [], joints: [], relations: [], inserts: [], order: [] };
   const inserted = new Map<unknown, Set<string | undefined>>();
   const where = (type: string, a: unknown, b: unknown) => {
     if (!isBody(a) || !isBody(b)) throw new Error(`${type}(a, b, ...): a and b must be parts (import them from their studios) or copies from insert()`);
@@ -258,6 +303,7 @@ export function declareAssembly(def: AssemblyDef): AssemblyDecl {
     const limits = ranges.map((r) => range(type, r));
     if (opts?.name !== undefined && (typeof opts.name !== "string" || !opts.name.trim())) throw new Error(`${type}: name must be a non-empty string`);
     out.order.push({ body: a }, { body: b });
+    const handle: Joint = Object.freeze({ __joint: true as const, type, ...(opts?.name !== undefined && { name: opts.name }) });
     out.joints.push({
       type,
       a,
@@ -267,26 +313,53 @@ export function declareAssembly(def: AssemblyDef): AssemblyDecl {
       value: limits.map((r) => r?.value ?? 0),
       name: opts?.name,
       overlap: !!opts?.overlap,
+      handle,
       stack: new Error().stack ?? "",
     });
+    return handle;
   };
   /**
    * The two call forms: (a, b, at, opts) with parts, or (a.at(..), b.at(..), opts) connector to
    * connector. `ranges` picks the joint's ranges out of the options.
    */
-  const joint = (type: JointType, x: unknown, y: unknown, z: unknown, w: unknown, ranges: (o: any) => (Range | undefined)[]) => {
+  const joint = (type: JointType, x: unknown, y: unknown, z: unknown, w: unknown, ranges: (o: any) => (Range | undefined)[]): Joint => {
     if (isConnector(x) || isConnector(y)) {
       if (!isConnector(x) || !isConnector(y)) throw new Error(`${type}(a, b, ...): connector to connector takes two connectors, ${type}(base.at("pin"), arm.at("hole"))`);
       const a = bodyOf(x),
         b = bodyOf(y);
       if (a === b) throw new Error(`${type}(a, b): both connectors are on the same part`);
       const opts = z as (JointOpts & MateOpts) | undefined;
-      add(type, a, b, { mate: [x, y], flip: !!opts?.flip }, ranges(opts), opts);
-      return;
+      return add(type, a, b, { mate: [x, y], flip: !!opts?.flip }, ranges(opts), opts);
     }
     where(type, x, y);
     if (type === "fastened") return add(type, x as Body, y as Body, { frame: { origin: [0, 0, 0], z: [0, 0, 1], x: [1, 0, 0] } }, [], z as JointOpts | undefined);
-    add(type, x as Body, y as Body, place(type, z), ranges(w), w as JointOpts | undefined);
+    return add(type, x as Body, y as Body, place(type, z), ranges(w), w as JointOpts | undefined);
+  };
+  // relations: which variable of a joint turns (angle) or slides (travel)
+  const declared = (fn: string, j: unknown): Joint => {
+    if (!isJoint(j)) throw new Error(`${fn}: pass joints returned by revolute(), slider() or cylindrical(), const spin = revolute(...)`);
+    if (!out.joints.some((d) => d.handle === j)) throw new Error(`${fn}: that joint belongs to another assembly; relate joints declared in this one`);
+    return j;
+  };
+  const label = (j: Joint) => (j.name ? `"${j.name}"` : `the ${j.type} joint`);
+  const turns = (fn: string, j: Joint) => {
+    if (j.type === "revolute" || j.type === "cylindrical") return 0;
+    throw new Error(`${fn}: ${label(j)} doesn't turn; use a revolute or cylindrical joint`);
+  };
+  const slides = (fn: string, j: Joint) => {
+    if (j.type === "slider") return 0;
+    if (j.type === "cylindrical") return 1;
+    throw new Error(`${fn}: ${label(j)} doesn't slide; use a slider or cylindrical joint`);
+  };
+  const amount = (fn: string, what: string, v: unknown, positive = false) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v === 0 || (positive && v < 0)) throw new Error(`${fn}: ${what} must be a ${positive ? "positive" : "non-zero"} number`);
+    return v;
+  };
+  const relate = (kind: RelationKind, a: Joint, ia: number, b: Joint, ib: number, ratio: number, opts: unknown, offset = 0) => {
+    if (opts !== undefined && (typeof opts !== "object" || opts === null)) throw new Error(`${kind}: options are { reverse? }`);
+    if (a === b && ia === ib) throw new Error(`${kind}: a joint can't drive itself`);
+    const sign = (opts as RelationOpts | undefined)?.reverse ? -1 : 1;
+    out.relations.push({ kind, a, ia, b, ib, ratio: sign * ratio, offset, stack: new Error().stack ?? "" });
   };
   const tools = Object.freeze({
     insert: (what: PartDef | AssemblyDef, opts?: InsertOpts): any => {
@@ -314,6 +387,37 @@ export function declareAssembly(def: AssemblyDef): AssemblyDecl {
     cylindrical: (a: unknown, b: unknown, at?: unknown, opts?: unknown) => joint("cylindrical", a, b, at, opts, (o) => [o?.angle, o?.travel]),
     planar: (a: unknown, b: unknown, at?: unknown, opts?: unknown) => joint("planar", a, b, at, opts, (o) => [o?.x, o?.y, o?.angle]),
     ball: (a: unknown, b: unknown, at?: unknown, opts?: unknown) => joint("ball", a, b, at, opts, () => [undefined, undefined, undefined]),
+    gear: (a: unknown, b: unknown, ratio: unknown, opts?: unknown) => {
+      const ja = declared("gear(a, b, ratio)", a),
+        jb = declared("gear(a, b, ratio)", b);
+      relate("gear", ja, turns("gear", ja), jb, turns("gear", jb), amount("gear(a, b, ratio)", "ratio", ratio), opts);
+    },
+    rackPinion: (pinion: unknown, rack: unknown, radius: unknown, opts?: unknown) => {
+      const fn = "rackPinion(pinion, rack, radius)";
+      const p = declared(fn, pinion),
+        r = declared(fn, rack);
+      // 2π·radius mm per 360°
+      relate("rackPinion", p, turns("rackPinion: the pinion", p), r, slides("rackPinion: the rack", r), (Math.PI * amount(fn, "radius (the pinion's pitch radius, mm)", radius, true)) / 180, opts);
+    },
+    screw: (a: unknown, b: unknown, c?: unknown, d?: unknown) => {
+      const fn = "screw(joint, lead) or screw(screw, nut, lead)";
+      const ja = declared(fn, a);
+      if (typeof b === "number" || !isJoint(b)) {
+        if (ja.type !== "cylindrical") throw new Error(`screw(joint, lead): ${label(ja)} isn't cylindrical; for a separate nut or carriage, screw(leadScrew, carriage, lead)`);
+        return relate("screw", ja, 0, ja, 1, amount(fn, "lead (mm per turn)", b) / 360, c);
+      }
+      const jb = declared(fn, b);
+      relate("screw", ja, turns("screw: the screw", ja), jb, slides("screw: the nut", jb), amount(fn, "lead (mm per turn)", c) / 360, d);
+    },
+    linear: (a: unknown, b: unknown, ratio: unknown, opts?: unknown) => {
+      const fn = "linear(a, b, ratio)";
+      const ja = declared(fn, a),
+        jb = declared(fn, b);
+      for (const j of [ja, jb]) if (j.type === "fastened" || j.type === "planar" || j.type === "ball") throw new Error(`linear: ${label(j)} is ${j.type}; relate revolute, slider or cylindrical joints`);
+      const offset = (opts as { offset?: unknown } | undefined)?.offset ?? 0;
+      if (typeof offset !== "number" || !Number.isFinite(offset)) throw new Error("linear: offset must be a number");
+      relate("linear", ja, 0, jb, 0, amount(fn, "ratio", ratio), opts, offset);
+    },
   }) as AssemblyTools;
   def.body(tools);
   return out;

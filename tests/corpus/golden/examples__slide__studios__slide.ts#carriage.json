@@ -1,0 +1,17 @@
+{
+  "volume": 37691.4825,
+  "area": 7800.9955,
+  "faces": 7,
+  "edges": 15,
+  "vertices": 10,
+  "valid": true,
+  "faceNames": [
+    "slide:carriage/block · xmax",
+    "slide:carriage/block · xmin",
+    "slide:carriage/block · ymax",
+    "slide:carriage/block · ymin",
+    "slide:carriage/block · zmax",
+    "slide:carriage/block · zmin",
+    "slide:carriage/nut · side"
+  ]
+}

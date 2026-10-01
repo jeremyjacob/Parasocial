@@ -387,3 +387,64 @@ test("copies placed by hand; mistakes with copies are problems", () => {
     'Chassis has 4 "axle" frames (0 to 3), so there\'s no .at("axle", 9)',
   ]);
 });
+
+test("the lead-screw slide example: gear and screw relations make one degree of freedom", async () => {
+  const { Mechanism } = await import("@parasocial/assembly");
+  const { Glob } = await import("bun");
+  const { join } = await import("node:path");
+  const { readFileSync } = await import("node:fs");
+  const root = join(import.meta.dir, "../../../examples/slide");
+  const scripts: Record<string, string> = {};
+  for (const f of new Glob("{studios,lib}/*.ts").scanSync(root)) scripts[f] = readFileSync(join(root, f), "utf8");
+  const e = new Engine();
+  e.setDocument({ scripts });
+  const results = regenAll(e);
+  for (const r of Object.values(results)) expect(r.ok).toBe(true);
+  const [a] = e.assemblies();
+  expect(a.problems).toEqual([]);
+  expect(a.relations).toEqual([
+    { kind: "gear", a: "crank", ia: 0, b: "screw", ib: 0, ratio: -0.5, offset: 0, scope: "mechanism", source: expect.objectContaining({ file: "studios/mechanism.ts", line: 15 }) },
+    { kind: "screw", a: "screw", ia: 0, b: "carriage", ib: 0, ratio: 8 / 360, offset: 0, scope: "mechanism", source: expect.objectContaining({ file: "studios/mechanism.ts", line: 17 }) },
+  ]);
+  const { spec, problems } = resolveAssembly(a, (p) => results[p].connectors ?? {});
+  expect(problems).toEqual([]);
+  expect(spec.couplings).toHaveLength(2);
+  const mech = new Mechanism({ ...spec, scale: 80 });
+  expect(mech.dof()).toBe(1);
+  expect(mech.drivers()).toEqual(["crank"]);
+  for (const id of a.instances.map((i) => i.id).filter((i) => i !== "mechanism/slide")) expect(mech.movable(id)).toBe(true);
+  // nothing overlaps at home
+  expect(e.interferences(a.instances.map((i) => i.id))).toEqual([]);
+  // pushing the carriage 20 mm turns the screw 2.5 turns and the crank 5 the other way
+  for (let x = 2; x <= 20; x += 2) mech.drag("mechanism/slide:carriage", [0, 15, 30], [x, 15, 30]);
+  const v = mech.values();
+  expect(v.carriage[0]).toBeCloseTo(20, 1);
+  expect(v.screw[0]).toBeCloseTo(900, -1);
+  expect(v.crank[0]).toBeCloseTo(-1800, -1);
+  expect(mech.error()).toBeLessThan(1e-4);
+  // cranking past the end stops at the end plate
+  mech.setValues({ crank: [-10000] });
+  expect(mech.values().carriage[0]).toBeCloseTo(47, 3);
+  expect(mech.values().crank[0]).toBeCloseTo(-47 * 90, 0);
+});
+
+test("relations: misuse is a problem with a source line", () => {
+  const e = new Engine();
+  const asm = (body: string) => `import { assembly } from "parasocial";
+import base, { lid } from "./box";
+export default assembly("Box", ({ revolute, slider, gear, screw, rackPinion }) => {
+  ${body}
+});
+`;
+  const problem = (body: string) => {
+    e.setDocument({ scripts: { "studios/box.ts": BOX, "studios/mech.ts": asm(body) } });
+    const [a] = e.assemblies();
+    expect(a.problems.every((p) => p.source?.line === 4)).toBe(true);
+    return a.problems.map((p) => p.message.replace(/ \(mech\.ts:\d+\)$/, ""));
+  };
+  expect(problem(`const h = revolute(base, lid, base.at("hinge")); gear(h, 3, 2);`)).toEqual(["gear(a, b, ratio): pass joints returned by revolute(), slider() or cylindrical(), const spin = revolute(...)"]);
+  expect(problem(`const s = slider(base, lid, base.at("hinge"), { name: "lift" }); gear(s, s, 2);`)).toEqual(['gear: "lift" doesn\'t turn; use a revolute or cylindrical joint']);
+  expect(problem(`const h = revolute(base, lid, base.at("hinge")); rackPinion(h, h, 5);`)).toEqual(["rackPinion: the rack: the revolute joint doesn't slide; use a slider or cylindrical joint"]);
+  expect(problem(`const h = revolute(base, lid, base.at("hinge")); screw(h, 2);`)).toEqual(["screw(joint, lead): the revolute joint isn't cylindrical; for a separate nut or carriage, screw(leadScrew, carriage, lead)"]);
+  expect(problem(`const h = revolute(base, lid, base.at("hinge")); gear(h, h, 0);`)).toEqual(["gear(a, b, ratio): ratio must be a non-zero number"]);
+});

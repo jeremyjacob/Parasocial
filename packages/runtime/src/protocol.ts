@@ -3,7 +3,7 @@
 // untrusted, and mutations are never reachable through this channel.
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
-import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
 
 export type EngineRequest =
   | { op: "setDocument"; doc: DocumentState }
@@ -67,7 +67,7 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, ConnectorAt, Interference, PartPose };
 
 /**
  * The part an id's geometry comes from: itself, or an instance's source part. Instance ids are
@@ -107,6 +107,7 @@ export function validatePartInfos(v: unknown): PartInfo[] | null {
 }
 
 const isVec3 = (x: unknown) => Array.isArray(x) && x.length === 3 && x.every(isNum);
+const RELATION_KINDS = ["gear", "rackPinion", "screw", "linear"];
 const JOINT_TYPES = ["fastened", "revolute", "slider", "cylindrical", "planar", "ball"];
 const isPose = (x: unknown) => isObj(x) && Array.isArray(x.r) && x.r.length === 9 && x.r.every(isNum) && isVec3(x.t);
 const isConnectorAt = (x: unknown) => isObj(x) && isStr(x.connector) && (x.index === undefined || (Number.isInteger(x.index) && (x.index as number) >= 0));
@@ -133,6 +134,9 @@ export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
         if (!isObj(m) || !isConnectorAt(m.a) || !isConnectorAt(m.b) || typeof at.flip !== "boolean") return null;
       } else if (!isStr(at.part) || !isConnectorAt(at) || (at.owner !== undefined && !isStr(at.owner))) return null;
     }
+    if (!Array.isArray(a.relations)) return null;
+    for (const r of a.relations)
+      if (!isObj(r) || !RELATION_KINDS.includes(r.kind as string) || !isStr(r.a) || !isStr(r.b) || !isStr(r.scope) || !Number.isInteger(r.ia) || !Number.isInteger(r.ib) || !isNum(r.ratio) || !isNum(r.offset)) return null;
   }
   return v as AssemblyInfo[];
 }

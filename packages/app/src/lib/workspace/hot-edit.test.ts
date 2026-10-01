@@ -37,7 +37,7 @@ describe('hot edits', () => {
 				{ id: 'mechanism/body', part: 'body', scope: 'mechanism' },
 				{ id: 'mechanism/lid', part: 'lid', scope: 'mechanism' },
 				{ id: 'mechanism/lid@copy', part: 'lid', scope: 'mechanism', name: 'copy' }
-			], subs: [], fixed: [], joints: [], problems: []
+			], subs: [], fixed: [], joints: [], relations: [], problems: []
 		};
 		ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: {} as ParasocialZero });
 		ws.scripts = ['body', 'lid', 'mechanism'].map((id) => ({ path: `studios/${id}.ts`, content: id } as Script));
