@@ -3,6 +3,35 @@
 // A part named directly is one copy where it's modeled; insert() adds more copies (and copies of
 // other assemblies), placed by hand or by joining connector to connector. The home pose is every
 // joint at 0; people drag the free joints of the instances in the viewport, within the limits here.
+/**
+ * @module assembly — how parts move against each other.
+ *
+ * Instead of parts, a studio can export an assembly:
+ * `export default assembly("Box", ({ revolute, slider, cylindrical, planar, ball, fastened, fix, insert }) => revolute(body, lid, body.at("hinge"), { min: 0, max: 110 }))`,
+ * where `body.at("hinge")` is a connector declared in that part's body with
+ * `.connector("hinge", face | edge | { origin, axis })`. A studio exports parts or assemblies, never
+ * both, so an assembly imports its parts from other studios.
+ *
+ * Instances: an assembly holds its own copies of the parts it names, ids like `mechanism/box:lid`
+ * (assembly id / part id); the source parts stay put. describe/query/measure accept instance ids;
+ * notes pinned in an assembly target instances. A part named directly is one copy where it's
+ * modeled; for more, `const w = insert(wheel, { name: "fl" })` (id `mechanism/cart:wheel@fl`; a name
+ * is required from the second copy on), then join connector to connector,
+ * `revolute(chassis.at("axle", 0), w.at("hub"))` (puts w's connector on the chassis's; 0 is where
+ * they meet; `{ flip: true }` faces it the other way), or `insert(part, { name, place: { translate, rotate: { axis, angle } } })`.
+ * Loops make patterns. A connector on several faces/edges (`.connector("bolt", holes)`) or an array
+ * of frames has one frame each: `part.at("bolt", i)`, 0-based, ordered by x, then y, then z. The
+ * assembly script can't see geometry, so share counts (a constant in lib/) between part and assembly.
+ * `insert(otherAssembly, { name })` adds a subassembly with its joints (parts `mechanism/corner@left/cart:wheel`);
+ * reach its parts with `sub.part(wheel).at("hub")`; its `fix()` only holds its parts to each other.
+ *
+ * Joints: every joint is 0 where the parts are modeled; limits are degrees or mm from there.
+ * Positive revolute angles follow the right-hand rule about the joint axis and positive slides go
+ * along it, so flip the axis to make "open" positive. In a closed loop the first joint declared
+ * drives it. People drag free instances in the viewport; overlapping instances show red (pass
+ * `{ overlap: true }` on a joint for intended overlaps like press fits). The workspace shows one
+ * studio at a time.
+ */
 import type { Vec3 } from "@parasocial/kernel";
 import { connectorRef, type ConnectorRef, type PartDef } from "./part";
 import { toFrame, type ConnectorFrame, type FrameSpec } from "./connector";

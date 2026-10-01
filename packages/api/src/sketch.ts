@@ -40,8 +40,19 @@ export type RevolveOpts = {
 
 const eq = (a: P2, b: P2) => Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
 
+/**
+ * 2D geometry on a plane, turned into a solid by `extrude`, `revolve`, `sweep` or `loft`. Points are
+ * `[u, v]` in the plane's sketch axes (`plane.XY`: [x, y]; `plane.XZ`: [x, z]; `plane.YZ`: [y, z]).
+ * Add closed shapes (`rect`, `circle`, `slot`, `polygon`, `polyline`, `spline`) or draw paths
+ * (`moveTo`, `lineTo`, arcs, splines, `close`). A loop inside another becomes a hole. Each segment
+ * gets a name (`outline/right`, `bore`, `sketch1/line3`; set it with `{ tag }`) that flows into the
+ * side faces it makes, e.g. `base · side · outline/right`.
+ * @example sketch(plane.XY, { tag: "plate" }).rect(60, 40, { tag: "outline", fillet: 4 }).circle([0, 0], 8, { tag: "bore" }).extrude(5, { tag: "plate" })
+ */
 export class Sketch {
+  /** The plane it's drawn on. */
   readonly plane: Plane;
+  /** Prefix of its segment names (default `sketch<n>`). */
   readonly tag?: string;
   private loops: Loop[] = [];
   private path: Loop | null = null;
@@ -50,6 +61,7 @@ export class Sketch {
   private counters = new Map<string, number>();
   private segTags = new Set<string>();
 
+  /** Prefer `sketch(plane, opts)`. */
   constructor(p: Plane, opts: { tag?: string } = {}) {
     if (!(p instanceof Plane)) userError("sketch(plane) needs a plane, e.g. sketch(plane.XY)");
     this.plane = p;
@@ -70,7 +82,12 @@ export class Sketch {
 
   // ---------- closed shapes ----------
 
-  /** Rectangle `w` × `h`. Centered on `at` (default origin) unless `center: false` (then `at` is the corner). */
+  /**
+   * Rectangle `w` (along sketch u) × `h` (along v). Centered on `at` (default origin) unless
+   * `center: false` (then `at` is the lower-left corner). `fillet` rounds its corners. Sides are
+   * named `<tag>/bottom`, `/right`, `/top`, `/left` (−v, +u, +v, −u).
+   * @example sketch(plane.XY).rect(40, 20, { tag: "outline", fillet: 3 }).extrude(5)
+   */
   rect(w: number, h: number, opts: { center?: boolean; at?: P2; tag?: string; fillet?: number } = {}): this {
     num(w, "rect width");
     num(h, "rect height");
@@ -95,7 +112,7 @@ export class Sketch {
     return this;
   }
 
-  /** Circle at `center` with radius `r`. */
+  /** Circle at `center` (sketch coordinates) with radius `r` (not diameter). Inside another loop it's a hole. */
   circle(center: P2, r: number, opts: SegOpts = {}): this {
     num(r, "circle radius");
     if (r <= 0) userError(`circle radius must be positive (got ${r})`);
@@ -144,7 +161,11 @@ export class Sketch {
     return this;
   }
 
-  /** Closed polyline through `points`. */
+  /**
+   * Polyline through `points`, closed unless `close: false` (then an open path you can continue).
+   * `fillet` rounds every corner of a closed one. Segments are `<tag>/side1`, `side2`, ….
+   * @example sketch(plane.XZ).polyline([[0, 0], [30, 0], [30, 5], [5, 20], [0, 20]]).extrude(10)
+   */
   polyline(points: P2[], opts: SegOpts & { close?: boolean; fillet?: number } = {}): this {
     if (points.length < 2) userError("polyline needs at least 2 points");
     if (opts.fillet && opts.close !== false) {
@@ -162,6 +183,7 @@ export class Sketch {
 
   // ---------- paths ----------
 
+  /** Start a new path at `p` (ends the previous path). Path drawing starts at [0, 0] without it. */
   moveTo(p: P2): this {
     this.endPath();
     this.cursor = [...p] as P2;
@@ -180,6 +202,10 @@ export class Sketch {
     this.path!.segs.push(s);
   }
 
+  /**
+   * Line from the cursor to the absolute point `p`.
+   * @example sketch(plane.XY).moveTo([0, 0]).lineTo([20, 0]).lineTo([20, 10], { tag: "edge" }).threePointArc([10, 15], [0, 10]).close().extrude(4)
+   */
   lineTo(p: P2, opts: SegOpts = {}): this {
     const a = this.need();
     if (eq(a, p)) return this;
@@ -187,13 +213,16 @@ export class Sketch {
     this.cursor = [...p] as P2;
     return this;
   }
+  /** Line by a relative offset `(dx, dy)` from the cursor. */
   line(dx: number, dy: number, opts: SegOpts = {}): this {
     const a = this.need();
     return this.lineTo([a[0] + dx, a[1] + dy], opts);
   }
+  /** Horizontal line (along sketch u) by `dx`. */
   hLine(dx: number, opts: SegOpts = {}): this {
     return this.line(dx, 0, opts);
   }
+  /** Vertical line (along sketch v) by `dy`. */
   vLine(dy: number, opts: SegOpts = {}): this {
     return this.line(0, dy, opts);
   }
@@ -521,6 +550,15 @@ export class Sketch {
     });
   }
 
+  /**
+   * Extrude the closed profiles `distance` mm along the plane's normal (negative goes the other way;
+   * `symmetric: true` goes half each way). `plane.XY` grows +Z, `plane.YZ` +X, `plane.XZ` **−Y**.
+   * Or `extrude({ upTo: face })` up to a planar face. `mode: "add" | "remove"` with `target` fuses
+   * into or cuts from another solid. Faces: `<tag> · cap.start` (on the sketch plane),
+   * `<tag> · cap.end`, `<tag> · side · <segment>`.
+   * @example sketch(plane.XY).rect(40, 20).extrude(5, { tag: "base" })
+   * @example sketch(plane.XY.offset(5)).circle([0, 0], 4).extrude(-5, { mode: "remove", target: base, tag: "bore" })
+   */
   extrude(distanceOrOpts: number | (ExtrudeOpts & { upTo: EntitySet }), maybeOpts: ExtrudeOpts = {}): Solid {
     let distance: number;
     let opts: ExtrudeOpts;
@@ -559,6 +597,12 @@ export class Sketch {
     return combine(new Solid(rec), opts.mode, opts.target);
   }
 
+  /**
+   * Revolve the closed profiles `angle` degrees (default 360) about `axis`: by default the sketch's
+   * own v axis through its origin (world Z for `plane.XZ` and `plane.YZ`), or a world axis "X"/"Y"/"Z"
+   * through the world origin, or `{ origin, direction }`. Keep the profile on one side of the axis.
+   * @example sketch(plane.XZ).rect(5, 20, { at: [10, 0], center: false }).revolve() // tube, r 10..15, z 0..20
+   */
   revolve(angle = 360, opts: RevolveOpts = {}): Solid {
     num(angle, "revolve angle");
     const prof = this.profile();
@@ -789,7 +833,7 @@ function centroid(p: P2[]): P2 {
   return [s[0] / p.length, s[1] / p.length];
 }
 
-/** Map each profile edge to its segment's name (by identity, falling back to geometry). */
+/** @internal Map each profile edge to its segment's name (by identity, falling back to geometry). */
 export function namer(segEdges: { seg: { name?: string }; edge: any }[]) {
   return {
     roles: ({ topo }: { topo: any }) => {
@@ -814,13 +858,22 @@ function num(v: unknown, what: string) {
   if (typeof v !== "number" || !Number.isFinite(v)) userError(`${what} must be a finite number (got ${typeof v === "number" ? v : JSON.stringify(v)})`);
 }
 
+/**
+ * Start a sketch on a plane. Sketch coordinates `[u, v]`: `plane.XY` → [x, y] (normal +Z),
+ * `plane.XZ` → [x, z] (normal −Y), `plane.YZ` → [y, z] (normal +X); see `plane`. `tag` prefixes its
+ * segment names.
+ * @example sketch(plane.XY).rect(40, 20).extrude(5)
+ */
 export function sketch(p: Plane, opts: { tag?: string } = {}) {
   return new Sketch(p, opts);
 }
 
 export { entityShape };
 
-/** Loft through two or more section sketches (each one closed loop), first to last. */
+/**
+ * Loft through two or more section sketches (each one closed loop), first to last; `ruled: true` for straight sides.
+ * @example loft([sketch(plane.XY).rect(20, 20), sketch(plane.XY.offset(30)).circle([0, 0], 6)], { tag: "neck" })
+ */
 export function loft(sections: Sketch[], opts: { tag?: string; ruled?: boolean } = {}): Solid {
   if (!Array.isArray(sections) || sections.length < 2) userError("loft needs at least two section sketches");
   const recs = sections.map((sk) => sk.sectionWire());

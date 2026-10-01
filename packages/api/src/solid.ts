@@ -12,10 +12,18 @@ type EdgesArg = EntitySet | EntitySet[] | string;
 type FacesArg = EntitySet | EntitySet[] | string;
 type OpOpts = { tag?: string };
 
+/**
+ * An immutable solid: every operation returns a new `Solid` (reassign: `body = body.fillet(...)`).
+ * Make one with `sketch(...).extrude/revolve/sweep`, `loft`, `box`, `cylinder` or `thicken`. All
+ * lengths are mm and angles degrees. Pass `{ tag }` to any operation so its faces get stable names
+ * people can point at.
+ * @example const body = box(40, 30, 10, { center: "xy", tag: "base" }).fillet("|Z", 4).subtract(cylinder(5, 10, { tag: "bore" }))
+ */
 export class Solid {
   /** @internal */ readonly record: OpRecord;
   /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame[]> };
 
+  /** @internal */
   constructor(record: OpRecord, meta: Solid["meta"] = {}) {
     this.record = record;
     this.meta = meta;
@@ -28,18 +36,40 @@ export class Solid {
   }
 
   // ---------- selection ----------
+  /**
+   * Faces matching `selector` (all when omitted). Selectors: names (`"base.side"`, `"bore"`),
+   * extremes (`">Z"`, `"<X"`, `">Z[1]"`), direction (`"|Z"` normal parallel to Z, `"#Z"` normal
+   * perpendicular to Z, `"+Z"` facing +Z), type (`"%plane"`, `"%cylinder"`), and `& | - not`.
+   * Narrow further with `EntitySet` filters.
+   * @example body.faces(">Z") // the top face(s)
+   */
   faces(selector?: string): EntitySet {
     return EntitySet.fromSelector(this.record, "face", selector);
   }
+  /**
+   * Edges matching `selector` (all when omitted; seam edges are skipped). Name patterns match the
+   * faces around an edge: `edges("bore & >Z")` is the bore's top rim. `"|Z"` are straight edges
+   * along Z, `"#Z"` straight edges perpendicular to Z, `">Z"` the highest edges (circles included),
+   * `"%circle"` circular edges.
+   * @example body.fillet(body.edges("|Z"), 2) // round the vertical edges
+   */
   edges(selector?: string): EntitySet {
     return EntitySet.fromSelector(this.record, "edge", selector);
   }
+  /** Vertices matching `selector` (all when omitted), e.g. `vertices(">Z")`. */
   vertices(selector?: string): EntitySet {
     return EntitySet.fromSelector(this.record, "vertex", selector);
   }
 
   // ---------- finishing ----------
-  /** Constant-radius fillet on `edges` (a selection, or a selector string evaluated on this solid). */
+  /**
+   * Round `edges` with a constant `radius` (mm). `edges` is a selection (from this solid or an
+   * earlier one: matched by stable name), an array of selections, or a selector string evaluated on
+   * this solid. New faces get the role `fillet` (`fillet.corner` at vertex blends). Fails with the
+   * largest workable radius when it doesn't fit.
+   * @example body = body.fillet(body.edges("|Z"), 3, { tag: "corners" })
+   * @example body = body.fillet(body.edges(">Z"), 1) // soften the top edges
+   */
   fillet(edges: EdgesArg, radius: number, opts: OpOpts = {}): Solid {
     positive(radius, "fillet radius");
     const idx = this.resolve(edges, "edge", "fillet");
@@ -60,7 +90,11 @@ export class Solid {
     return new Solid(rec, this.meta);
   }
 
-  /** Chamfer `edges` by `distance` (optionally a second distance, or a distance and an `angle` in degrees). */
+  /**
+   * Bevel `edges` (selection or selector string, as in `fillet`) by `distance` mm, symmetric; or
+   * unequal with `distance2`, or a distance and an `angle` in degrees. New faces get the role `chamfer`.
+   * @example body = body.chamfer(body.edges("<Z"), 0.5) // break the bottom edges
+   */
   chamfer(edges: EdgesArg, distance: number, opts: OpOpts & { distance2?: number; angle?: number } = {}): Solid {
     positive(distance, "chamfer distance");
     const idx = this.resolve(edges, "edge", "chamfer");
@@ -82,9 +116,18 @@ export class Solid {
   }
 
   // ---------- booleans ----------
+  /**
+   * Fuse one or more solids into this one; an options object `{ tag }` may come last.
+   * @example body.union(boss, rib, { tag: "joined" })
+   */
   union(...others: (Solid | OpOpts)[]): Solid {
     return booleanOp("union", this, ...splitOpts(others));
   }
+  /**
+   * Remove one or more solids from this one (holes, pockets); an options object `{ tag }` may come last.
+   * Faces cut by a tool keep the tool's names (tag the tool: `cylinder(3, 20, { tag: "bore" })`).
+   * @example plate.subtract(cylinder(3, 20, { at: [10, 10, -5], tag: "bore" }))
+   */
   subtract(...others: (Solid | OpOpts)[]): Solid {
     return booleanOp("subtract", this, ...splitOpts(others));
   }
@@ -92,11 +135,16 @@ export class Solid {
   cut(...others: (Solid | OpOpts)[]): Solid {
     return this.subtract(...others);
   }
+  /**
+   * Keep only the volume common to this solid and every other one; an options object `{ tag }` may come last.
+   * @example box(20, 20, 20, { center: true }).intersect(cylinder(12, 40, { center: true })) // rounded block
+   */
   intersect(...others: (Solid | OpOpts)[]): Solid {
     return booleanOp("intersect", this, ...splitOpts(others));
   }
 
   // ---------- transforms ----------
+  /** Move by `[dx, dy, dz]` mm. Names are kept. */
   translate(v: Vec3, opts: OpOpts = {}): Solid {
     return transformOp(this, "translate", { translate: v }, opts);
   }
@@ -108,18 +156,28 @@ export class Solid {
   rotate(angle: number, opts: OpOpts & { axis?: AxisLike; origin?: Vec3 } = {}): Solid {
     return transformOp(this, "rotate", { rotate: { origin: opts.origin ?? [0, 0, 0], axis: axisVec(opts.axis ?? "Z"), angleRad: (angle * Math.PI) / 180 } }, opts);
   }
-  /** Mirror across a plane. `union: true` keeps the original and fuses the mirror image to it. */
+  /**
+   * Mirror across a plane: a `Plane`, or "XY" (z → −z), "XZ" (y → −y), "YZ" (x → −x) through the
+   * origin. `union: true` keeps the original and fuses the mirror image to it.
+   * @example half.mirror("YZ", { union: true }) // symmetric about x = 0
+   */
   mirror(p: Plane | "XY" | "XZ" | "YZ", opts: OpOpts & { union?: boolean } = {}): Solid {
     const pl = typeof p === "string" ? ({ XY: new Plane([0, 0, 0], [0, 0, 1]), XZ: new Plane([0, 0, 0], [0, 1, 0]), YZ: new Plane([0, 0, 0], [1, 0, 0]) } as const)[p] : p;
     const m = transformOp(this, "mirror", { mirror: { origin: pl.origin, normal: pl.normal } }, opts.union ? {} : opts, "mirrored");
     return opts.union ? booleanOp("union", this, [m], { tag: opts.tag }) : m;
   }
-  /** `count` copies spaced `spacing` along `direction`, fused (instance 0 keeps its names; others get `#k`). */
+  /**
+   * `count` copies (including this one) spaced `spacing` mm along `direction`, fused (instance 0 keeps its names; others get `#k`).
+   * @example peg.linearPattern("X", 4, 10) // 4 pegs, 10 mm apart
+   */
   linearPattern(direction: AxisLike, count: number, spacing: number, opts: OpOpts = {}): Solid {
     const d = axisVec(direction);
     return patternOp(this, count, (k) => ({ translate: vec.scale(d, spacing * k) }), opts);
   }
-  /** `count` copies around `axis` (default Z through origin) over `angle` degrees (default 360, evenly spaced). */
+  /**
+   * `count` copies (including this one) around `axis` (default Z through `origin`, default the world origin) over `angle` degrees (default 360, evenly spaced; otherwise first and last at the ends).
+   * @example hole.circularPattern(6) // 6 holes, 60° apart around Z
+   */
   circularPattern(count: number, opts: OpOpts & { axis?: AxisLike; origin?: Vec3; angle?: number } = {}): Solid {
     const total = opts.angle ?? 360;
     const step = Math.abs(total - 360) < 1e-9 ? total / count : total / Math.max(1, count - 1);
@@ -283,21 +341,26 @@ export class Solid {
     if (!frames.length) userError(`${what}: nothing to attach to (the selection or array is empty)`);
     return new Solid(this.record, { ...this.meta, connectors: { ...this.meta.connectors, [name]: frames } });
   }
+  /** Material for mass: a `MATERIALS` key ("pla", "petg", "abs", "nylon", "aluminum", "steel", "stainless", "brass", "wood") or `{ name, density }` (g/cm³). */
   material(m: Material | string): Solid {
     const mat = typeof m === "string" ? (MATERIALS[m.toLowerCase()] ?? userError(`unknown material "${m}"; use one of ${Object.keys(MATERIALS).join(", ")} or { density }`)) : m;
     return new Solid(this.record, { ...this.meta, material: mat });
   }
 
   // ---------- inspection ----------
+  /** Volume in mm³. */
   volume(): number {
     return kMass(this.record.shape).volume;
   }
+  /** Surface area in mm². */
   area(): number {
     return kMass(this.record.shape).area;
   }
+  /** Centroid (world mm). */
   centerOfMass(): Vec3 {
     return kMass(this.record.shape).centroid;
   }
+  /** Axis-aligned bounds `{ min, max, size }` (world mm). Handy for placing things relative to a solid. */
   boundingBox(): BBox & { size: Vec3 } {
     const b = kBBox(this.record.shape);
     return { ...b, size: [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]] };
@@ -306,6 +369,7 @@ export class Solid {
   mass(): number {
     return (this.volume() / 1000) * (this.meta.material?.density ?? 1);
   }
+  /** Whether the shape passes the kernel's validity check (BRepCheck). */
   isValid(): boolean {
     return kValid(this.record.shape);
   }
@@ -339,6 +403,7 @@ function splitOpts(args: (Solid | OpOpts)[]): [Solid[], OpOpts] {
   return [solids, opts];
 }
 
+/** @internal */
 export function booleanOp(kind: "union" | "subtract" | "intersect", a: Solid, others: Solid[], opts: OpOpts): Solid {
   for (const b of others) if (!(b instanceof Solid)) userError(`${kind} expects solids`);
   const A = a.record;
@@ -419,6 +484,7 @@ function parseHex(input: string): { hex: string; alpha?: number } {
   return { hex: `#${h.slice(0, 6)}`, alpha: h.length === 8 ? Math.round((parseInt(h.slice(6), 16) / 255) * 1000) / 1000 : undefined };
 }
 
+/** Named materials for `solid.material(name)` (density in g/cm³). */
 export const MATERIALS: Record<string, Material> = {
   pla: { name: "PLA", density: 1.24 },
   petg: { name: "PETG", density: 1.27 },
@@ -432,6 +498,12 @@ export const MATERIALS: Record<string, Material> = {
 };
 
 // ---------- primitives ----------
+/**
+ * Box `w` (x) × `d` (y) × `h` (z) mm. Its corner is at the origin (x 0..w, y 0..d, z 0..h) unless
+ * `center: true` (centered on the origin) or `center: "xy"` (centered in x and y, z 0..h). Faces are
+ * named by direction: `xmin`, `xmax`, `ymin`, `ymax`, `zmin`, `zmax`. Move it with `.translate`.
+ * @example box(40, 30, 10, { center: "xy", tag: "base" })
+ */
 export function box(w: number, d: number, h: number, opts: OpOpts & { center?: boolean | "xy" } = {}): Solid {
   const corner: Vec3 = opts.center === true ? [-w / 2, -d / 2, -h / 2] : opts.center === "xy" ? [-w / 2, -d / 2, 0] : [0, 0, 0];
   const rec = runOp({
@@ -444,6 +516,11 @@ export function box(w: number, d: number, h: number, opts: OpOpts & { center?: b
   return new Solid(rec);
 }
 
+/**
+ * Cylinder of `radius` (not diameter) and `height` mm, from `at` (default origin) along `axis`
+ * (default "Z"), or centered on `at` with `center: true`. Faces: `side`, `cap.start`, `cap.end`.
+ * @example cylinder(3, 20, { at: [10, 0, -5], tag: "bore" }) // z −5..15
+ */
 export function cylinder(radius: number, height: number, opts: OpOpts & { at?: Vec3; axis?: AxisLike; center?: boolean } = {}): Solid {
   const ax = axisVec(opts.axis ?? "Z");
   const base = opts.at ?? [0, 0, 0];
@@ -469,7 +546,10 @@ function dirRole(i: ReturnType<typeof faceInfo>): string {
   return `${ax}${sign === "+" ? "max" : "min"}`;
 }
 
-/** Distance / clearance between two solids or entity sets. */
+/**
+ * Minimum distance (mm) between two solids or entity sets, with the closest points `a` and `b`.
+ * @example measure(body.faces(">Z"), lid.faces("<Z")).distance
+ */
 export function measure(a: Solid | EntitySet, b: Solid | EntitySet): { distance: number; a: Vec3; b: Vec3 } {
   const shapeOf = (x: Solid | EntitySet) => (x instanceof Solid ? x.record.shape : x.indices.length === 1 ? entityShape(x.record, x.kind, x.indices[0]) : compound(x.indices.map((i) => entityShape(x.record, x.kind, i))));
   return kDistance(shapeOf(a), shapeOf(b));
@@ -477,7 +557,10 @@ export function measure(a: Solid | EntitySet, b: Solid | EntitySet): { distance:
 
 export type { KernelError };
 
-/** Thicken faces (a sheet) into a solid of `thickness` along their normals. */
+/**
+ * Thicken faces (a sheet) into a solid of `thickness` mm along their normals.
+ * @example thicken(boss.faces("%cylinder"), 1) // a 1 mm skin around a cylinder
+ */
 export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}): Solid {
   if (!(faces instanceof EntitySet) || faces.kind !== "face" || !faces.length) userError("thicken(faces, t) needs a face selection, e.g. thicken(part.faces(\">Z\"), 2)");
   const input = faces.record;
