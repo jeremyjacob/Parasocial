@@ -7,9 +7,10 @@ import { mutators } from "@parasocial/sync";
 import { runMutator, type Db, type BlobStore } from "@parasocial/sync/server";
 import { PoolClient } from "@parasocial/engine-pool/client";
 import { registerTools, type Session, type ToolDeps } from "./tools";
-import { INSTRUCTIONS } from "./instructions";
+import { ESSENTIALS, DETAILS } from "./instructions";
 import { createOAuth, type OAuth } from "./oauth";
 import { API_DTS, EXAMPLES } from "./resources";
+import { registerApiReference, API_DTS_URI } from "./api-reference";
 import { createNoteEvents, type NoteEvents } from "./note-events";
 import { documentContext, DOCUMENT_GUIDANCE } from "./document-context";
 
@@ -20,11 +21,13 @@ type Live = { transport: WebStandardStreamableHTTPServerTransport; server: McpSe
 /** One agent session's MCP server: its tools, instructions and resources. MCP connections and the built-in agent both use it. */
 export async function createSessionServer(session: Session, deps: ToolDeps) {
   const context = await documentContext(deps.db, session.userID, deps.config.appOrigin);
-  const instructions = `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
+  // essentials first: clients keep only the start of long instructions
+  const instructions = `${ESSENTIALS}\n\n${DOCUMENT_GUIDANCE}\n\n${DETAILS}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
   const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions, capabilities: { tools: {}, resources: {} } });
   registerTools(server, session, deps);
-  server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${INSTRUCTIONS}\n\n${DOCUMENT_GUIDANCE}`, mimeType: "text/markdown" }] }));
-  server.registerResource("api-types", "parasocial://api/parasocial.d.ts", { title: "Modeling API types (parasocial)", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
+  registerApiReference(server, session);
+  server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${ESSENTIALS}\n\n${DOCUMENT_GUIDANCE}\n\n${DETAILS}`, mimeType: "text/markdown" }] }));
+  server.registerResource("api-types", API_DTS_URI, { title: "Modeling API (parasocial.d.ts)", description: "Every declaration scripts can import from \"parasocial\", with JSDoc and examples. The api_reference tool serves slices of it.", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
   server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
   server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
     const id = session.defaultDocument;

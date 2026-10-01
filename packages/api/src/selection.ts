@@ -25,6 +25,7 @@ export type Entity = {
   point?: Vec3;
 };
 
+/** @internal */
 export function entityView(r: OpRecord, kind: EntityKind, i: number): Entity {
   const base = { kind, index: i, get name() { return entityName(r, kind, i).str; } } as Entity;
   if (kind === "face") {
@@ -41,13 +42,34 @@ export function entityView(r: OpRecord, kind: EntityKind, i: number): Entity {
 
 type SortKey = "area" | "length" | "radius" | "x" | "y" | "z" | ((e: Entity) => number);
 
+/**
+ * An immutable set of faces, edges or vertices of one solid, from `solid.faces(selector)`,
+ * `solid.edges(selector)` or `solid.vertices(selector)`. Every filter returns a new set; pass a set
+ * to `fillet`, `chamfer`, `shell`, `draft`, `thicken`, `connector` or `measure`. A set taken from an
+ * earlier solid still works on a later one: it is matched by stable name.
+ *
+ * Selector strings (also accepted by `.filter("…")`):
+ * - names: `"base.side"`, `"bore"`, `"base.cap.end & bore"` — tags and roles in stable names. An
+ *   edge or vertex matches when a face around it does, so `edges("top & bore")` is the rim where they meet.
+ * - extremes: `">Z"` (largest center z), `"<X"` (smallest x), `">Z[1]"` (second highest), `">(1,1,0)"`.
+ * - direction: `"|Z"` faces whose normal is parallel to Z (top and bottom) / edges along Z;
+ *   `"#Z"` faces whose normal is perpendicular to Z (the sides) / edges perpendicular to Z;
+ *   `"+Z"` / `"-Z"` planar faces facing +Z / −Z.
+ * - type: `"%plane"`, `"%cylinder"`, `"%cone"`, `"%sphere"`, `"%torus"`, `"%bspline"` (faces);
+ *   `"%line"`, `"%circle"`, `"%ellipse"`, `"%bspline"` (edges). `"*"` is everything.
+ * - set operations: `a & b`, `a | b`, `a - b` (spaces around `-`), `not a`, parentheses.
+ * @example base.fillet(base.edges("|Z"), 3) // round the 4 vertical edges of a box
+ * @example const top = body.faces(">Z"); body.edges().filter((e) => e.center[2] > 9 && e.curve === "circle")
+ */
 export class EntitySet {
   /** @internal */ readonly record: OpRecord;
+  /** "face", "edge" or "vertex". */
   readonly kind: EntityKind;
   /** @internal */ readonly indices: readonly number[];
   /** Selector that produced this set, when it came from a string (kept for notes / describe). */
   readonly query?: string;
 
+  /** @internal */
   constructor(record: OpRecord, kind: EntityKind, indices: readonly number[], query?: string) {
     this.record = record;
     this.kind = kind;
@@ -56,6 +78,7 @@ export class EntitySet {
     Object.freeze(this);
   }
 
+  /** @internal */
   static fromSelector(r: OpRecord, kind: EntityKind, selector?: string): EntitySet {
     if (selector === undefined || selector === "*") return new EntitySet(r, kind, [...Array(countOf(r, kind)).keys()].filter((i) => kind !== "edge" || !isSeamEdge(r, i)), selector);
     let idx: number[];
@@ -69,9 +92,11 @@ export class EntitySet {
     return new EntitySet(r, kind, idx, selector);
   }
 
+  /** Number of entities in the set (0 when nothing matched; an empty selector match also warns). */
   get length() {
     return this.indices.length;
   }
+  /** Alias of `length`. */
   get count() {
     return this.indices.length;
   }
@@ -80,29 +105,44 @@ export class EntitySet {
     return new EntitySet(this.record, this.kind, idx, this.query);
   }
 
-  /** Narrow with another selector string. */
+  /** @internal Narrow with another selector string (use `.filter(selector)`). */
   query_(selector: string): EntitySet {
     return this.derive(select(this.record, this.kind, selector, [...this.indices]));
   }
-  /** Narrow with another selector string (alias of `.filter(selector)`). */
+  /** Narrow with another selector string (same as `.filter(selector)`). */
   where(selector: string): EntitySet {
     return this.query_(selector);
   }
 
+  /** Alias of `.filter(pred)`. */
   filterBy(pred: string | ((e: Entity) => boolean)): EntitySet {
     if (typeof pred === "string") return this.query_(pred);
     return this.derive(this.indices.filter((i) => pred(entityView(this.record, this.kind, i))));
   }
+  /**
+   * Keep the entities that match a selector string (see `EntitySet`), or for which `pred` returns
+   * true. `pred` gets an `Entity` view: `center`, plus `area`/`normal`/`surface` (faces),
+   * `length`/`direction`/`curve` (edges), `radius`/`axis` (circular ones), `point` (vertices), `name`.
+   * @example body.edges().filter((e) => e.curve === "circle" && Math.abs((e.radius ?? 0) - 3) < 1e-6)
+   * @example body.faces().filter("%plane & not >Z")
+   */
   filter(pred: string | ((e: Entity) => boolean)) {
     return this.filterBy(pred);
   }
 
+  /** Planar faces (surface "plane"), or straight edges (curve "line"); vertices pass through. */
   planar() {
     return this.derive(this.indices.filter((i) => (this.kind === "face" ? faceOf(this.record, i).surface === "plane" : this.kind === "edge" ? edgeOf(this.record, i).curve === "line" : true)));
   }
+  /** Faces of a surface type ("plane", "cylinder", "cone", "sphere", "torus", "bspline") or edges of a curve type ("line", "circle", "ellipse", "bspline"); same as `.filter("%type")`. */
   ofType(type: string) {
     return this.query_(`%${type}`);
   }
+  /**
+   * Edges whose direction is parallel to `axis` (either sense); faces whose **normal** is parallel to
+   * it (planar: the faces facing ±axis) or whose axis is (cylinders around it). Same as `"|Z"`.
+   * @example box(10, 20, 30).faces().parallelTo("Z") // top and bottom
+   */
   parallelTo(axis: AxisLike) {
     const a = axisVec(axis);
     return this.derive(this.indices.filter((i) => {
@@ -110,6 +150,7 @@ export class EntitySet {
       return !!d && Math.abs(dot(d, a)) > 1 - 1e-6;
     }));
   }
+  /** Edges perpendicular to `axis`; faces whose normal (or axis) is perpendicular to it (for "Z": the side walls). Same as `"#Z"`. */
   perpendicularTo(axis: AxisLike) {
     const a = axisVec(axis);
     return this.derive(this.indices.filter((i) => {
@@ -118,6 +159,11 @@ export class EntitySet {
     }));
   }
 
+  /**
+   * Order by "area", "length", "radius", center "x" / "y" / "z", or a function of the `Entity`;
+   * `first`/`last`/`at` then follow that order.
+   * @example body.faces("%plane").sortBy("z", "desc").at(1) // second-highest planar face
+   */
   sortBy(key: SortKey, dir: "asc" | "desc" = "asc"): EntitySet {
     const f = typeof key === "function" ? key : keyFn(key);
     const vals = new Map(this.indices.map((i) => [i, f(entityView(this.record, this.kind, i))]));
@@ -125,9 +171,11 @@ export class EntitySet {
     // sorted sets keep their order for first()/at(); store order via a fresh ordered set
     return new OrderedSet(this.record, this.kind, sorted, this.query);
   }
+  /** The `n` largest faces by area (edges: by length). */
   largest(n = 1) {
     return this.sortBy(this.kind === "edge" ? "length" : "area", "desc").first(n);
   }
+  /** The `n` smallest faces by area (edges: by length). */
   smallest(n = 1) {
     return this.sortBy(this.kind === "edge" ? "length" : "area", "asc").first(n);
   }
@@ -144,19 +192,22 @@ export class EntitySet {
     }
     return groups.map((g) => this.derive(g));
   }
+  /** The first `n` (in `sortBy` order, else by internal index — sort first when order matters). */
   first(n = 1) {
     return this.derive(this.ordered().slice(0, n));
   }
+  /** The last `n` (in `sortBy` order, else by internal index). */
   last(n = 1) {
     return this.derive(this.ordered().slice(-n));
   }
+  /** The `i`-th entity (negative counts from the end) as a one-entity set; sort first when order matters. */
   at(i: number) {
     const o = this.ordered();
     const j = i < 0 ? o.length + i : i;
     if (j < 0 || j >= o.length) userError(`index ${i} is out of range: the set has ${o.length} ${this.kind}s`);
     return this.derive([o[j]]);
   }
-  /** Entity closest to a point. */
+  /** The one entity whose center is closest to world point `p`. */
   nearest(p: Vec3) {
     let best = -1,
       bd = Infinity;
@@ -167,13 +218,16 @@ export class EntitySet {
     return this.derive(best >= 0 ? [best] : []);
   }
 
+  /** Entities in both sets (intersection). */
   and(o: EntitySet) {
     const other = new Set(o.in(this.record));
     return this.derive(this.indices.filter((i) => other.has(i)));
   }
+  /** Entities in either set (union). */
   or(o: EntitySet) {
     return this.derive([...this.indices, ...o.in(this.record)]);
   }
+  /** Entities in this set but not in `o`. */
   minus(o: EntitySet) {
     const other = new Set(o.in(this.record));
     return this.derive(this.indices.filter((i) => !other.has(i)));

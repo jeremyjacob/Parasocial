@@ -2,20 +2,38 @@
 // Every numeric input accepts a unit (`"1/4 in"`, `"3mm"`, `"30 deg"`) and expressions
 // (`"=width/2"`, `"2 * (t + 1)"`). No `eval`: a small recursive-descent parser.
 
+/**
+ * Units. Every number the modeling API takes or returns is in base units: **mm** for lengths and
+ * **degrees** for angles (`rotate(90)`, `revolve(180)`, `draft(f, 3)`). A `Unit` is not a number
+ * (`5 * mm` is NaN); use units in `param(..., { unit: inch })` (the default and UI input are in that
+ * unit; the value returned is mm) or convert strings with `evaluate("1/4 in")`. Param overrides
+ * (set_param, the params panel) accept units and expressions: `"1/4 in"`, `"=width/2"`.
+ * `factor` converts to base units (`inch.factor` is 25.4).
+ * @example const t = param("thickness", 0.25, { label: "Thickness", unit: inch }) // t === 6.35
+ */
 export type Unit = { readonly kind: "length" | "angle" | "none"; readonly symbol: string; readonly factor: number };
 
 const u = (kind: Unit["kind"], symbol: string, factor: number): Unit => Object.freeze({ kind, symbol, factor });
 
 // factor converts to base units: mm for length, degrees for angle.
+/** Millimetres, the base length unit (factor 1). */
 export const mm = u("length", "mm", 1);
+/** Centimetres (factor 10). */
 export const cm = u("length", "cm", 10);
+/** Metres (factor 1000). */
 export const m = u("length", "m", 1000);
+/** Inches (factor 25.4); `"in"` or `'"'` in strings. */
 export const inch = u("length", "in", 25.4);
+/** Feet (factor 304.8). */
 export const ft = u("length", "ft", 304.8);
+/** Degrees, the base angle unit (factor 1). */
 export const deg = u("angle", "deg", 1);
+/** Radians (factor 180/π). */
 export const rad = u("angle", "rad", 180 / Math.PI);
+/** @internal */
 export const unitless = u("none", "", 1);
 
+/** @internal */
 export const UNITS: Record<string, Unit> = {
   mm,
   cm,
@@ -30,9 +48,12 @@ export const UNITS: Record<string, Unit> = {
   rad,
 };
 
+/** @internal */
 export type DocUnits = { length: Unit; angle: Unit };
+/** @internal */
 export const SI_DEFAULT: DocUnits = { length: mm, angle: deg };
 
+/** @internal */
 export class ExprError extends Error {}
 
 type Tok = { t: "num"; v: number } | { t: "id"; v: string } | { t: "op"; v: string };
@@ -227,7 +248,7 @@ export function evaluate(input: string | number, env: EvalEnv = {}): number {
   return q.dim === null ? q.v * du.factor : q.v;
 }
 
-/** Try to evaluate; returns null instead of throwing. */
+/** @internal Try to evaluate; returns null instead of throwing. */
 export function tryEvaluate(input: string | number, env: EvalEnv = {}): number | null {
   try {
     return evaluate(input, env);
@@ -236,7 +257,7 @@ export function tryEvaluate(input: string | number, env: EvalEnv = {}): number |
   }
 }
 
-/** Format a base-unit value in a unit, trimming trailing zeros. */
+/** @internal Format a base-unit value in a unit, trimming trailing zeros. */
 export function formatValue(v: number, unit: Unit = mm, digits = 3): string {
   const x = v / unit.factor;
   const s = Number(x.toFixed(digits)).toString();

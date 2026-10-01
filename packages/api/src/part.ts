@@ -1,4 +1,31 @@
 // part(), param() and running a part in a context.
+/**
+ * @module part — documents, studios, parts, params and stable names.
+ *
+ * A document is a set of TypeScript scripts: studios in studios/*.ts, shared helpers in lib/. A studio
+ * exports one or more parts: `export default part("Name", () => solid)` is part id `<file>`; named
+ * exports like `export const lid = part("Lid", ...)` in studios/case.ts are part id `case:lid`. Related
+ * parts can share a studio and its helpers. `export const name = "Case"` gives the studio a display
+ * name. Parts are modeled in place (where they sit in the product). A studio exports parts or
+ * assemblies, never both.
+ *
+ * Params: `param(name, default, { label, min, max, step, unit, options, shared })`. The value in code is
+ * the default; configurations override it (set_param never edits source; to change a default, edit the
+ * script). Don't hardcode values that are params. `name` is an identifier expressions refer to
+ * (`ropeD`); `label` is what the params panel shows: short, plain language, sentence case, no
+ * abbreviations, under ~24 characters, without words the panel group already says (the part name):
+ * `param("ropeD", 2, { label: "Rope diameter" })`. `{ shared: true }` makes one document-wide value
+ * (every part declaring that name reads it; set it with part "*"), for dimensions several parts must agree on.
+ *
+ * Stable names: tag anything a human might point at; tags become part of stable names
+ * (`bracket/base · side · outline/right`), which is how notes find their geometry after dimensions
+ * change. Faces are `op · role · source`; edges are named by the faces around them
+ * `(faceA) & (faceB)`; a split face keeps its name on every piece. Untagged operations get automatic
+ * ids that can shift when you insert operations of the same type earlier in the same scope.
+ *
+ * Errors carry a source location and say what to do next ("fillet radius 5 exceeds adjacent face
+ * width 3.2; use a value below 3.2 (bracket.ts:18)"); the workspace keeps the last good geometry.
+ */
 import type { OpRecord } from "@parasocial/naming";
 import { ctx, withContext, PartContext, shortLoc } from "./context";
 import { OpError, userError } from "./op";
@@ -159,6 +186,7 @@ export function param(name: string, defaultValue: number | string, opts: ParamOp
   return value;
 }
 
+/** @internal */
 export type PartRun = {
   part: string;
   name: string;
@@ -184,7 +212,7 @@ const tools: PartTools = Object.freeze({
   }),
 });
 
-/** Run a part body in a fresh context. Never throws for script errors: they become problems. */
+/** @internal Run a part body in a fresh context. Never throws for script errors: they become problems. */
 export function runPart(def: PartDef, c: PartContext): PartRun {
   const first = runOnce(def, c);
   // an override referred to a param declared later: rerun with this pass's values (cheap: op cache)
@@ -231,6 +259,7 @@ function lastSolidOf(c: PartContext): OpRecord | undefined {
   return undefined;
 }
 
+/** @internal */
 export function toProblem(e: unknown, c: PartContext): Problem {
   if (e instanceof OpError) return e.problem;
   const err = e instanceof Error ? e : new Error(String(e));
