@@ -4,6 +4,7 @@ import { faceOf, edgeOf, vertexOf } from "@parasocial/naming";
 import type { Vec3 } from "@parasocial/kernel";
 import { EntitySet } from "./selection";
 import { Plane, axisVec, vec, type AxisLike } from "./plane";
+import { vec3 } from "./check";
 import { userError } from "./op";
 
 /** A coordinate frame: origin, z axis (the joint axis or normal) and x axis, in the part's coordinates. */
@@ -45,8 +46,7 @@ export function toFrame(at: FrameSpec, what: string): ConnectorFrame {
   }
   if (at && typeof at === "object" && Array.isArray((at as any).origin)) {
     const o = at as { origin: Vec3; axis?: AxisLike; x?: AxisLike };
-    if (o.origin.length !== 3 || !o.origin.every(Number.isFinite)) userError(`${what}: origin must be [x, y, z]`);
-    return orient(o.origin, axisVec(o.axis ?? "Z"), o.x === undefined ? undefined : axisVec(o.x));
+    return orient(vec3(o.origin, `${what} origin`), axisVec(o.axis ?? "Z", `${what} axis`), o.x === undefined ? undefined : axisVec(o.x, `${what} x`));
   }
   return userError(`${what}: expected a face/edge/vertex selection, a plane, or { origin: [x, y, z], axis: "X" }`);
 }

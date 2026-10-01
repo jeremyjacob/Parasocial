@@ -8,7 +8,7 @@
     "tests"
   ],
   "scripts": {
-    "test": "bun test packages/kernel packages/naming packages/api packages/assembly packages/runtime packages/mcp-local tests/corpus",
+    "test": "bun test packages/kernel packages/naming packages/api packages/assembly packages/runtime packages/engine-pool packages/mcp-local tests/corpus",
     "corpus": "bun test tests/corpus",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "bun scripts/dev.ts",

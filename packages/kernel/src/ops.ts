@@ -1,6 +1,6 @@
 // Thin layer over OCCT operations. Each returns the result shape plus the builder
 // (for history), which the caller must `delete()` once history is collected.
-import { oc, occtMessage } from "./oc";
+import { oc, occtMessage, noteKernelFault } from "./oc";
 import { tmp, scoped } from "./memory";
 import { downcast, explore, type Shape } from "./topo";
 import type { Vec3 } from "./geom";
@@ -27,6 +27,8 @@ function guard<T>(what: string, fn: () => T): T {
     return fn();
   } catch (e) {
     if (e instanceof KernelError) throw e;
+    // a trap or abort stays what it is: the engine must see it to replace the kernel
+    if (noteKernelFault(e)) throw e;
     throw new KernelError(`${what} failed: ${occtMessage(e)}`, e);
   }
 }

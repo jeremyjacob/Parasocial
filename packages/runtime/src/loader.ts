@@ -176,7 +176,7 @@ function measureHeader(): number {
   try {
     new Function(...WRAPPER_PARAMS, "throw new Error('probe')\n//# sourceURL=__probe__.js")();
   } catch (e: any) {
-    const m = /__probe__\.js:(\d+)/.exec(e.stack ?? "");
+    const m = /__probe__\.js(?:, <anonymous>)?:(\d+)/.exec(e.stack ?? "");
     headerLines = m ? +m[1] - 1 : 2;
   }
   return headerLines!;

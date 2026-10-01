@@ -6,8 +6,9 @@ import type { AnchorTargetRef } from "@parasocial/naming";
 import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
 
 export type EngineRequest =
-  | { op: "setDocument"; doc: DocumentState }
-  | { op: "setScript"; path: string; content: string | null }
+  /** `quiet`: only restore state (a replay into a replacement worker); answers true instead of the part list. */
+  | { op: "setDocument"; doc: DocumentState; quiet?: boolean }
+  | { op: "setScript"; path: string; content: string | null; quiet?: boolean }
   /** Every part the scripts export (setDocument and setScript also return this). */
   | { op: "parts" }
   /** The parts of a snapshot (another version), from the snapshot engine. */

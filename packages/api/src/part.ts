@@ -1,5 +1,6 @@
 // part(), param() and running a part in a context.
 import type { OpRecord } from "@parasocial/naming";
+import { noteKernelFault } from "@parasocial/kernel";
 import { ctx, withContext, PartContext, shortLoc } from "./context";
 import { OpError, userError } from "./op";
 import { Solid } from "./solid";
@@ -233,6 +234,8 @@ function lastSolidOf(c: PartContext): OpRecord | undefined {
 
 export function toProblem(e: unknown, c: PartContext): Problem {
   if (e instanceof OpError) return e.problem;
+  // e.g. solid.volume() on garbage geometry trapped inside the kernel
+  noteKernelFault(e);
   const err = e instanceof Error ? e : new Error(String(e));
   // runtime exception in user code: locate via the stack
   const frames = parseFrames(err, c);

@@ -9,6 +9,7 @@ import { runOp, userError, warn } from "./op";
 import { Plane, axisVec, type AxisLike } from "./plane";
 import { Solid, booleanOp } from "./solid";
 import { Path3d } from "./path3d";
+import { num, optNum, positive, vec2, vec3, points2 } from "./check";
 
 export type P2 = [number, number];
 
@@ -75,8 +76,9 @@ export class Sketch {
     num(w, "rect width");
     num(h, "rect height");
     if (w <= 0 || h <= 0) userError(`rect needs a positive width and height (got ${w} × ${h})`);
+    optNum(opts.fillet, "rect fillet");
     this.checkTag(opts.tag);
-    const [x, y] = opts.at ?? [0, 0];
+    const [x, y] = opts.at === undefined ? [0, 0] : vec2(opts.at, "rect at");
     const [x0, y0] = opts.center === false ? [x, y] : [x - w / 2, y - h / 2];
     const p: P2[] = [
       [x0, y0],
@@ -100,12 +102,16 @@ export class Sketch {
     num(r, "circle radius");
     if (r <= 0) userError(`circle radius must be positive (got ${r})`);
     this.checkTag(opts.tag);
-    this.loops.push({ closed: true, segs: [{ kind: "circle", c: [...center] as P2, r, name: opts.tag ?? `${this.prefix()}circle${this.n("circle")}` }] });
+    const c = vec2(center, "circle center");
+    this.loops.push({ closed: true, segs: [{ kind: "circle", c, r, name: opts.tag ?? `${this.prefix()}circle${this.n("circle")}` }] });
     return this;
   }
 
   /** Slot (stadium) from `a` to `b` with total `width`. */
   slot(a: P2, b: P2, width: number, opts: SegOpts = {}): this {
+    a = vec2(a, "slot start");
+    b = vec2(b, "slot end");
+    positive(width, "slot width");
     const dx = b[0] - a[0],
       dy = b[1] - a[1];
     const L = Math.hypot(dx, dy);
@@ -135,7 +141,10 @@ export class Sketch {
 
   /** Regular polygon with `sides` vertices on a circle of `radius` (circumscribed). */
   polygon(center: P2, radius: number, sides: number, opts: SegOpts & { rotation?: number } = {}): this {
+    center = vec2(center, "polygon center");
+    positive(radius, "polygon radius");
     if (!Number.isInteger(sides) || sides < 3) userError(`polygon needs at least 3 sides (got ${sides})`);
+    optNum(opts.rotation, "polygon rotation");
     this.checkTag(opts.tag);
     const rot = ((opts.rotation ?? 0) * Math.PI) / 180;
     const pts: P2[] = [...Array(sides)].map((_, i) => [center[0] + radius * Math.cos(rot + (2 * Math.PI * i) / sides), center[1] + radius * Math.sin(rot + (2 * Math.PI * i) / sides)]);
@@ -146,7 +155,9 @@ export class Sketch {
 
   /** Closed polyline through `points`. */
   polyline(points: P2[], opts: SegOpts & { close?: boolean; fillet?: number } = {}): this {
+    points = points2(points, "polyline");
     if (points.length < 2) userError("polyline needs at least 2 points");
+    optNum(opts.fillet, "polyline fillet");
     if (opts.fillet && opts.close !== false) {
       // rounded corners (2D fillet)
       this.checkTag(opts.tag);
@@ -163,6 +174,7 @@ export class Sketch {
   // ---------- paths ----------
 
   moveTo(p: P2): this {
+    p = vec2(p, "moveTo");
     this.endPath();
     this.cursor = [...p] as P2;
     this.start = [...p] as P2;
@@ -181,6 +193,7 @@ export class Sketch {
   }
 
   lineTo(p: P2, opts: SegOpts = {}): this {
+    p = vec2(p, "lineTo");
     const a = this.need();
     if (eq(a, p)) return this;
     this.pushSeg({ kind: "line", a, b: [...p] as P2 }, "line", opts.tag);
@@ -188,22 +201,30 @@ export class Sketch {
     return this;
   }
   line(dx: number, dy: number, opts: SegOpts = {}): this {
+    num(dx, "line: dx");
+    num(dy, "line: dy");
     const a = this.need();
     return this.lineTo([a[0] + dx, a[1] + dy], opts);
   }
   hLine(dx: number, opts: SegOpts = {}): this {
+    num(dx, "hLine distance");
     return this.line(dx, 0, opts);
   }
   vLine(dy: number, opts: SegOpts = {}): this {
+    num(dy, "vLine distance");
     return this.line(0, dy, opts);
   }
   /** Line of `length` at `angle` degrees from local +x. */
   polarLine(length: number, angle: number, opts: SegOpts = {}): this {
+    num(length, "polarLine length");
+    num(angle, "polarLine angle");
     const t = (angle * Math.PI) / 180;
     return this.line(length * Math.cos(t), length * Math.sin(t), opts);
   }
   /** Arc from the cursor through `through` to `end`. */
   threePointArc(through: P2, end: P2, opts: SegOpts = {}): this {
+    through = vec2(through, "threePointArc through point");
+    end = vec2(end, "threePointArc end");
     const a = this.need();
     this.pushSeg({ kind: "arc", a, m: [...through] as P2, b: [...end] as P2 }, "arc", opts.tag);
     this.cursor = [...end] as P2;
@@ -211,6 +232,7 @@ export class Sketch {
   }
   /** Arc from the cursor to `end`, tangent to the previous segment. */
   tangentArcTo(end: P2, opts: SegOpts = {}): this {
+    end = vec2(end, "tangentArcTo end");
     const a = this.need();
     const prev = this.path!.segs[this.path!.segs.length - 1];
     if (!prev || prev.kind === "circle") userError("tangentArcTo needs a previous line or arc to be tangent to");
@@ -258,6 +280,7 @@ export class Sketch {
    */
   splineTo(points: P2[], opts: SegOpts & { startTangent?: P2; endTangent?: P2 } = {}): this {
     if (!Array.isArray(points) || !points.length) userError("splineTo needs at least one point to pass through");
+    points = points2(points, "splineTo");
     const a = this.need();
     const s: Seg = { kind: "spline", pts: [a, ...points.map((p) => [...p] as P2)], closed: false };
     if (opts.startTangent) s.t0 = dir2(opts.startTangent, "splineTo startTangent");
@@ -273,6 +296,7 @@ export class Sketch {
    */
   spline(points: P2[], opts: SegOpts & { closed?: boolean } = {}): this {
     if (!Array.isArray(points)) userError("spline(points) needs an array of [x, y] points");
+    points = points2(points, "spline");
     if (opts.closed === false) {
       if (points.length < 2) userError("an open spline needs at least 2 points");
       return this.moveTo(points[0]).splineTo(points.slice(1), { tag: opts.tag });
@@ -295,6 +319,7 @@ export class Sketch {
    */
   bsplineTo(controlPoints: P2[], opts: SegOpts & { degree?: number; weights?: number[]; knots?: number[]; mults?: number[] } = {}): this {
     if (!Array.isArray(controlPoints) || !controlPoints.length) userError("bsplineTo needs at least one control point");
+    controlPoints = points2(controlPoints, "bsplineTo");
     const a = this.need();
     const poles = [a, ...controlPoints.map((p) => [...p] as P2)];
     const k = knotsOf(poles, opts, false);
@@ -311,6 +336,7 @@ export class Sketch {
    */
   bspline(controlPoints: P2[], opts: SegOpts & { closed?: boolean; degree?: number; weights?: number[]; knots?: number[]; mults?: number[] } = {}): this {
     if (!Array.isArray(controlPoints) || controlPoints.length < 2) userError("bspline needs at least 2 control points");
+    controlPoints = points2(controlPoints, "bspline");
     if (opts.closed === false) {
       const { closed: _, ...rest } = opts;
       return this.moveTo(controlPoints[0]).bsplineTo(controlPoints.slice(1), rest);
@@ -564,8 +590,8 @@ export class Sketch {
     const prof = this.profile();
     let origin: Vec3, dir: Vec3;
     if (!opts.axis) (origin = this.plane.origin), (dir = this.plane.yDir);
-    else if (typeof opts.axis === "string" || Array.isArray(opts.axis)) (origin = [0, 0, 0]), (dir = axisVec(opts.axis as AxisLike));
-    else (origin = opts.axis.origin), (dir = axisVec(opts.axis.direction));
+    else if (typeof opts.axis === "string" || Array.isArray(opts.axis)) (origin = [0, 0, 0]), (dir = axisVec(opts.axis as AxisLike, "revolve axis"));
+    else (origin = vec3(opts.axis.origin, "revolve axis origin")), (dir = axisVec(opts.axis.direction, "revolve axis direction"));
     const rad = (angle * Math.PI) / 180;
     const rec = runOp({
       type: "revolve",
@@ -810,9 +836,6 @@ export function namer(segEdges: { seg: { name?: string }; edge: any }[]) {
   };
 }
 
-function num(v: unknown, what: string) {
-  if (typeof v !== "number" || !Number.isFinite(v)) userError(`${what} must be a finite number (got ${typeof v === "number" ? v : JSON.stringify(v)})`);
-}
 
 export function sketch(p: Plane, opts: { tag?: string } = {}) {
   return new Sketch(p, opts);
