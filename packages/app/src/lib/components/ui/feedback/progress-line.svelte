@@ -27,7 +27,10 @@
 	)}
 >
 	{#if value === undefined}
-		<div class="h-full w-1/2 origin-left animate-[ps-progress_1.4s_var(--ease-in-out)_infinite] rounded-full bg-accent"></div>
+		<div
+			class="h-full w-1/2 origin-left animate-[ps-progress_1.4s_var(--ease-in-out)_infinite] motion-reduce:animate-none rounded-full bg-accent"
+			style:animation-play-state={active ? 'running' : 'paused'}
+		></div>
 	{:else}
 		<div
 			class="h-full origin-left bg-accent transition-transform duration-[var(--duration-base)] ease-out"

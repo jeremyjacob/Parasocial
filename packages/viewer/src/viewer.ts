@@ -239,7 +239,7 @@ export class Viewer {
     this.ro.observe(container);
     this.resize();
     this.applyTheme();
-    this.loop();
+    this.requestRender();
   }
 
   // ---------- events ----------
@@ -1456,7 +1456,9 @@ export class Viewer {
 
   // ---------- frame loop ----------
   requestRender() {
+    if (this.disposed) return;
     this.needsRender = true;
+    if (!this.raf) this.raf = requestAnimationFrame(this.loop);
   }
 
   private syncCameras() {
@@ -1495,14 +1497,15 @@ export class Viewer {
   }
 
   private loop = () => {
+    this.raf = 0;
     if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
     const now = performance.now();
     const dt = now - this.lastTick;
     this.lastTick = now;
     // only a camera animation moves the camera; fades just redraw
     if (this.controls.tick(now)) this.syncCameras();
-    if (this.tickFades(now)) this.needsRender = true;
+    // Camera changes and crossfades request their next frame; idle viewers schedule nothing.
+    if (this.tickFades(now)) this.requestRender();
     if (!this.needsRender) return;
     // motion that can't hold ~45 fps drops to 1× pixel ratio until the camera stops
     if (this.moving && !this.lowRes && this.baseDpr > 1) {
