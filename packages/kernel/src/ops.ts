@@ -2,8 +2,8 @@
 // (for history), which the caller must `delete()` once history is collected.
 import { oc, occtMessage, noteKernelFault } from "./oc";
 import { tmp, scoped } from "./memory";
-import { downcast, explore, type Shape } from "./topo";
-import type { Vec3 } from "./geom";
+import { downcast, explore, listToArray, type Shape } from "./topo";
+import { isValid, type Vec3 } from "./geom";
 
 export class KernelError extends Error {
   constructor(
@@ -581,20 +581,217 @@ export function shell(solid: Shape, openFaces: Shape[], thickness: number): Buil
   }));
 }
 
-/** Thicken a face/shell into a solid. */
-export function thicken(shape: Shape, thickness: number): Built {
-  const O = oc();
+/**
+ * Thicken faces into a solid `thickness` thick along their normals (negative: against them).
+ *
+ * The selection is split into edge-connected groups, each thickened on its own:
+ * - one face: the simple offset (BRepOffsetAPI_MakeThickSolid::MakeThickSolidBySimple), whose
+ *   side walls run along the face normals.
+ * - several faces: the simple offset only works on smooth sheets (at a sharp edge it pushes the
+ *   vertices along averaged normals and builds a twisted, wrong solid), so when the faces belong to
+ *   `parent` the group is thickened as that solid's skin: MakeThickSolidByJoin on the solid with
+ *   every other face removed, offsets extended and intersected at sharp edges (an L or an open box
+ *   comes out with square corners), side walls lying on the removed neighbours.
+ * Each strategy falls back to the other. Several groups are fused into one result.
+ */
+export function thicken(faces: Shape | Shape[], thickness: number, parent?: Shape): Built {
+  const all = Array.isArray(faces) ? faces : [faces];
   return guard("thicken", () => scoped(() => {
+    if (!all.length) throw new KernelError("thicken needs at least one face");
+    const built: Built[] = [];
+    try {
+      for (const g of faceGroups(all)) built.push(thickenGroup(g, thickness, parent));
+      if (built.length === 1) return built[0];
+      const fused = booleanMany("union", built[0].shape, built.slice(1).map((b) => b.shape));
+      return { shape: fused.shape, maker: new ChainedHistory(built.map((b) => b.maker), fused.maker) };
+    } catch (e) {
+      for (const b of built) b.maker?.delete?.();
+      throw e;
+    }
+  }));
+}
+
+/** Edge-connected groups of faces. */
+function faceGroups(faces: Shape[]): Shape[][] {
+  const edges = faces.map((f) => explore(f, "edge"));
+  const up = faces.map((_, i) => i);
+  const root = (i: number): number => (up[i] === i ? i : (up[i] = root(up[i])));
+  for (let i = 0; i < faces.length; i++)
+    for (let j = i + 1; j < faces.length; j++)
+      if (root(i) !== root(j) && edges[i].items.some((e) => edges[j].indexOf(e) >= 0)) up[root(i)] = root(j);
+  for (const e of edges) e.delete();
+  const out = new Map<number, Shape[]>();
+  faces.forEach((f, i) => out.set(root(i), [...(out.get(root(i)) ?? []), f]));
+  return [...out.values()];
+}
+
+/**
+ * Offsetting a cylinder or sphere toward its centre by more than its radius folds the surface
+ * through itself; OCCT doesn't always notice (the join algorithm returns a valid-looking, wrong
+ * solid), so refuse it up front.
+ */
+function checkCurvature(faces: Shape[], thickness: number) {
+  const O = oc();
+  for (const f of faces) scoped(() => {
+    const ad = tmp(new O.BRepAdaptor_Surface(f, true));
+    const T = O.GeomAbs_SurfaceType;
+    const type = ad.GetType();
+    if (type !== T.GeomAbs_Cylinder && type !== T.GeomAbs_Sphere) return;
+    const b = O.BRepTools.UVBounds(f, 0, 0, 0, 0);
+    const gf = tmp(new O.BRepGProp_Face(f, false));
+    const p = tmp(new O.gp_Pnt(0, 0, 0));
+    const n = tmp(new O.gp_Vec(0, 0, 0));
+    gf.Normal((b.UMin + b.UMax) / 2, (b.VMin + b.VMax) / 2, p, n);
+    let radius: number;
+    let r: Vec3;
+    if (type === T.GeomAbs_Cylinder) {
+      const c = tmp(ad.Cylinder());
+      const ax = tmp(c.Axis());
+      const o = tmp(ax.Location());
+      const a = tmp(ax.Direction());
+      const d: Vec3 = [p.X() - o.X(), p.Y() - o.Y(), p.Z() - o.Z()];
+      const along = d[0] * a.X() + d[1] * a.Y() + d[2] * a.Z();
+      r = [d[0] - along * a.X(), d[1] - along * a.Y(), d[2] - along * a.Z()];
+      radius = c.Radius();
+    } else {
+      const s = tmp(ad.Sphere());
+      const o = tmp(s.Location());
+      r = [p.X() - o.X(), p.Y() - o.Y(), p.Z() - o.Z()];
+      radius = s.Radius();
+    }
+    const towardCentre = (r[0] * n.X() + r[1] * n.Y() + r[2] * n.Z()) * thickness < 0;
+    if (towardCentre && Math.abs(thickness) > radius * (1 + 1e-9))
+      throw new KernelError(`thicken failed: thickness ${Math.abs(thickness)} is more than the ${radius} mm radius of a ${type === T.GeomAbs_Cylinder ? "cylindrical" : "spherical"} face it thickens toward the centre of`);
+  });
+}
+
+function thickenGroup(faces: Shape[], thickness: number, parent?: Shape): Built {
+  const O = oc();
+  checkCurvature(faces, thickness);
+  const host = parent ? hostSolid(faces, parent) : null;
+  const simple = (): Built | null => {
+    let input = faces[0];
+    if (faces.length > 1) {
+      const b = tmp(new O.TopoDS_Builder());
+      const sh = tmp(new O.TopoDS_Shell());
+      b.MakeShell(sh);
+      for (const f of faces) b.Add(sh, f);
+      input = sh;
+    }
     const mk = new O.BRepOffsetAPI_MakeThickSolid();
-    mk.MakeThickSolidBySimple(shape, thickness);
+    return finishThick(mk, () => mk.MakeThickSolidBySimple(input, thickness));
+  };
+  const join = (): Built | null => {
+    if (!host) return null;
+    const removed = tmp(new O.NCollection_List_TopoDS_Shape());
+    const hostFaces = explore(host, "face");
+    for (const f of hostFaces.items) if (!faces.some((g) => g.IsSame(f))) removed.Append(f);
+    hostFaces.delete();
+    const mk = new O.BRepOffsetAPI_MakeThickSolid();
+    return finishThick(mk, () =>
+      mk.MakeThickSolidByJoin(host, removed, thickness, 1e-3, O.BRepOffset_Mode.BRepOffset_Skin, false, false, O.GeomAbs_JoinType.GeomAbs_Intersection, false, progress()),
+    );
+  };
+  let lastError: unknown;
+  for (const attempt of faces.length === 1 ? [simple, join] : [join, simple]) {
+    try {
+      const r = attempt();
+      if (r) return r;
+    } catch (e) {
+      if (noteKernelFault(e)) throw e;
+      lastError = e;
+    }
+  }
+  const why = lastError && !(lastError instanceof KernelError) ? ` (${occtMessage(lastError)})` : "";
+  throw new KernelError(`thicken failed${why}: the thickness may be too large for the faces' curvature or features`);
+}
+
+/** The solid of `parent` that contains every face (null if none does). */
+function hostSolid(faces: Shape[], parent: Shape): Shape | null {
+  const solids = explore(parent, "solid");
+  let host: Shape | null = null;
+  for (const s of solids.items) {
+    const fs = explore(s, "face");
+    const ok = faces.every((f) => fs.indexOf(f) >= 0);
+    fs.delete();
+    if (ok) {
+      host = s;
+      break;
+    }
+  }
+  for (const s of solids.items) if (s !== host) s.delete();
+  if (host) tmp(host);
+  return host;
+}
+
+/** Run a thick-solid build: a non-empty solid (inside-out normalized), else throws. */
+function finishThick(mk: any, run: () => void): Built {
+  const O = oc();
+  try {
+    run();
     if (!mk.IsDone()) throw new KernelError("thicken failed");
     let out = downcast(mk.Shape());
-    // depending on the face orientation the solid can come out inside-out: normalize
+    const solids = explore(out, "solid");
+    const n = solids.items.length;
+    solids.delete();
     const p = tmp(new O.GProp_GProps());
     O.BRepGProp.VolumeProperties(out, p, false, false, false);
-    if (p.Mass() < 0) out = downcast(out.Reversed());
+    const v = p.Mass();
+    if (!n || !(Math.abs(v) > 1e-9)) throw new KernelError("thicken produced no solid");
+    // an offset past a face's curvature radius folds over itself: OCCT returns it anyway
+    if (!isValid(out)) throw new KernelError("thicken produced a self-intersecting solid");
+    // depending on the face orientation the solid can come out inside-out: normalize
+    if (v < 0) out = downcast(out.Reversed());
     return { shape: out, maker: mk };
-  }));
+  } catch (e) {
+    mk.delete();
+    throw e;
+  }
+}
+
+/**
+ * History through several thickened groups and the fuse joining them: an input entity's images
+ * in a group's result carried through the fuse, plus whatever the fuse itself reports.
+ */
+class ChainedHistory {
+  constructor(
+    private steps: any[],
+    private fuse: any,
+  ) {}
+  private through(shapes: Shape[], out: Shape[]) {
+    for (const x of shapes) {
+      const mods = safe(() => listToArray(this.fuse.Modified(x)), [] as Shape[]);
+      if (mods.length) {
+        out.push(...mods);
+        x.delete();
+      } else if (!safe(() => this.fuse.IsDeleted(x), false)) out.push(x);
+      else x.delete();
+    }
+  }
+  private collect(q: "Modified" | "Generated", s: Shape) {
+    const out: Shape[] = [];
+    for (const m of this.steps) this.through(safe(() => listToArray(m[q](s)), [] as Shape[]), out);
+    out.push(...safe(() => listToArray(this.fuse[q](s)), [] as Shape[]));
+    const l = new (oc().NCollection_List_TopoDS_Shape)();
+    for (const x of out) {
+      l.Append(x);
+      x.delete();
+    }
+    return l;
+  }
+  Modified(s: Shape) {
+    return this.collect("Modified", s);
+  }
+  Generated(s: Shape) {
+    return this.collect("Generated", s);
+  }
+  IsDeleted(_s: Shape) {
+    return false;
+  }
+  delete() {
+    for (const m of this.steps) m?.delete?.();
+    this.fuse?.delete?.();
+  }
 }
 
 /** Taper faces by `angleRad` about a neutral plane, pulling along `dir`. */

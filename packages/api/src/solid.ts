@@ -1,5 +1,5 @@
 // Solids: finishing, booleans, transforms, patterns, inspection (PLAN §5 v1 surface).
-import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
+import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, identityHistory, collectHistory, faceInfo, type EntityHistory, type Origin, type Topology, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
 import { entityShape, entityName, faceOf, edgeOf, vertexOf, type OpRecord } from "@parasocial/naming";
 import { runOp, userError, warn } from "./op";
 import { EntitySet, type OpRef } from "./selection";
@@ -623,8 +623,16 @@ function dirRole(i: ReturnType<typeof faceInfo>): string {
 export type { KernelError };
 
 /**
- * Thicken faces (a sheet) into a solid of `thickness` mm along their normals.
- * @example thicken(boss.faces("%cylinder"), 1) // a 1 mm skin around a cylinder
+ * Thicken faces into a new solid `thickness` mm thick along their normals; a negative thickness
+ * goes against the normals (into the part the faces came from). Faces sharing a sharp edge (the
+ * top and a side of a box, a box's open shell) join with square corners. The result is a separate
+ * solid: `union` it with the part to add the skin.
+ *
+ * Faces: the selected faces keep their names; their offsets are `<op> · offset · (<face>)` and the
+ * side walls `<op> · side · (<edge>)`, so `t.faces("offset")` / `t.faces("side")` select them.
+ * @example thicken(plate.faces(">Z"), 2) // a 2 mm slab on top of the plate
+ * @example thicken(plate.faces(">Z or >X"), -1) // a 1 mm L-shaped skin, inward
+ * @example thicken(boss.faces("%cylinder"), 1) // a 1 mm tube around a cylinder
  */
 export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}): Solid {
   if (!(faces instanceof EntitySet) || faces.kind !== "face" || !faces.length) userError("thicken(faces, t) needs a face selection, e.g. thicken(part.faces(\">Z\"), 2)");
@@ -637,12 +645,64 @@ export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}):
     tag: opts.tag,
     params: { faces: idx, thickness },
     inputs: [input],
+    highlight: () => ({ kind: "face", names: idx.map((i) => entityName(input, "face", i).str) }),
+    explain: (e) => (/the thickness may be too large/.test(e.message) ? `${e.message.replace("the thickness", `thickness ${Math.abs(thickness)}`)}; try a smaller thickness, the other direction or fewer faces` : undefined),
     build: () => {
-      const shape = idx.length === 1 ? entityShape(input, "face", idx[0]) : compound(idx.map((i) => entityShape(input, "face", i)));
-      return { built: kThicken(shape, thickness), historyOptions: { generatedFrom: ["edge"] } };
+      const built = kThicken(idx.map((i) => entityShape(input, "face", i)), thickness, input.shape);
+      let roles: (string | undefined)[] = [];
+      return {
+        built,
+        history: (topo) => {
+          const h = thickenHistory(collectHistory(built.maker, [input.topo], topo, { generatedFrom: ["face"] }), input, idx, topo);
+          roles = h.roles;
+          return h.history;
+        },
+        roles: () => ({ face: roles }),
+      };
     },
   });
   return new Solid(rec);
+}
+
+/**
+ * Element map of a thicken: the selected faces stay themselves; each offset face is generated
+ * from the face it offsets (role `offset`); every other face is a side wall generated from the
+ * selection's boundary edge it stands on (role `side`). The offset makers report walls as
+ * modified from the parent's unselected neighbours (whose names would then wrongly carry over)
+ * or not at all, so walls are re-derived from the output's own adjacency.
+ */
+function thickenHistory(raw: EntityHistory, input: OpRecord, selected: number[], topo: Topology) {
+  const sel = new Set(selected);
+  const history: EntityHistory = { ...raw, face: raw.face.map((o) => o.slice()) };
+  const roles: (string | undefined)[] = [];
+  const isBase = (o: Origin[]) => o.some((x) => x.kind === "face" && sel.has(x.index) && x.rel !== "generated");
+  const base = new Set<number>();
+  topo.faces.items.forEach((_, i) => isBase(history.face[i]) && base.add(i));
+  // input edge index of every output edge that bounds a selected face
+  const inputEdge = new Map<number, number>();
+  for (const f of base) for (const e of topo.faceEdges[f]) {
+    const j = input.topo.edges.indexOf(topo.edges.items[e]);
+    if (j >= 0) inputEdge.set(e, j);
+  }
+  for (let i = 0; i < topo.faces.items.length; i++) {
+    if (base.has(i)) continue;
+    const gen = history.face[i].find((x) => x.kind === "face" && x.rel === "generated" && sel.has(x.index));
+    if (gen) {
+      history.face[i] = [gen];
+      roles[i] = "offset";
+      continue;
+    }
+    const edges = topo.faceEdges[i].map((e) => inputEdge.get(e)).filter((j): j is number => j !== undefined);
+    if (edges.length) {
+      history.face[i] = [{ slot: 0, kind: "edge", index: Math.min(...edges), rel: "generated" }];
+      roles[i] = "side";
+      continue;
+    }
+    // no shared boundary: with one selected face this is its offset, else an unnamed wall
+    history.face[i] = selected.length === 1 ? [{ slot: 0, kind: "face", index: selected[0], rel: "generated" }] : [];
+    roles[i] = selected.length === 1 ? "offset" : "side";
+  }
+  return { history, roles };
 }
 
 /** Frames in a stable order: by origin x, then y, then z (to a hundredth of a mm). */

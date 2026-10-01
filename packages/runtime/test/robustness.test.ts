@@ -105,3 +105,28 @@ test("kernel faults are told apart from ordinary OCCT and script errors", () => 
   expect(isKernelFault(new RangeError("Maximum call stack size exceeded"))).toBe(false);
   expect(isKernelFault(42)).toBe(false);
 });
+
+test("thicken of a planar face builds, and a failed thicken is a script error at its line", () => {
+  // the reported case: thicken(box.faces(">Z")) surfaced as "[object WebAssembly.Exception]"
+  const e = new Engine();
+  const src = (t: number) => `import { part, box, cylinder, thicken } from "parasocial";
+
+export default part("Skin", () => {
+  const plate = box(40, 30, 5);
+  const skin = thicken(plate.faces(">Z"), 2);
+  return skin.union(thicken(cylinder(5, 10, { at: [60, 0, 0] }).faces("%cylinder"), ${t}));
+});
+`;
+  e.setDocument({ scripts: { "studios/skin.ts": src(-1) } });
+  const r = e.regenerate("skin");
+  expect(r.problems).toEqual([]);
+  expect(r.ok).toBe(true);
+
+  e.setScript("studios/skin.ts", src(-6));
+  const bad = e.regenerate("skin");
+  expect(bad.ok).toBe(false);
+  expect(bad.problems[0]).toMatchObject({ severity: "error", source: { file: "studios/skin.ts", line: 6 } });
+  expect(bad.problems[0].message).toStartWith("thicken failed: thickness 6 is more than the 5 mm radius");
+  expect(bad.problems[0].message).toEndWith("(skin.ts:6)");
+  expect(kernelFault()).toBeNull();
+});

@@ -1,4 +1,5 @@
 // Raw OCCT history -> per-output-entity origins (the input to element maps, PLAN §4).
+import { noteKernelFault } from "./oc";
 import { listToArray, type EntityKind, type Topology, type ShapeIndex } from "./topo";
 
 export type Relation = "same" | "modified" | "generated";
@@ -34,6 +35,20 @@ export type CollectOptions = {
   noModified?: boolean;
 };
 
+/**
+ * Run one history query. Some makers throw for shapes they never saw instead of answering
+ * "nothing" (BRepOffset_MakeSimpleOffset raises Standard_NoSuchObject from `Generated` for every
+ * entity of the parent solid outside the thickened faces); such an entity simply has no history.
+ */
+function query<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (noteKernelFault(e)) throw e;
+    return fallback;
+  }
+}
+
 /** Walk Modified/Generated/IsDeleted for every input entity and index the results by output entity. */
 export function collectHistory(maker: HistoryMaker | null, inputs: Topology[], output: Topology, opts: CollectOptions = {}): EntityHistory {
   const hist: EntityHistory = {
@@ -61,14 +76,14 @@ export function collectHistory(maker: HistoryMaker | null, inputs: Topology[], o
         const same = idxOf(output, kind).indexOf(s);
         if (same >= 0) {
           hist[kind][same].push({ slot, kind, index, rel: "same" });
-        } else if (maker && !opts.noModified && !maker.IsDeleted(s)) {
-          for (const m of listToArray(maker.Modified(s))) {
+        } else if (maker && !opts.noModified && !query(() => maker.IsDeleted(s), true)) {
+          for (const m of query(() => listToArray(maker.Modified(s)), [] as any[])) {
             push(m, { slot, kind, index, rel: "modified" });
             m.delete();
           }
         }
         if (maker && genKinds.includes(kind)) {
-          for (const g of listToArray(maker.Generated(s))) {
+          for (const g of query(() => listToArray(maker.Generated(s)), [] as any[])) {
             push(g, { slot, kind, index, rel: "generated" });
             g.delete();
           }
