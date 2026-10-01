@@ -111,7 +111,7 @@ test("document tools discover, select and manage documents with shared permissio
     const created = await call("create_document", { name: " New design " });
     expect(created.name).toBe("New design");
     expect(session.defaultDocument).toBe(created.id);
-    const archive = await call("export_document", { document: owned });
+    const archive = await call("export_document", { document: owned, base64: true });
     const imported = await call("import_document", { zip: archive.base64, name: "Imported" });
     expect(imported.url).toBe(`http://localhost/d/${imported.id}`);
     expect(session.defaultDocument).toBe(created.id);

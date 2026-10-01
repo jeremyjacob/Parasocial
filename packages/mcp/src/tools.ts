@@ -11,6 +11,7 @@ import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocS
 import { NoteCursor, type NoteEvents } from "./note-events";
 import { documentContext } from "./document-context";
 import { trace } from "./trace";
+import { recordTouch, othersOn, changedUnderYou } from "./awareness";
 
 export type Session = {
   id: string;
@@ -225,8 +226,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return out;
   }
 
+  /** This session's latest version (never someone else's that landed in between). */
   async function latestVersion(documentID: string) {
-    const [v] = await db.sql`SELECT id, number, message FROM versions WHERE document_id = ${documentID} ORDER BY number DESC LIMIT 1`;
+    const [v] = await db.sql`SELECT id, number, message FROM versions WHERE document_id = ${documentID} AND author_agent_id = ${s.id} ORDER BY number DESC LIMIT 1`;
     return v ? { id: v.id as string, number: Number(v.number), message: v.message as string } : null;
   }
 
@@ -236,6 +238,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     await db.sql`INSERT INTO blobs (hash, size, content_type, uploaded_by) VALUES (${hash}, ${bytes.length}, ${contentType}, ${s.userID}) ON CONFLICT (hash) DO NOTHING`;
     return signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs", ttlSeconds: 3600 });
   }
+
+  /** A signed blob URL on the app origin. */
+  const downloadURL = (url: string) => `${deps.config.appOrigin}${url.startsWith("/") ? "" : "/"}${url.replace(/^https?:\/\/[^/]+/, "").replace(/^\//, "")}`;
 
   // every call in full, for debugging (off unless AGENT_TRACE_DIR is set)
   const traceCall = trace(`tools-${s.id}`);
@@ -454,58 +459,141 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   // ---------------- scripts ----------------
   tool("list_scripts", "Scripts with their content and current version.", { document }, async ({ document: dd }) => {
-    const d = await loadDoc(db, s.userID, docID(dd));
-    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, content: x.content })) });
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
+    for (const x of d.scripts) recordTouch(s, documentID, x.path, "read", x.version);
+    const others = await othersOn(db, s, documentID, d.scripts.map((x) => x.path));
+    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, content: x.content, ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
   }, { readOnlyHint: true });
 
-  tool("read_script", "One script's content and version (pass the version back as baseVersion when writing).", { document, path: z.string() }, async ({ document: dd, path }) => {
-    const d = await loadDoc(db, s.userID, docID(dd));
+  tool("read_script", "One script's content and version (pass the version back as baseVersion when writing). Lists other sessions recently on this file.", { document, path: z.string() }, async ({ document: dd, path }) => {
+    const documentID = docID(dd);
+    const d = await loadDoc(db, s.userID, documentID);
     const sc = d.scripts.find((x) => x.path === path);
     if (!sc) throw new ToolError(`No script at ${path}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
-    return text({ path, version: sc.version, content: sc.content });
+    recordTouch(s, documentID, path, "read", sc.version);
+    const others = (await othersOn(db, s, documentID, [path]))[path];
+    return text({ path, version: sc.version, content: sc.content, ...(others ? { otherSessions: others } : {}) });
   }, { readOnlyHint: true });
 
-  async function afterWrite(documentID: string, label: string) {
-    const v = await latestVersion(documentID);
-    if (v) s.lastVersion.set(documentID, v.id);
-    const d = await loadDoc(db, s.userID, documentID);
-    const results = await regen(d);
-    await activity(documentID, `${label}${v ? ` (v${v.number})` : ""}${results.some((r) => r && !r.ok) ? " — regeneration failed" : ""}`);
-    await setStatus((await db.sql`SELECT 1 FROM notes WHERE claimed_by = ${s.id} AND removed_at IS NULL`).length ? "working" : "idle", documentID);
-    return { version: v, regeneration: results };
+  /** "error studios/a.ts:12 message" (the location moved to the front). */
+  const problemLine = (p: any) => {
+    const at = p.source ? `${p.source.file}:${p.source.line}` : "";
+    const message = at ? String(p.message).replace(/\s*\([^()]*:\d+(?::\d+)?\)\s*$/, "") : p.message;
+    return `${p.severity}${at ? ` ${at}` : ""} ${message}`;
+  };
+
+  /**
+   * After a committed write: our version and new script versions, a compact regeneration result
+   * per part (full summaries with `verbose`), and who else is on these files. Nothing here may
+   * fail the call, since the write already landed: problems come back in the result.
+   */
+  async function afterWrite(documentID: string, label: string, w: { versionID: string; paths: string[]; verbose?: boolean | undefined }) {
+    const [v] = await db.sql`SELECT id, number, message FROM versions WHERE id = ${w.versionID}`;
+    // our own version, by id: the document's latest may already be someone else's
+    const version = v ? { id: v.id as string, number: Number(v.number), message: v.message as string } : null;
+    if (version) s.lastVersion.set(documentID, version.id);
+    const rows = await db.sql`SELECT path, version FROM scripts WHERE document_id = ${documentID} AND path = ANY(${w.paths})`;
+    const scripts: Record<string, number | null> = {};
+    for (const p of w.paths) {
+      const r = rows.find((x: any) => x.path === p);
+      scripts[p] = r ? Number(r.version) : null; // null: deleted
+      if (r) recordTouch(s, documentID, p, version ? "write" : "read", Number(r.version));
+    }
+    const out: Record<string, unknown> = { ok: true, version, ...(version ? {} : { unchanged: "already up to date (nothing new was written)" }), scripts };
+    let failed = false;
+    try {
+      const d = await loadDoc(db, s.userID, documentID);
+      const parts = await partsOf(d);
+      const raw = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
+      failed = raw.some((r: any) => r && !r.ok);
+      out.parts = raw.map((r: any) => ({ part: r.part, ok: r.ok, ...(r.partial && !r.empty ? { showingLastGoodGeometry: true } : {}), ...(r.problems.length ? { problems: r.problems.map(problemLine) } : {}) }));
+      if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r));
+    } catch (e) {
+      failed = true;
+      out.parts = [];
+      out.problems = [`error regeneration failed after the write was saved: ${(e as Error).message}. The write is committed (see version); call list_problems or retry the check, not the write.`];
+    }
+    try {
+      const others = await othersOn(db, s, documentID, w.paths);
+      if (Object.keys(others).length) out.otherSessions = others;
+      const changed = await changedUnderYou(db, s, documentID, w.paths);
+      if (changed.length) out.changedByOthers = changed;
+      await activity(documentID, `${label}${version ? ` (v${version.number})` : ""}${failed ? " — regeneration failed" : ""}`);
+      await setStatus((await db.sql`SELECT 1 FROM notes WHERE claimed_by = ${s.id} AND removed_at IS NULL`).length ? "working" : "idle", documentID);
+    } catch {}
+    return out;
   }
+
+  const writeId = z.string().min(8).max(200).optional().describe("idempotency key: reuse the same value when retrying this exact write");
+  const verbose = z.boolean().optional().describe("include the full regeneration result per part (bounding boxes, faces, timings); default is ok/problems only");
 
   tool(
     "write_script",
-    "Create or replace a script (studios/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version and returns the regeneration result.",
-    { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional().describe("note id this change answers") },
-    async ({ document: dd, path, content, baseVersion, message, note }) => {
+    "Create or replace a script (studios/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version, regenerates, and returns per-part ok/problems, the new script version and files others changed under you. Safe to retry.",
+    { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional().describe("note id this change answers"), writeId, verbose },
+    async ({ document: dd, path, content, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID, "editor");
       await setStatus("writing", documentID, { path });
-      await mutate(mutators.script.write({ documentID, path, content, baseVersion, message, noteID: note, versionID: newID() } as any));
-      return text(await afterWrite(documentID, `write ${path}`));
+      const versionID = writeId ?? newID();
+      await mutate(mutators.script.write({ documentID, path, content, baseVersion, message, noteID: note, versionID } as any));
+      return text(await afterWrite(documentID, `write ${path}`, { versionID, paths: [path], verbose }));
     },
   );
 
   tool(
     "edit_script",
-    "Search/replace edits on a script (each search must match exactly once unless all: true). Pass baseVersion. Creates a version and returns the regeneration result.",
-    { document, path: z.string(), edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1), baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional() },
-    async ({ document: dd, path, edits, baseVersion, message, note }) => {
+    "Search/replace edits on a script (each search must match exactly once unless all: true). Pass baseVersion. Creates a version and returns a compact regeneration result like write_script. Safe to retry.",
+    { document, path: z.string(), edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1), baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
+    async ({ document: dd, path, edits, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID, "editor");
       await setStatus("writing", documentID, { path });
-      await mutate(mutators.script.edit({ documentID, path, edits, baseVersion, message, noteID: note, versionID: newID() } as any));
-      return text(await afterWrite(documentID, `edit ${path}`));
+      const versionID = writeId ?? newID();
+      await mutate(mutators.script.edit({ documentID, path, edits, baseVersion, message, noteID: note, versionID } as any));
+      return text(await afterWrite(documentID, `edit ${path}`, { versionID, paths: [path], verbose }));
     },
   );
 
-  tool("delete_script", "Delete a script. Pass baseVersion.", { document, path: z.string(), baseVersion: z.number().int() }, async ({ document: dd, path, baseVersion }) => {
+  tool(
+    "write_scripts",
+    "Change several scripts atomically: one transaction, one version, one regeneration, so a lib change and the studios that use it land together. Each file gives content, edits or delete: true, plus its own baseVersion (null to create). Any stale baseVersion rejects the whole write and nothing changes.",
+    {
+      document,
+      files: z
+        .array(
+          z.object({
+            path: z.string(),
+            content: z.string().optional(),
+            edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1).optional(),
+            delete: z.boolean().optional(),
+            baseVersion: z.number().int().nullable(),
+          }),
+        )
+        .min(1)
+        .max(50),
+      message: z.string().optional(),
+      note: z.string().optional().describe("note id this change answers"),
+      writeId,
+      verbose,
+    },
+    async ({ document: dd, files, message, note, writeId, verbose }) => {
+      const documentID = docID(dd);
+      await requireMember(db, s.userID, documentID, "editor");
+      await setStatus("writing", documentID, { path: files[0]!.path });
+      const versionID = writeId ?? newID();
+      await mutate(mutators.script.writeMany({ documentID, files, message, noteID: note, versionID } as any));
+      return text(await afterWrite(documentID, `write ${files.map((f) => f.path).join(", ")}`, { versionID, paths: files.map((f) => f.path), verbose }));
+    },
+  );
+
+  tool("delete_script", "Delete a script. Pass baseVersion.", { document, path: z.string(), baseVersion: z.number().int(), writeId, verbose }, async ({ document: dd, path, baseVersion, writeId, verbose }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID, "editor");
-    await mutate(mutators.script.delete({ documentID, path, baseVersion, versionID: newID() } as any));
-    return text(await afterWrite(documentID, `delete ${path}`));
+    const versionID = writeId ?? newID();
+    await mutate(mutators.script.delete({ documentID, path, baseVersion, versionID } as any));
+    return text(await afterWrite(documentID, `delete ${path}`, { versionID, paths: [path], verbose }));
   });
 
   // ---------------- geometry ----------------
@@ -767,11 +855,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ version: v.version.number, message: v.version.message, scripts: v.scripts });
   }, { readOnlyHint: true });
 
-  tool("restore_version", "Copy a version to the tip as a new version (nothing is overwritten).", { document, id: z.string() }, async ({ document: dd, id }) => {
+  tool("restore_version", "Copy a version to the tip as a new version (nothing is overwritten).", { document, id: z.string(), verbose }, async ({ document: dd, id, verbose }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID, "editor");
-    await mutate(mutators.version.restore({ documentID, versionID: id, newVersionID: newID() } as any));
-    return text(await afterWrite(documentID, `restore version`));
+    const versionID = newID();
+    await mutate(mutators.version.restore({ documentID, versionID: id, newVersionID: versionID } as any));
+    const paths = (await db.sql`SELECT path FROM scripts WHERE document_id = ${documentID} ORDER BY path`).map((r: any) => r.path as string);
+    return text(await afterWrite(documentID, `restore version`, { versionID, paths, verbose }));
   });
 
   // ---------------- export / import ----------------
@@ -783,14 +873,17 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const bytes = Buffer.from((f as any).base64, "base64");
     const type = ({ step: "model/step", stl: "model/stl", "3mf": "model/3mf" } as Record<string, string>)[format as string];
     const url = await storeFile(documentID, new Uint8Array(bytes), type);
-    return text({ url: `${deps.config.appOrigin}${url.startsWith("/") ? "" : "/"}${url.replace(/^https?:\/\/[^/]+/, "").replace(/^\//, "")}`, bytes: bytes.length, format });
+    return text({ url: downloadURL(url), bytes: bytes.length, format });
   }, { readOnlyHint: true });
 
-  tool("export_document", "The whole document as the plain-file zip format (base64).", { document, notes: z.boolean().optional() }, async ({ document: dd, notes }) => {
+  tool("export_document", "The whole document as the plain-file zip format; returns a signed download URL (valid 1 hour). Pass base64: true to get the zip inline instead.", { document, notes: z.boolean().optional(), base64: z.boolean().optional().describe("return the zip inline as base64 instead of a URL") }, async ({ document: dd, notes, base64 }) => {
     const documentID = docID(dd);
     const payload = await exportDocument(db, documentID, s.userID, { notes: notes ?? true });
     const zip = buildDocumentZip(payload);
-    return text({ filename: `${payload.manifest.name}.zip`, base64: Buffer.from(zip).toString("base64") });
+    const filename = `${payload.manifest.name}.zip`;
+    if (base64) return text({ filename, base64: Buffer.from(zip).toString("base64") });
+    const url = await storeFile(documentID, zip, "application/zip");
+    return text({ filename, url: downloadURL(url), bytes: zip.length });
   }, { readOnlyHint: true });
 
   tool("import_document", "Create a document from a plain-file zip (base64).", { zip: z.string().describe("base64 zip"), name: z.string().optional() }, async ({ zip, name }) => {
