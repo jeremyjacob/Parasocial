@@ -8,7 +8,8 @@ const engine = Bun.spawn(["bun", join(repo, "packages/runtime/src/server/serve.t
   stdout: "inherit",
   stderr: "inherit",
 });
-const app = Bun.spawn(["bun", "build/index.js"], { cwd: join(repo, "packages/app"), stdout: "inherit", stderr: "inherit" });
+// svelte-adapter-bun's 10 s idle timeout drops quiet streams (slow MCP tool calls); 255 is Bun's max
+const app = Bun.spawn(["bun", "build/index.js"], { cwd: join(repo, "packages/app"), env: { ...process.env, IDLE_TIMEOUT: process.env.IDLE_TIMEOUT ?? "120" }, stdout: "inherit", stderr: "inherit" });
 const stop = () => (engine.kill(), app.kill());
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);

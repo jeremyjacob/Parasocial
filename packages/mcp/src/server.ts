@@ -81,6 +81,8 @@ export function createMcp(deps: McpDeps) {
     const server = await buildServer(session);
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
+      // under Bun's idle timeout (svelte-adapter-bun: 10 s), or a slow tool call's stream is cut
+      keepAliveMs: 5_000,
       onsessioninitialized: async (id) => {
         live.set(id, { transport, server, session, userID: auth.userID });
         // the agent shows up in the workspace (stacked avatars)
