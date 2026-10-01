@@ -6,7 +6,7 @@ import type { Problem } from "./types";
 import type { EntityKind } from "@parasocial/kernel";
 
 /** Bump when kernel/naming behavior changes so cached records can't leak across builds. */
-export const ENGINE_VERSION = "ps-engine-1";
+export const ENGINE_VERSION = "ps-engine-2";
 
 export class OpError extends Error {
   constructor(

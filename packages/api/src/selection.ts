@@ -1,7 +1,7 @@
 // Entity sets: selectors, filters (.planar(), .parallelTo(), .largest()) and set operations.
 // A set belongs to one op result; used on a downstream solid it is re-resolved by stable name.
 import type { EntityKind, Vec3 } from "@parasocial/kernel";
-import { entityName, nameIndex, select, isSeamEdge, faceOf, edgeOf, vertexOf, centerOf, directionOf, dot, dist, SelectorError, type OpRecord } from "@parasocial/naming";
+import { entityName, nameIndex, select, isSeamEdge, faceOf, edgeOf, vertexOf, centerOf, directionOf, dot, dist, SelectorError, createdBy, resolveOps, lineage, type OpRecord } from "@parasocial/naming";
 import { axisVec, type AxisLike } from "./plane";
 import { userError, warn } from "./op";
 
@@ -39,7 +39,31 @@ export function entityView(r: OpRecord, kind: EntityKind, i: number): Entity {
   return Object.assign(base, { center: p, point: p });
 }
 
-type SortKey = "area" | "length" | "radius" | "x" | "y" | "z" | ((e: Entity) => number);
+/** An operation to query history by: its tag (`"finUnion"`), its id (`"winch/finUnion"`), or the solid it returned. */
+export type OpRef = string | { readonly id: string };
+
+/** @internal Op ids named by `op` among the ops feeding `r`; a user error when one names nothing. */
+export function opIds(r: OpRecord, op: OpRef | OpRef[]): Set<string> {
+  const ids = new Set<string>();
+  const lin = lineage(r);
+  for (const o of Array.isArray(op) ? op : [op]) {
+    if (typeof o === "string") {
+      if (o.startsWith("@")) userError(`createdBy takes the tag without "@" (got "${o}"); "@${o.slice(1)}" is the selector-string form`);
+      try {
+        for (const id of resolveOps(r, o)) ids.add(id);
+      } catch (e) {
+        if (e instanceof SelectorError) userError(`createdBy: ${e.message}`);
+        throw e;
+      }
+    } else if (o && typeof o === "object" && typeof o.id === "string") {
+      if (!lin.some((x) => x.id === o.id)) userError(`createdBy: operation ${o.id} did not go into this solid`);
+      ids.add(o.id);
+    } else userError(`createdBy expects an operation tag like "finUnion" or a solid (got ${JSON.stringify(o)})`);
+  }
+  return ids;
+}
+
+type SortKey ="area" | "length" | "radius" | "x" | "y" | "z" | ((e: Entity) => number);
 
 export class EntitySet {
   /** @internal */ readonly record: OpRecord;
@@ -165,6 +189,71 @@ export class EntitySet {
       if (d < bd) (bd = d), (best = i);
     }
     return this.derive(best >= 0 ? [best] : []);
+  }
+
+  // ---------- history ----------
+  /**
+   * Keep the entities that operation `op` created (Onshape's qCreatedBy). `op` is a tag
+   * (`"finUnion"`), an op id (`"winch/finUnion"`), or the solid that op returned; several are OR-ed.
+   * What an op creates: extrude/revolve/sweep/loft — side faces, caps and their edges; fillet/chamfer —
+   * the new faces and their boundary edges; union/subtract/intersect — the new edges where the inputs
+   * intersect (faces and edges they only trimmed keep their original creator); pattern copies count
+   * as the op that made the original. Survives later edits: it reads OCCT history, not coordinates.
+   * Selector form: `"@finUnion"` or `"createdBy(finUnion)"`, e.g. `body.fillet("@finUnion", 1.5)`.
+   * @example const root = body.edges().createdBy("finUnion") // the fin-to-body intersection edges
+   */
+  createdBy(op: OpRef | OpRef[]): EntitySet {
+    return this.derive(createdBy(this.record, this.kind, opIds(this.record, op), [...this.indices]));
+  }
+
+  // ---------- adjacency ----------
+  /** Faces touching these entities: the faces of an edge or vertex; for faces, their neighbours across an edge. */
+  faces(): EntitySet {
+    return this.neighbours("face");
+  }
+  /** Edges touching these entities: a face's boundary edges, a vertex's edges; for edges, those sharing a vertex. */
+  edges(): EntitySet {
+    return this.neighbours("edge");
+  }
+  /** Vertices of these faces or edges; for vertices, those one edge away. */
+  vertices(): EntitySet {
+    return this.neighbours("vertex");
+  }
+  /**
+   * Keep the entities touching `other` (a selection on this solid or upstream of it): edges of the
+   * given faces, faces along the given edges, faces sharing an edge with the given faces, …
+   * Members of `other` itself are left out. Alias: `.of(other)`.
+   * @example body.edges().adjacentTo(body.faces("fin.side")) // every edge around the fin's sides
+   */
+  adjacentTo(other: EntitySet): EntitySet {
+    if (!(other instanceof EntitySet)) userError("adjacentTo(other) expects a selection like solid.faces(\">Z\")");
+    const near = new Set(other.neighbourIndices(this.kind, this.record));
+    return this.derive(this.indices.filter((i) => near.has(i)));
+  }
+  /** Alias of `adjacentTo`: `solid.edges().of(solid.faces(">Z"))` reads "the edges of the top face". */
+  of(other: EntitySet): EntitySet {
+    return this.adjacentTo(other);
+  }
+
+  private neighbours(kind: EntityKind): EntitySet {
+    return new EntitySet(this.record, kind, this.neighbourIndices(kind));
+  }
+
+  /** @internal indices of `kind` entities on this set's record touching any member (members excluded when same kind) */
+  neighbourIndices(kind: EntityKind, target: OpRecord = this.record): number[] {
+    const t = target.topo;
+    const mine = target === this.record ? [...this.indices] : this.in(target);
+    const facesOfV = (v: number) => (t.vertexEdges[v] ?? []).flatMap((e) => t.edgeFaces[e] ?? []);
+    const vertsOfF = (f: number) => (t.faceEdges[f] ?? []).flatMap((e) => t.edgeVertices[e] ?? []);
+    const step = (from: EntityKind, i: number): number[] => {
+      if (from === "face") return kind === "edge" ? (t.faceEdges[i] ?? []) : kind === "vertex" ? vertsOfF(i) : (t.faceEdges[i] ?? []).flatMap((e) => t.edgeFaces[e] ?? []);
+      if (from === "edge") return kind === "face" ? (t.edgeFaces[i] ?? []) : kind === "vertex" ? (t.edgeVertices[i] ?? []) : (t.edgeVertices[i] ?? []).flatMap((v) => t.vertexEdges[v] ?? []);
+      return kind === "edge" ? (t.vertexEdges[i] ?? []) : kind === "face" ? facesOfV(i) : (t.vertexEdges[i] ?? []).flatMap((e) => t.edgeVertices[e] ?? []);
+    };
+    const out = new Set(mine.flatMap((i) => step(this.kind, i)));
+    if (kind === this.kind) for (const i of mine) out.delete(i);
+    if (kind === "edge") for (const e of [...out]) if (isSeamEdge(target, e)) out.delete(e);
+    return [...out];
   }
 
   and(o: EntitySet) {

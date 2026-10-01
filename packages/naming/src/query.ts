@@ -2,6 +2,7 @@
 //   name patterns      `base.side`, `bore`, `corners`, `base.cap.end`
 //   CadQuery-style     `>Z` `<X` `>Z[1]` `|Z` `#Z` `+Z` `-Z` `%plane` `%circle` `*`
 //   set operations     `a & b`, `a | b`, `a - b`, `not a`, parentheses; `and`/`or` also accepted
+//   history            `@finUnion` or `createdBy(finUnion)`: entities that operation created (see created.ts)
 // Pattern semantics: a face matches when its own name segment contains the pattern's tokens
 // contiguously; an edge or vertex matches when it (or any face around it) does. So
 // `base.cap.end & bore` on edges is the edge where the end cap meets the bore.
@@ -9,6 +10,7 @@ import type { EntityKind, Vec3 } from "@parasocial/kernel";
 import { entityCount, type OpRecord } from "./record";
 import { entityName, tokenize } from "./names";
 import { centerOf, directionOf, dot, edgeOf, faceOf, norm } from "./info";
+import { createdBy, resolveOps } from "./created";
 
 export class SelectorError extends Error {}
 
@@ -19,7 +21,8 @@ type Node =
   | { t: "parallel" | "perp" | "dir"; axis: Vec3 }
   | { t: "type"; name: string }
   | { t: "bin"; op: "&" | "|" | "-"; a: Node; b: Node }
-  | { t: "not"; a: Node };
+  | { t: "not"; a: Node }
+  | { t: "created"; op: string };
 
 const AXES: Record<string, Vec3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
 
@@ -101,8 +104,23 @@ export function parseSelector(src: string): Node {
       i++;
       return { t: "all" };
     }
+    if (c === "@") {
+      i++;
+      const w = word();
+      if (!w) err("expected an operation tag after @, e.g. @finUnion");
+      i += w.length;
+      return { t: "created", op: w };
+    }
     const w = word();
     if (!w) err(`unexpected "${c}"`);
+    if (w === "createdBy" && s[i + w.length] === "(") {
+      const end = s.indexOf(")", i);
+      if (end < 0) err("unclosed createdBy(");
+      const op = s.slice(i + w.length + 1, end).trim().replace(/^["']|["']$/g, "");
+      if (!op) err("createdBy() needs an operation tag, e.g. createdBy(finUnion)");
+      i = end + 1;
+      return { t: "created", op };
+    }
     if (w === "not") {
       i += 3;
       return { t: "not", a: term() };
@@ -195,6 +213,8 @@ function evalNode(r: OpRecord, kind: EntityKind, n: Node, domain: number[]): Set
     }
     case "pattern":
       return new Set(domain.filter((i) => matchesPattern(r, kind, i, n.tokens)));
+    case "created":
+      return new Set(createdBy(r, kind, resolveOps(r, n.op), domain));
     case "type":
       return new Set(
         domain.filter((i) => {

@@ -3,7 +3,7 @@
 import type { EntityKind, Vec3 } from "@parasocial/kernel";
 
 export type Severity = "error" | "warning";
-export type ProblemKind = "syntax" | "runtime" | "operation" | "invalid" | "timeout" | "unresolved" | "param" | "slow";
+export type ProblemKind = "syntax" | "runtime" | "operation" | "invalid" | "timeout" | "unresolved" | "param" | "slow" | "rule";
 
 export type SourceRef = { file: string; line: number; col?: number };
 

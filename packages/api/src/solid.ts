@@ -1,8 +1,8 @@
 // Solids: finishing, booleans, transforms, patterns, inspection (PLAN §5 v1 surface).
-import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, distance as kDistance, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
+import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, identityHistory, faceInfo, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
 import { entityShape, entityName, faceOf, edgeOf, vertexOf, type OpRecord } from "@parasocial/naming";
-import { runOp, userError } from "./op";
-import { EntitySet } from "./selection";
+import { runOp, userError, warn } from "./op";
+import { EntitySet, type OpRef } from "./selection";
 import { Plane, axisVec, vec, type AxisLike } from "./plane";
 import { sketch } from "./sketch";
 import type { Appearance, ColorSpec, Material } from "./types";
@@ -28,14 +28,23 @@ export class Solid {
   }
 
   // ---------- selection ----------
-  faces(selector?: string): EntitySet {
-    return EntitySet.fromSelector(this.record, "face", selector);
+  /**
+   * Faces matching a selector string (`">Z"`, `"base.side"`, `"@finUnion"`), or `{ createdBy, where }`:
+   * the faces an operation created (see `EntitySet.createdBy`), optionally narrowed by a selector.
+   */
+  faces(selector?: string | SelectOpts): EntitySet {
+    return select(this.record, "face", selector);
   }
-  edges(selector?: string): EntitySet {
-    return EntitySet.fromSelector(this.record, "edge", selector);
+  /**
+   * Edges matching a selector string, or `{ createdBy, where }`. `body.edges({ createdBy: "finUnion" })`
+   * is the new edges where the fin met the body: fillet them without filtering by coordinates.
+   */
+  edges(selector?: string | SelectOpts): EntitySet {
+    return select(this.record, "edge", selector);
   }
-  vertices(selector?: string): EntitySet {
-    return EntitySet.fromSelector(this.record, "vertex", selector);
+  /** Vertices matching a selector string, or `{ createdBy, where }`. */
+  vertices(selector?: string | SelectOpts): EntitySet {
+    return select(this.record, "vertex", selector);
   }
 
   // ---------- finishing ----------
@@ -322,6 +331,24 @@ export class Solid {
   }
 }
 
+/** Selection by history: `{ createdBy: "finUnion" }`, optionally narrowed by a selector string (`where: "%line"`). */
+export type SelectOpts = {
+  /** The operation(s) that created the entities: tag, op id or the solid it returned. */
+  createdBy?: OpRef | OpRef[];
+  /** A selector string to narrow with, e.g. `">Z"` or `"%circle"`. */
+  where?: string;
+};
+
+function select(r: OpRecord, kind: EntityKind, sel?: string | SelectOpts): EntitySet {
+  if (sel === undefined || typeof sel === "string") return EntitySet.fromSelector(r, kind, sel);
+  if (typeof sel !== "object" || sel === null) return userError(`${kind}s(selector): expected a selector string or { createdBy, where } (got ${JSON.stringify(sel)})`);
+  for (const k of Object.keys(sel)) if (k !== "createdBy" && k !== "where") userError(`${kind}s({ ... }) has no "${k}"; use createdBy and/or where`);
+  let set = EntitySet.fromSelector(r, kind, sel.where);
+  if (sel.createdBy !== undefined) set = set.createdBy(sel.createdBy);
+  if (!set.length) warn(`${kind}s(${JSON.stringify(sel)}) matched no ${kind}s`);
+  return set;
+}
+
 function checkKind(s: EntitySet, kind: EntityKind, what: string) {
   if (!(s instanceof EntitySet)) userError(`${what} expects ${kind}s`);
   if (s.kind !== kind) userError(`${what} expects ${kind}s but got ${s.kind}s`);
@@ -467,12 +494,6 @@ function dirRole(i: ReturnType<typeof faceInfo>): string {
   const ax = ["x", "y", "z"][[0, 1, 2].reduce((a, b) => (Math.abs(n[b]) > Math.abs(n[a]) ? b : a), 0)];
   const sign = n[[0, 1, 2].reduce((a, b) => (Math.abs(n[b]) > Math.abs(n[a]) ? b : a), 0)] > 0 ? "+" : "-";
   return `${ax}${sign === "+" ? "max" : "min"}`;
-}
-
-/** Distance / clearance between two solids or entity sets. */
-export function measure(a: Solid | EntitySet, b: Solid | EntitySet): { distance: number; a: Vec3; b: Vec3 } {
-  const shapeOf = (x: Solid | EntitySet) => (x instanceof Solid ? x.record.shape : x.indices.length === 1 ? entityShape(x.record, x.kind, x.indices[0]) : compound(x.indices.map((i) => entityShape(x.record, x.kind, i))));
-  return kDistance(shapeOf(a), shapeOf(b));
 }
 
 export type { KernelError };

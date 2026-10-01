@@ -1,14 +1,14 @@
 // Sketches: explicit 2D geometry on a plane -> profile faces -> extrude / revolve (PLAN §5).
 // Each segment gets a stable name (`outline/right`, `bore`, `sketch1/line3`) that flows into
 // the names of the faces generated from it.
-import { lineEdge, arcEdge3, circleEdge, splineEdge, bsplineEdge, bsplineKnots, sampleEdge, edgeTangent, KernelError, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built, type SweepMode } from "@parasocial/kernel";
+import { lineEdge, arcEdge3, circleEdge, splineEdge, bsplineEdge, bsplineKnots, sampleEdge, edgeTangent, vertexPoint, KernelError, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built, type SweepMode } from "@parasocial/kernel";
 import { entityShape, faceOf, type OpRecord } from "@parasocial/naming";
 import { EntitySet } from "./selection";
 import { ctx } from "./context";
 import { runOp, userError, warn } from "./op";
 import { Plane, axisVec, type AxisLike } from "./plane";
 import { Solid, booleanOp } from "./solid";
-import { Path3d } from "./path3d";
+import { Path3d, path3d } from "./path3d";
 
 export type P2 = [number, number];
 
@@ -442,24 +442,29 @@ export class Sketch {
     }
     const prof = this.profile();
     const pth = path.pathRecord();
-    const multi = path instanceof Path3d && pth.topo.edges.items.length > 1;
+    // a helix is one segment built from half-turn edges: its side faces keep the plain `side` role
+    const multi = path instanceof Path3d && !path.helixAxis() && pth.topo.edges.items.length > 1;
+    // sharp corners (polylines): bend the profile round them instead of shearing it across
+    const roundCorners = hasKinks(pth);
     const rec = runOp({
       type: "sweep",
       tag: opts.tag,
       params: mode === "corrected" ? {} : { orientation: mode },
       inputs: [prof, pth],
       build: () => {
-        const built = sweep(prof.shape, pth.shape, { mode });
+        const built = sweep(prof.shape, pth.shape, { mode, roundCorners });
         return {
           built,
           historyOptions: { generatedFrom: ["edge", "vertex"], noModified: true },
           roles: ({ topo, history }) => {
             const r = capRoles(topo, history, built, "side");
-            if (multi)
+            if (multi || roundCorners)
               history.face.forEach((o: any[], i: number) => {
                 const seg = o.find((x) => x.slot === 1 && x.kind === "edge" && x.rel === "generated");
                 const name = seg && pth.roles.edge?.[seg.index];
-                if (r.face[i] === "side" && name) r.face[i] = `side · ${name}`;
+                if (r.face[i] === "side" && name && multi) r.face[i] = `side · ${name}`;
+                // the round bend at a corner comes from the path vertex, not a segment
+                else if (r.face[i] === "side" && !seg && o.some((x) => x.slot === 1 && x.kind === "vertex")) r.face[i] = "side · bend";
               });
             return r;
           },
@@ -592,6 +597,24 @@ export type SweepOpts = {
   mode?: "new" | "add" | "remove";
   target?: Solid;
 };
+
+/** Whether a path wire turns a sharp corner (> 1°) where two of its edges meet. */
+function hasKinks(pth: OpRecord): boolean {
+  const t = pth.topo;
+  for (let v = 0; v < t.vertices.size; v++) {
+    const es = t.vertexEdges[v] ?? [];
+    if (es.length !== 2) continue;
+    const p = vertexPoint(t.vertices.items[v]);
+    const tan = es.map((e) => {
+      const edge = t.edges.items[e];
+      const info = edgeInfo(edge);
+      const atEnd = Math.hypot(info.end[0] - p[0], info.end[1] - p[1], info.end[2] - p[2]) < Math.hypot(info.start[0] - p[0], info.start[1] - p[1], info.start[2] - p[2]);
+      return edgeTangent(edge, atEnd);
+    });
+    if (Math.abs(tan[0][0] * tan[1][0] + tan[0][1] * tan[1][1] + tan[0][2] * tan[1][2]) < Math.cos(Math.PI / 180)) return true;
+  }
+  return false;
+}
 
 function sweepMode(path: Sketch | Path3d, o: SweepOpts["orientation"] = "auto"): SweepMode {
   if (o === "auto") {
@@ -835,4 +858,35 @@ export function loft(sections: Sketch[], opts: { tag?: string; ruled?: boolean }
     },
   });
   return new Solid(rec);
+}
+
+export type PipeOpts = {
+  tag?: string;
+  /** With a list of points: thread a smooth spline through them instead of straight runs with round bends. */
+  smooth?: boolean;
+  /** Fuse with / cut from `target`, e.g. a groove: `pipe(helix({...}), 1.2, { mode: "remove", target: drum })`. */
+  mode?: "new" | "add" | "remove";
+  target?: Solid;
+};
+
+/**
+ * A round rod of `radius` along `path`: ropes, cables, wires, tubes, springs, grooves. `path` is a
+ * `path3d(...)`, a `helix({...})`, or a list of 3D points. Points are joined by straight runs that turn
+ * each corner on a round bend (`smooth: true` threads a spline through them instead). The circular
+ * section is drawn for you, perpendicular to the path at its start, so the rod is round everywhere.
+ * Faces: `<tag> · side · wall` (with the path segment on a multi-segment path, and `side · bend` on the
+ * corners of a polyline), `<tag> · cap.start`, `<tag> · cap.end`.
+ * @example const rope = pipe([[0, 0, 0], [40, 0, 10], [80, 30, 10]], 2, { tag: "rope" })
+ * @example const drum = cylinder(20, 40).subtract(pipe(helix({ radius: 20, pitch: 3, turns: 10, origin: [0, 0, 5] }), 1.2, { tag: "groove" }))
+ */
+export function pipe(path: Path3d | Vec3[], radius: number, opts: PipeOpts = {}): Solid {
+  if (typeof radius !== "number" || !Number.isFinite(radius) || radius <= 0) userError(`pipe radius must be a positive number (got ${radius})`);
+  let p: Path3d;
+  if (Array.isArray(path)) {
+    if (path.length < 2) userError("pipe(points, r) needs at least two points, e.g. pipe([[0, 0, 0], [50, 0, 20]], 2)");
+    p = opts.smooth ? path3d(path[0]).splineTo(path.slice(1)) : path.slice(1).reduce((acc, q) => acc.lineTo(q), path3d(path[0]));
+  } else if (path instanceof Path3d) p = path;
+  else return userError("pipe(path, r): path must be a path3d(...), a helix({...}) or a list of [x, y, z] points");
+  const { point, tangent } = p.startFrame();
+  return sketch(new Plane(point, tangent)).circle([0, 0], radius, { tag: "wall" }).sweep(p, { tag: opts.tag, mode: opts.mode, target: opts.target });
 }

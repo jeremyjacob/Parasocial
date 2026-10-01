@@ -1,6 +1,6 @@
 // 3D sweep paths: polylines, arcs and splines through space, and helices (springs, threads, coils).
 // Each segment gets a stable name (`path1/line2`, `coil`) that flows into the swept faces' names.
-import { lineEdge, arcEdge3, splineEdge, helixEdge, helixXDir, wireFromEdges, type Vec3 } from "@parasocial/kernel";
+import { lineEdge, arcEdge3, splineEdge, helixEdges, helixXDir, edgeTangent, wireFromEdges, type Vec3 } from "@parasocial/kernel";
 import type { OpRecord } from "@parasocial/naming";
 import { ctx } from "./context";
 import { runOp, userError } from "./op";
@@ -150,7 +150,16 @@ export class Path3d {
       return { point: vec.add(s.origin, vec.scale(s.xDir, s.radius)), tangent: vec.unit(t) };
     }
     if (s.kind === "line") return { point: s.a, tangent: vec.unit(sub(s.b, s.a)) };
-    if (s.kind === "spline") return { point: s.pts[0], tangent: vec.unit(s.startTangent ?? sub(s.pts[1], s.pts[0])) };
+    if (s.kind === "spline") {
+      if (s.startTangent) return { point: s.pts[0], tangent: vec.unit(s.startTangent) };
+      // the interpolated curve leaves its first point at an angle to the first chord: ask the curve
+      const e = splineEdge(s.pts);
+      try {
+        return { point: s.pts[0], tangent: edgeTangent(e, false) };
+      } finally {
+        e.delete();
+      }
+    }
     // arc: tangent at a is perpendicular to the radius, in the arc's plane, toward m
     const n = vec.cross(sub(s.m, s.a), sub(s.b, s.a));
     const c = circumcenter3(s.a, s.m, s.b, n);
@@ -181,18 +190,19 @@ export class Path3d {
       params: { segs },
       inputs: [],
       build: () => {
-        const segEdges = segs.map((seg) => ({ seg, edge: seg3Edge(seg) }));
+        const segEdges = segs.flatMap((seg) => seg3Edges(seg).map((edge) => ({ seg, edge })));
         return { built: { shape: wireFromEdges(segEdges.map((s) => s.edge)), maker: null }, ...namer(segEdges) };
       },
     });
   }
 }
 
-function seg3Edge(s: Seg3) {
-  if (s.kind === "line") return lineEdge(s.a, s.b);
-  if (s.kind === "arc") return arcEdge3(s.a, s.m, s.b);
-  if (s.kind === "spline") return splineEdge(s.pts, { startTangent: s.startTangent, endTangent: s.endTangent });
-  return helixEdge({ radius: s.radius, pitch: s.pitch, height: s.height, origin: s.origin, axis: s.axis, xDir: s.xDir, leftHanded: s.leftHanded, taper: (s.taper * Math.PI) / 180 });
+function seg3Edges(s: Seg3): any[] {
+  if (s.kind === "line") return [lineEdge(s.a, s.b)];
+  if (s.kind === "arc") return [arcEdge3(s.a, s.m, s.b)];
+  if (s.kind === "spline") return [splineEdge(s.pts, { startTangent: s.startTangent, endTangent: s.endTangent })];
+  // half-turn pieces: a single multi-turn edge sweeps into a face that booleans misclassify (see helixEdges)
+  return helixEdges({ radius: s.radius, pitch: s.pitch, height: s.height, origin: s.origin, axis: s.axis, xDir: s.xDir, leftHanded: s.leftHanded, taper: (s.taper * Math.PI) / 180 });
 }
 
 function circumcenter3(a: Vec3, b: Vec3, c: Vec3, n: Vec3): Vec3 {
