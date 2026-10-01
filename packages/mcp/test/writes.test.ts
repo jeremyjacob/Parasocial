@@ -76,7 +76,7 @@ test("write_scripts lands a lib change and its studio as one version with a comp
   });
   expect(created.version.number).toBe(1);
   expect(created.scripts).toEqual({ "lib/size.ts": 1, "studios/a.ts": 1 });
-  expect(created.parts).toEqual([{ part: "a", ok: true }]);
+  expect(created.parts).toEqual({ a: "ok" });
   expect(created.regeneration).toBeUndefined();
   expect(claude.session.lastVersion.get(documentID)).toBe(created.version.id);
 
@@ -94,8 +94,8 @@ test("write_scripts lands a lib change and its studio as one version with a comp
 test("problems come back as file:line lines; verbose returns the full result", async () => {
   engine.mode = "problem";
   const r = await claude.call("edit_script", { path: "studios/a.ts", edits: [{ search: "export default w", replace: "export default w * 2" }], baseVersion: 1 });
-  expect(r.parts).toEqual([{ part: "a", ok: false, problems: ["error studios/a.ts:18 fillet radius 5 exceeds adjacent face width 3.2; use a value below 3.2"] }]);
-  expect(r._chars).toBeLessThan(1000);
+  expect(r.parts).toEqual({ a: ["error studios/a.ts:18 fillet radius 5 exceeds adjacent face width 3.2; use a value below 3.2"] });
+  expect(r._chars).toBeLessThan(400);
   const v = await claude.call("edit_script", { path: "studios/a.ts", edits: [{ search: "w * 2", replace: "w * 3" }], baseVersion: r.scripts["studios/a.ts"], verbose: true });
   expect(v.regeneration[0]).toMatchObject({ part: "a", faces: 200, edges: 400 });
   expect(v._chars).toBeGreaterThan(r._chars);

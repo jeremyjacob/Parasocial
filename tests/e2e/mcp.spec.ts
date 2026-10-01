@@ -220,7 +220,7 @@ test("agent loop: human note → agent claims, edits, replies → Resolved in th
       ],
     });
     expect(res.version).toBeTruthy();
-    expect(JSON.stringify(res.regeneration)).not.toMatch(/"ok":\s*false/);
+    expect(res.parts).toEqual({ bracket: "ok" });
 
     // completed work can be resolved silently, without adding a thread message
     // The edit's activity entry must reach the browser before taking the baseline.

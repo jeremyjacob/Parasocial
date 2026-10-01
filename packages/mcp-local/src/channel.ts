@@ -30,7 +30,7 @@ export function noteEvent(n: NoteView) {
   }
   const { reason: _, ...note } = n;
   return {
-    content: `${head}\n\n${JSON.stringify({ reason: n.reason, ...note }, null, 2)}`,
+    content: `${head}\n\n${JSON.stringify({ reason: n.reason, ...note })}`,
     meta: { document_id: n.document.id, note_id: n.id, kind: n.reason?.created ? "created" : "reply" },
   };
 }

@@ -51,11 +51,49 @@ class ToolError extends Error {
   }
 }
 
-const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] });
+// Results are compact JSON: agents read every character of them, and indentation is ~a third of
+// a pretty-printed result. Coordinates are mm, rounded to µm (3 decimals).
+const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }] });
 const round = (x: number, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
-const vec = (v?: number[]) => v?.map((x) => round(x, 4));
+const vec = (v?: number[]) => v?.map((x) => round(x, 3));
+/** An object without its undefined, null and empty-array fields. */
+const lean = <T extends Record<string, unknown>>(o: T): Partial<T> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && !(Array.isArray(v) && !v.length))) as Partial<T>;
+/** A long list cut to `max`, saying how many more there were. */
+const cap = <T>(xs: T[] | undefined, max: number): (T | string)[] | undefined => (xs && xs.length > max ? [...xs.slice(0, max), `+${xs.length - max} more`] : xs);
+
+/**
+ * tools/list as clients send it to the model: no JSON Schema `$schema` URL, no ±2^53 bounds that
+ * zod adds to every integer, and no `execution` block when it only says the default (tasks forbidden).
+ * About 3 kB less per session, with the same validation.
+ */
+export function compactToolList(server: McpServer) {
+  const handlers = (server.server as any)._requestHandlers as Map<string, (req: unknown, extra: unknown) => Promise<{ tools: any[] }>> | undefined;
+  const list = handlers?.get("tools/list");
+  if (!handlers || !list || (list as any).compact) return;
+  const strip = (s: any): any => {
+    if (Array.isArray(s)) return s.map(strip);
+    if (!s || typeof s !== "object") return s;
+    const out: any = {};
+    for (const [k, v] of Object.entries(s)) {
+      if (k === "$schema") continue;
+      if ((k === "minimum" || k === "maximum") && Math.abs(v as number) === Number.MAX_SAFE_INTEGER) continue;
+      out[k] = strip(v);
+    }
+    return out;
+  };
+  const compact = Object.assign(
+    async (req: unknown, extra: unknown) => {
+      const r = await list(req, extra);
+      return { ...r, tools: r.tools.map(({ execution, ...t }) => ({ ...t, inputSchema: strip(t.inputSchema), ...(execution && execution.taskSupport !== "forbidden" ? { execution } : {}) })) };
+    },
+    { compact: true },
+  );
+  handlers.set("tools/list", compact);
+}
 
 const LIMIT_PER_MIN = 240;
+/** Default render size. Image input is billed by pixels (~w·h/750 tokens): 800×600 is ~640, 1024×768 was ~1050. */
+const RENDER_SIZE = [800, 600] as const;
 
 export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   const { db, pool } = deps;
@@ -149,40 +187,58 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return out.map((r: any) => summarize(r));
   }
 
-  function summarize(r: any) {
+  /** "error studios/a.ts:12 message" (the location moved to the front). */
+  const problemLine = (p: any) => {
+    const at = p.source ? `${p.source.file}:${p.source.line}` : "";
+    const message = at ? String(p.message).replace(/\s*\([^()]*:\d+(?::\d+)?\)\s*$/, "") : p.message;
+    return `${p.severity}${at ? ` ${at}` : ""} ${message}`;
+  };
+
+  /** Per part: "ok", or its problem lines (and whether the workspace shows its last good geometry). */
+  const partStatus = (results: any[]) =>
+    Object.fromEntries(results.filter(Boolean).map((r: any) => [r.part, r.problems.length ? (r.partial && !r.empty ? [...r.problems.map(problemLine), "(showing last good geometry)"] : r.problems.map(problemLine)) : "ok"]));
+
+  /** A regeneration result: part, name (when it differs), ok, problems (one line each), counts, bbox and volume; timings with `full`. */
+  function summarize(r: any, full = false) {
     if (!r) return null;
-    return {
+    return lean({
       part: r.part,
-      name: r.name,
+      name: r.name !== r.part ? r.name : undefined,
       ok: r.ok,
       showingLastGoodGeometry: r.partial && !r.empty ? true : undefined,
-      problems: r.problems.map((p: any) => ({ severity: p.severity, kind: p.kind, message: p.message, source: p.source, op: p.op, highlight: p.highlight })),
+      problems: full ? r.problems.map((p: any) => lean({ severity: p.severity, kind: p.kind, message: p.message, source: p.source && `${p.source.file}:${p.source.line}`, op: p.op, highlight: p.highlight && { ...p.highlight, names: cap(p.highlight.names, 10) } })) : r.problems.map(problemLine),
       faces: r.faces.length,
       edges: r.edges.length,
       bbox: r.bbox ? { min: vec(r.bbox.min), max: vec(r.bbox.max) } : undefined,
       volume: r.mass ? round(r.mass.volume, 2) : undefined,
-      timingsMs: { total: round(r.timings.total, 1), ops: round(r.timings.ops, 1) },
-    };
+      timingsMs: full ? { total: round(r.timings.total, 1), ops: round(r.timings.ops, 1) } : undefined,
+    });
   }
 
-  function describeEntity(e: any) {
-    const measure = e.kind === "face" ? { area: round(e.area), normal: vec(e.normal), radius: e.radius && round(e.radius), axis: vec(e.axis) } : e.kind === "edge" ? { length: round(e.length), radius: e.radius && round(e.radius), direction: vec(e.axis) } : { point: vec(e.center) };
-    return {
-      part: e.part,
-      kind: e.kind,
-      type: e.type,
+  /**
+   * An entity, compactly: name, type, measurements, and `by`, the operation that made it with its
+   * source line (`type id #tag at file:line`, then helper calls in `via`). Neighbors: the adjacent
+   * faces, left out of edges whose name already says them; `neighbors` caps them (0: none).
+   * `context` adds part and kind (for lists that mix them).
+   */
+  function describeEntity(e: any, opts: { context?: boolean; neighbors?: number } = {}) {
+    const measure = e.kind === "face" ? { area: round(e.area), normal: vec(e.normal), radius: e.radius && round(e.radius), axis: vec(e.axis) } : e.kind === "edge" ? { length: round(e.length), radius: e.radius && round(e.radius), direction: vec(e.axis) } : {};
+    const c = e.createdBy;
+    const tag = c?.tag && !String(c.id).endsWith(`/${c.tag}`) && c.id !== c.tag ? ` #${c.tag}` : "";
+    const at = c?.source ? ` at ${c.source.file}:${c.source.line}` : "";
+    const via = c?.chain?.map((x: any) => `${x.fn && !x.fn.startsWith("<") && x.fn !== "Object.eval [as body]" ? x.fn + "() at " : ""}${x.file}:${x.line}`).filter((s: string) => !c.source || s !== `${c.source.file}:${c.source.line}`);
+    const max = opts.neighbors ?? 8;
+    const neighbors = max && e.neighbors?.length && !e.neighbors.every((n: string) => String(e.name).includes(n)) ? cap(e.neighbors, max) : undefined;
+    return lean({
+      ...(opts.context ? { part: e.part, kind: e.kind } : {}),
       name: e.name,
+      type: e.type,
       ...measure,
       center: vec(e.center),
-      createdBy: e.createdBy && {
-        operation: e.createdBy.id,
-        tag: e.createdBy.tag,
-        type: e.createdBy.type,
-        source: e.createdBy.source && `${e.createdBy.source.file}:${e.createdBy.source.line}`,
-        callChain: e.createdBy.chain?.map((c: any) => `${c.fn && !c.fn.startsWith("<") && c.fn !== "Object.eval [as body]" ? c.fn + "() at " : ""}${c.file}:${c.line}`),
-      },
-      neighbors: e.neighbors?.length ? e.neighbors : undefined,
-    };
+      by: c ? `${c.type} ${c.id}${tag}${at}` : undefined,
+      via,
+      neighbors,
+    });
   }
 
   /** Resolve a stable name (or selector) on a part to entity indices. */
@@ -217,12 +273,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         const [res] = await engine(d, [{ op: "resolve", part, targets: [{ kind: t.kind, name: t.name, query: t.query, point: t.point, normal: t.normal }] }]);
         const r = (res as any[])[0];
         if (r.status === "orphaned") {
-          out.push({ kind: t.kind, part, name: t.name, status: "orphaned", point: vec(t.point), hint: "The geometry this note pointed at is gone. Use the point and the snapshot to understand intent." });
+          out.push({ kind: t.kind, part, name: t.name, status: "orphaned", point: vec(t.point), hint: "This geometry is gone; use the point and the snapshot (get_note) for intent." });
           continue;
         }
         const idx = r.indices.length > 1 ? (await engine(d, [{ op: "resolveOne", part, kind: t.kind, candidates: r.indices, point: t.point }]))[0] : r.indices[0];
         const [desc] = await engine(d, [{ op: "describe", part, kind: t.kind, index: idx }]);
-        out.push({ ...describeEntity(desc), resolvedBy: r.status, splitInto: r.indices.length > 1 ? r.indices.length : undefined, notePoint: vec(t.point) });
+        // resolvedBy/notePoint only when the name alone didn't find it (the geometry changed)
+        out.push({ ...describeEntity(desc, { context: true }), ...(r.status !== "name" ? { resolvedBy: r.status, notePoint: vec(t.point) } : {}), splitInto: r.indices.length > 1 ? r.indices.length : undefined });
       } catch (e) {
         out.push({ kind: t.kind, part, name: t.name, status: "unresolved", error: (e as Error).message });
       }
@@ -230,25 +287,37 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return out;
   }
 
-  async function noteView(documentID: string, n: any, d: DocState) {
+  /**
+   * A note thread for an agent. The camera is left out (render({ view: "note:<id>" }) uses it), as
+   * are false flags; the activity log (what agents did while holding it) is cut to its last lines;
+   * the snapshot link comes with `full` (get_note).
+   */
+  async function noteView(documentID: string, n: any, d: DocState, full = false) {
     const messages = await db.sql`SELECT m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ${n.id} ORDER BY m.created_at`;
     const strokes = await db.sql`SELECT part, points, color FROM markup_strokes WHERE note_id = ${n.id}`;
     const numberRows = await db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`;
-    return {
+    const activity = messages.filter((m: any) => m.kind === "activity").map((m: any) => m.text as string);
+    return lean({
       id: n.id,
       number: numberRows.findIndex((r: any) => r.id === n.id) + 1,
       status: n.status,
-      orphaned: n.orphaned,
-      removed: !!n.removed_at,
+      orphaned: n.orphaned || undefined,
+      removed: n.removed_at ? true : undefined,
       claimedBy: n.claimed_by ?? undefined,
       author: n.author_agent_id ? "agent" : "human",
+      configuration: n.anchor.configuration && n.anchor.configuration !== "Default" ? n.anchor.configuration : undefined,
       targets: await describeTargets(d, n.anchor.targets),
-      view: { camera: n.anchor.camera, configuration: n.anchor.configuration, render: `render({ view: "note:${n.id}" })` },
       markup: strokes.length ? strokes.map((st: any) => ({ part: st.part, color: st.color, points: st.points.length, from: vec(st.points[0]), to: vec(st.points[st.points.length - 1]) })) : undefined,
-      snapshot: n.snapshot_hash ? signBlobURL(deps.config, { hash: n.snapshot_hash, documentID, basePath: "/api/blobs" }) : undefined,
-      messages: messages.map((m: any) => ({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, images: messageImages(m).length ? messageImages(m).map((hash) => signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs" })) : undefined, at: new Date(Number(m.created_at)).toISOString(), version: m.version_id ?? undefined })),
-    };
+      snapshot: full && n.snapshot_hash ? signBlobURL(deps.config, { hash: n.snapshot_hash, documentID, basePath: "/api/blobs" }) : undefined,
+      messages: messages
+        .filter((m: any) => m.kind !== "activity")
+        .map((m: any) => lean({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, images: messageImages(m).length ? messageImages(m).map((hash) => signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs" })) : undefined, at: when(m.created_at), version: m.version_id ?? undefined })),
+      activity: activity.length > 5 ? [`(${activity.length - 5} earlier)`, ...activity.slice(-5)] : activity,
+    });
   }
+
+  /** A timestamp to the minute (UTC). */
+  const when = (ms: unknown) => `${new Date(Number(ms)).toISOString().slice(0, 16)}Z`;
 
   /** Images a person pasted into a message (blob hashes). */
   const messageImages = (m: { data?: { images?: unknown } | null }): string[] => (Array.isArray(m.data?.images) ? m.data.images.filter((h): h is string => typeof h === "string") : []);
@@ -302,29 +371,31 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         thrown = e;
         const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
-        result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data, null, 2)}` : msg }] };
+        result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data)}` : msg }] };
       }
       traceCall({ session: s.id, client: s.clientName, label: s.label, document: s.defaultDocument, tool: name, args, ms: Date.now() - now, isError: !!result.isError, result: result.content, ...(thrown && !(thrown instanceof ToolError) ? { exception: thrown } : {}) });
       return result;
     }) as any);
   }
 
-  const document = z.string().optional().describe("Document id (defaults to this session's document)");
+  // the instructions say once that `document` defaults to the session's document (not on every tool)
+  const document = z.string().optional();
 
   // ---------------- documents ----------------
   const documentURL = (id: string) => new URL(`/d/${encodeURIComponent(id)}`, deps.config.appOrigin).href;
   const documentName = z.string().trim().min(1).max(200);
 
-  tool("list_documents", "Find documents you can access, newest edits first. Search by name; use offset to paginate.", { query: z.string().max(200).optional(), limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0) }, async ({ query, limit, offset }) => {
+  tool("list_documents", "Documents you can access, newest edits first; query filters by name.", { query: z.string().max(200).optional(), limit: z.number().int().min(1).max(100).default(20), offset: z.number().int().min(0).default(0) }, async ({ query, limit, offset }) => {
     const rows = await db.sql`SELECT d.id, d.name, d.updated_at, d.head_version, m.role FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${s.userID}
       WHERE strpos(lower(d.name), lower(${query ?? ""})) > 0 ORDER BY d.updated_at DESC, d.id LIMIT ${limit + 1} OFFSET ${offset}`;
-    return text({ default: s.defaultDocument, documents: rows.slice(0, limit).map((r) => ({ id: r.id, name: r.name, url: documentURL(r.id), role: r.role, version: Number(r.head_version), updated: new Date(Number(r.updated_at)).toISOString() })), nextOffset: rows.length > limit ? offset + limit : null });
+    // one URL pattern instead of a URL per document
+    return text({ default: s.defaultDocument, url: documentURL("{id}").replace(encodeURIComponent("{id}"), "{id}"), documents: rows.slice(0, limit).map((r) => ({ id: r.id, name: r.name, role: r.role, version: Number(r.head_version), updated: when(r.updated_at) })), nextOffset: rows.length > limit ? offset + limit : undefined });
   }, { readOnlyHint: true });
 
-  tool("get_document_context", "This user's recent browser activity and the agent's current default. Activity is a hint, not an exact list of open tabs; it never changes the default.", {}, async () =>
+  tool("get_document_context", "The user's recent browser activity (a hint, not a list of open tabs) and this session's default document.", {}, async () =>
     text({ default: s.defaultDocument, ...await documentContext(db, s.userID, deps.config.appOrigin) }), { readOnlyHint: true });
 
-  tool("open_document", "Select a document as this agent session's default and return its details. Accepts an ID or a Parasocial document URL. Does not navigate the human's browser.", { document: z.string().min(1) }, async ({ document: target }) => {
+  tool("open_document", "Make a document (id or document URL) this session's default; returns its scripts and configurations. Doesn't affect the human's browser.", { document: z.string().min(1) }, async ({ document: target }) => {
     let id = target;
     if (/^https?:\/\//i.test(target)) {
       const url = new URL(target);
@@ -338,27 +409,27 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ id, name: d.name, url: documentURL(id), units: d.units, scripts: d.scripts.map((f) => f.path), configurations: d.configurations.map((c) => ({ id: c.id, name: c.name })) });
   }, { readOnlyHint: true });
 
-  tool("create_document", "Create an empty document (then write studios/<name>.ts). Becomes the default only if the session has none; use open_document to switch.", { name: documentName }, async ({ name }) => {
+  tool("create_document", "Create an empty document (then write studios/<name>.ts). It becomes the default only if the session has none.", { name: documentName }, async ({ name }) => {
     const id = newID();
     await mutate(mutators.document.create({ id, name }));
     s.defaultDocument ??= id;
     return text({ id, name, url: documentURL(id) });
   });
 
-  tool("rename_document", "Rename a document. Requires editor access.", { document, name: documentName }, async ({ document: dd, name }) => {
+  tool("rename_document", "Rename a document (editor access).",{ document, name: documentName }, async ({ document: dd, name }) => {
     const id = docID(dd);
     await mutate(mutators.document.rename({ id, name }));
     return text({ id, name, url: documentURL(id) });
   });
 
-  tool("duplicate_document", "Copy a document's scripts, settings and configurations into a new document you own. Notes and version history are not copied. Does not change the session default.", { document, name: documentName.optional() }, async ({ document: dd, name }) => {
+  tool("duplicate_document", "Copy a document's scripts, settings and configurations (not notes or history) into a new document you own. The session default stays.",{ document, name: documentName.optional() }, async ({ document: dd, name }) => {
     const payload = await exportDocument(db, docID(dd), s.userID, { notes: false });
     const copyName = name ?? `${payload.manifest.name.slice(0, 193)} (copy)`;
     const { documentID: id } = await importDocument(db, payload, ctx(), { name: copyName });
     return text({ id, name: copyName, url: documentURL(id) });
   });
 
-  tool("delete_document", "Permanently delete a document and its contents, including notes and version history. Requires owner access and an explicit document ID. Only use when the user requests deletion.", { document: z.string().min(1) }, async ({ document: id }) => {
+  tool("delete_document", "Permanently delete a document with its notes and history (owner only, explicit id). Only when the user asks for it.",{ document: z.string().min(1) }, async ({ document: id }) => {
     await mutate(mutators.document.delete({ id }));
     if (s.defaultDocument === id) s.defaultDocument = undefined;
     s.activeConfig.delete(id);
@@ -370,8 +441,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   // ---------------- notes ----------------
   tool(
     "list_notes",
-    "Note threads with fully described targets (stable name, the operation that made it with its source line and helper chain, measurements, neighbors), markup and a snapshot link. Messages with pasted images list their links; get_note returns the images themselves.",
-    { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional(), studio: z.string().optional().describe("Filter studio-level notes by studio script path, e.g. studios/model.ts.") },
+    "Note threads (default: all unresolved) with each target described (stable name, measurements, the operation and source line that made it), markup and messages. get_note adds the snapshot and pasted images. studio: a studio script path, for studio-level notes.",
+    { document, status: z.enum(["Open", "AgentWorking", "Resolved", "all"]).optional(), part: z.string().optional(), studio: z.string().optional() },
     async ({ document: dd, status, part, studio }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
@@ -384,22 +455,22 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     { readOnlyHint: true },
   );
 
-  tool("get_note", "One note thread, described like list_notes, followed by the images people pasted into it (messages[].images lists them in order).", { document, id: z.string() }, async ({ document: dd, id }) => {
+  tool("get_note", "One note thread like list_notes, with its snapshot link, followed by the images pasted into it (in messages[].images order).", { document, id: z.string() }, async ({ document: dd, id }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const [n] = await db.sql`SELECT * FROM notes WHERE id = ${id} AND document_id = ${documentID}`;
     if (!n) throw new ToolError(`No note ${id} in this document.`);
-    const view = text(await noteView(documentID, n, d));
+    const view = text(await noteView(documentID, n, d, true));
     return { content: [...view.content, ...(await noteImages(n.id))] };
   });
 
   tool(
     "wait_for_notes",
-    "Block until a human adds a note or replies on one (notes held by other agents are skipped), then return those notes described like list_notes, each with a `reason` (created, and/or the new replies), followed by the images pasted into them. Returns { notes: [] } at the timeout; call it again to keep waiting. Each call continues where the previous one stopped, starting from when this session connected, so call list_notes first for what was already there.",
+    "Block until a human adds a note or replies (notes other agents hold are skipped); returns those notes like list_notes, each with a `reason`, then their pasted images. At the timeout (default 50 s) returns { notes: [] }: call again. Each call continues where the last stopped, from when this session connected (list_notes covers earlier). allDocuments: wait on every document you can access (notes then carry `document`).",
     {
       document,
-      allDocuments: z.boolean().optional().describe("wait across every document you can access instead of one; each note then carries its `document`"),
-      timeoutSeconds: z.number().int().min(1).max(600).optional().describe("default 50; some clients time out tool calls after 60 s"),
+      allDocuments: z.boolean().optional(),
+      timeoutSeconds: z.number().int().min(1).max(600).optional(),
     },
     async ({ document: dd, allDocuments, timeoutSeconds }, extra) => {
       let documentIDs: string[];
@@ -419,7 +490,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const beat = token === undefined ? undefined : setInterval(() => extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++tick, message: "waiting for notes" } }).catch(() => {}), 15_000);
       try {
         const found = await deps.noteEvents.wait(documentIDs, cursor, s.id, { timeoutMs: (timeoutSeconds ?? 50) * 1000, signal: extra.signal });
-        if (!found.length) return text({ notes: [], hint: "Nothing new. Call wait_for_notes again to keep waiting." });
+        if (!found.length) return text({ notes: [] });
         const docs = new Map<string, DocState>();
         const notes = [];
         const images: Content[] = [];
@@ -442,8 +513,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "reply_to_note",
-    "Reply on a note thread and resolve it by default after completing and verifying the work. Links the version you created (default: your latest write) and releases your claim. Use Open for unfinished work or questions. Keep the text short (one to three sentences): what changed or what you need, not a recap of the work.",
-    { document, id: z.string(), text: z.string().min(1), version: z.string().optional().describe("version id to link (default: your latest)"), status: z.enum(["Resolved", "Open"]).optional().describe("default Resolved; Open for unfinished work or questions") },
+    "Reply on a note: resolves it (status Open for questions or unfinished work), links your latest version (or `version`) and releases your claim. One to three sentences: what changed or what you need, not a recap.",
+    { document, id: z.string(), text: z.string().min(1), version: z.string().optional(), status: z.enum(["Resolved", "Open"]).optional() },
     async ({ document: dd, id, text: body, version, status }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID);
@@ -463,14 +534,14 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     },
   );
 
-  tool("claim_note", "Claim a note for this session before working on it. Fails with the holder's name if another session has it.", { document, id: z.string() }, async ({ document: dd, id }) => {
+  tool("claim_note", "Claim a note before working on it; fails with the holder's name if another session has it.", { document, id: z.string() }, async ({ document: dd, id }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID);
     await mutate(mutators.note.claim({ noteID: id }));
     return text({ ok: true, claimed: id });
   });
 
-  tool("release_note", "Release a note you claimed (e.g. if you stop working on it).", { document, id: z.string() }, async ({ document: dd, id }) => {
+  tool("release_note", "Release a note you claimed, e.g. when you stop working on it.", { document, id: z.string() }, async ({ document: dd, id }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID);
     await mutate(mutators.note.release({ noteID: id }));
@@ -478,7 +549,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ ok: true });
   });
 
-  tool("set_note_status", "Set a note's status and release its claim. Resolve completed, verified work without asking for permission. No completion reply is required. Use reply_to_note only when you have useful information to add.", { document, id: z.string(), status: z.enum(["Open", "Resolved"]) }, async ({ document: dd, id, status }) => {
+  tool("set_note_status", "Set a note's status and release its claim. Resolve verified work without asking; no reply needed (reply_to_note only to add something useful).", { document, id: z.string(), status: z.enum(["Open", "Resolved"]) }, async ({ document: dd, id, status }) => {
     await requireMember(db, s.userID, docID(dd));
     await mutate(mutators.note.setStatus({ noteID: id, status }));
     return text({ ok: true });
@@ -490,7 +561,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ ok: true });
   });
 
-  tool("get_selection", "The human's current selection in the workspace, described like note targets.", { document }, async ({ document: dd }) => {
+  tool("get_selection", "The human's current workspace selection, described like note targets.", { document }, async ({ document: dd }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const [p] = await db.sql`SELECT selection FROM presence WHERE document_id = ${documentID} AND user_id = ${s.userID} AND agent_session_id IS NULL ORDER BY updated_at DESC LIMIT 1`;
@@ -500,15 +571,16 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   // ---------------- scripts ----------------
-  tool("list_scripts", "Scripts with their content and current version.", { document }, async ({ document: dd }) => {
+  tool("list_scripts", "Script paths with version and line count; content: true includes every script's source (read_script reads one).", { document, content: z.boolean().optional() }, async ({ document: dd, content }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    for (const x of d.scripts) recordTouch(s, documentID, x.path, "read", x.version);
+    // only content counts as read (changedByOthers compares against what this session has seen)
+    if (content) for (const x of d.scripts) recordTouch(s, documentID, x.path, "read", x.version);
     const others = await othersOn(db, s, documentID, d.scripts.map((x) => x.path));
-    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, content: x.content, ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
+    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, ...(content ? { content: x.content } : { lines: x.content.split("\n").length }), ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
   }, { readOnlyHint: true });
 
-  tool("read_script", "One script's content and version (pass the version back as baseVersion when writing). Lists other sessions recently on this file.", { document, path: z.string() }, async ({ document: dd, path }) => {
+  tool("read_script", "A script's source and version (pass it as baseVersion when writing), and other sessions recently on it.", { document, path: z.string() }, async ({ document: dd, path }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const sc = d.scripts.find((x) => x.path === path);
@@ -517,13 +589,6 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const others = (await othersOn(db, s, documentID, [path]))[path];
     return text({ path, version: sc.version, content: sc.content, ...(others ? { otherSessions: others } : {}) });
   }, { readOnlyHint: true });
-
-  /** "error studios/a.ts:12 message" (the location moved to the front). */
-  const problemLine = (p: any) => {
-    const at = p.source ? `${p.source.file}:${p.source.line}` : "";
-    const message = at ? String(p.message).replace(/\s*\([^()]*:\d+(?::\d+)?\)\s*$/, "") : p.message;
-    return `${p.severity}${at ? ` ${at}` : ""} ${message}`;
-  };
 
   /**
    * After a committed write: our version and new script versions, a compact regeneration result
@@ -542,18 +607,19 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       scripts[p] = r ? Number(r.version) : null; // null: deleted
       if (r) recordTouch(s, documentID, p, version ? "write" : "read", Number(r.version));
     }
-    const out: Record<string, unknown> = { ok: true, version, ...(version ? {} : { unchanged: "already up to date (nothing new was written)" }), scripts };
+    // the version's message is the caller's own (or a default): not echoed back
+    const out: Record<string, unknown> = { ok: true, version: version && { id: version.id, number: version.number }, ...(version ? {} : { unchanged: "already up to date (nothing new was written)" }), scripts };
     let failed = false;
     try {
       const d = await loadDoc(db, s.userID, documentID);
       const parts = await partsOf(d);
       const raw = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
       failed = raw.some((r: any) => r && !r.ok);
-      out.parts = raw.map((r: any) => ({ part: r.part, ok: r.ok, ...(r.partial && !r.empty ? { showingLastGoodGeometry: true } : {}), ...(r.problems.length ? { problems: r.problems.map(problemLine) } : {}) }));
-      if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r));
+      out.parts = partStatus(raw);
+      if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r, true));
     } catch (e) {
       failed = true;
-      out.parts = [];
+      out.parts = {};
       out.problems = [`error regeneration failed after the write was saved: ${(e as Error).message}. The write is committed (see version); call list_problems or retry the check, not the write.`];
     }
     try {
@@ -567,13 +633,15 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return out;
   }
 
-  const writeId = z.string().min(8).max(200).optional().describe("idempotency key: reuse the same value when retrying this exact write");
-  const verbose = z.boolean().optional().describe("include the full regeneration result per part (bounding boxes, faces, timings); default is ok/problems only");
+  // the write tools share these; write_script's description says what they mean
+  const writeId = z.string().min(8).max(200).optional();
+  const verbose = z.boolean().optional();
+  const edits = z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1);
 
   tool(
     "write_script",
-    "Create or replace a script (studios/*.ts or lib/**/*.ts). Pass baseVersion from read_script (null to create). Creates a version, regenerates, and returns per-part ok/problems, the new script version and files others changed under you. Safe to retry.",
-    { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional().describe("note id this change answers"), writeId, verbose },
+    "Create or replace a script (studios/*.ts or lib/**/*.ts); baseVersion from read_script, null to create. Makes a version, regenerates and returns the new script versions, each part's status (\"ok\" or problem lines; verbose: full results) and files others changed under you. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
+    { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, content, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID, "editor");
@@ -586,8 +654,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "edit_script",
-    "Search/replace edits on a script (each search must match exactly once unless all: true). Pass baseVersion. Creates a version and returns a compact regeneration result like write_script. Safe to retry.",
-    { document, path: z.string(), edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1), baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
+    "Search/replace edits on a script; each search must match exactly once unless all: true. Otherwise like write_script.",
+    { document, path: z.string(), edits, baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, edits, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID, "editor");
@@ -600,7 +668,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_scripts",
-    "Change several scripts atomically: one transaction, one version, one regeneration, so a lib change and the studios that use it land together. Each file gives content, edits or delete: true, plus its own baseVersion (null to create). Any stale baseVersion rejects the whole write and nothing changes.",
+    "Change, create or delete several scripts in one version (or none), e.g. a lib file and the studios using it. Each file gives content, edits or delete: true, and its baseVersion (null to create); any stale baseVersion rejects the whole write. Otherwise like write_script.",
     {
       document,
       files: z
@@ -608,7 +676,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           z.object({
             path: z.string(),
             content: z.string().optional(),
-            edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1).optional(),
+            edits: edits.optional(),
             delete: z.boolean().optional(),
             baseVersion: z.number().int().nullable(),
           }),
@@ -616,7 +684,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         .min(1)
         .max(50),
       message: z.string().optional(),
-      note: z.string().optional().describe("note id this change answers"),
+      note: z.string().optional(),
       writeId,
       verbose,
     },
@@ -630,33 +698,25 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     },
   );
 
-  tool("delete_script", "Delete a script. Pass baseVersion.", { document, path: z.string(), baseVersion: z.number().int(), writeId, verbose }, async ({ document: dd, path, baseVersion, writeId, verbose }) => {
-    const documentID = docID(dd);
-    await requireMember(db, s.userID, documentID, "editor");
-    const versionID = writeId ?? newID();
-    await mutate(mutators.script.delete({ documentID, path, baseVersion, versionID } as any));
-    return text(await afterWrite(documentID, `delete ${path}`, { versionID, paths: [path], verbose }));
-  });
-
   // ---------------- geometry ----------------
   const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right"] as const;
   tool(
     "render",
-    'PNG of the model. view: "iso" | "top" | "front" | … or "note:<id>" for a note\'s own view; or a custom camera. up: which model axis points up, "z" (default, as in the workspace viewer: top looks down -Z, front looks along +Y) or "y" (top looks down -Y, front looks along -Z); it also sets the default camera.up and the ground grid. parts: part ids, assembly instance ids (mechanism/box:lid) or an assembly id (all its instances); default every part. Instances render where this session poses them (the shared positions plus your set_pose previews), and your set_param previews apply. highlight: stable names or selectors to mark in orange. section: optional cutting plane for a hatched section view of this render only.',
+    'PNG of the model (800×600 unless width/height). view: iso (default), top, bottom, front, back, left, right, or "note:<id>" (the note\'s camera and targets); or a camera. Z up like the workspace (top looks down −Z, front along +Y); up: "y" for Y-up views. parts: part, instance (mechanism/box:lid) or assembly ids, default every part; instances are where this session poses them, and your set_param previews apply. highlight: names or selectors to mark orange. section: cut this image only, removing where dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5).',
     {
       document,
       view: z.string().optional(),
-      up: z.enum(["z", "y"]).optional().describe('Up axis for named views and the default camera.up: "z" (default, the workspace viewer\'s convention) or "y"'),
+      up: z.enum(["z", "y"]).optional(),
       camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional() }).optional(),
       section: z.object({
-        origin: z.array(z.number().finite()).length(3).describe("Point on the cutting plane in model coordinates (mm)."),
+        origin: z.array(z.number().finite()).length(3),
         normal: z.array(z.number().finite()).length(3).refine((n) => {
           const lengthSquared = n.reduce((sum, x) => sum + x * x, 0);
           return lengthSquared > 0 && Number.isFinite(lengthSquared);
-        }, "Section normal must have a finite, nonzero length.").describe("Direction toward the removed side; need not be normalized. Negate to flip the cut."),
-      }).optional().describe("Clips points where dot(point - origin, normal) > 0. Omit for the full model. Example: { origin: [0, 0, 5], normal: [0, 0, 1] } keeps z <= 5."),
+        }, "Section normal must have a finite, nonzero length."),
+      }).optional(),
       highlight: z.array(z.object({ part: z.string(), name: z.string() })).optional(),
-      parts: z.array(z.string()).optional().describe("part ids, instance ids or assembly ids; default every part"),
+      parts: z.array(z.string()).optional(),
       style: z.enum(["shaded", "shadedEdges", "wireframe", "hiddenLine"]).optional(),
       width: z.number().int().min(128).max(2048).optional(),
       height: z.number().int().min(128).max(2048).optional(),
@@ -690,7 +750,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         } catch {}
       }
       const poses = Object.fromEntries(ids.filter((p) => asm.poses[p]).map((p) => [p, asm.poses[p]]));
-      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, poses, style, width: width ?? 1024, height: height ?? 768 }]);
+      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, poses, style, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
       await activity(documentID, `render ${view ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
       return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
     },
@@ -699,9 +759,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "describe_model",
-    "Parts with bounding boxes, volume/area/mass; then every face and edge with name, type, area/length, normal/axis and source location. part may be an assembly instance (mechanism/box:lid) or an assembly id (all its instances): instances are described where this session poses them (world coordinates). Without part, also lists assemblies with their instances and joint values (and whether each value is your session preview, the shared one, or home).",
-    { document, part: z.string().optional(), entities: z.boolean().optional().describe("include faces and edges (default true when part is given)") },
-    async ({ document: dd, part, entities }) => {
+    "Parts with bounding box, mass properties, material and params. entities (default when part is given): every face and edge with name, type, area/length, normal/axis, center and `by` (the operation and source line that made it); neighbors: true adds faces' adjacent faces. part: a part, instance (mechanism/box:lid, in world coordinates where this session poses it) or assembly id. Without part, also lists assemblies, their instances and joint values (from your session, shared or home).",
+    { document, part: z.string().optional(), entities: z.boolean().optional(), neighbors: z.boolean().optional() },
+    async ({ document: dd, part, entities, neighbors }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const asm = await assemblyState(d);
@@ -718,11 +778,25 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         const pose = asm.poses[r.part];
         const place = (e: any) => (pose ? { ...e, center: vec(posedPoint(e.center, pose)), normal: vec(posedDir(e.normal, pose)), axis: vec(posedDir(e.axis, pose)), direction: vec(posedDir(e.direction, pose)), point: vec(posedPoint(e.point, pose)) } : e);
         const summary = summarize(r)!;
-        const entry: any = { ...summary, bbox: pose && r.bbox ? (({ min, max }) => ({ min: vec(min), max: vec(max) }))(posedBox(r.bbox, pose)) : summary.bbox, posed: pose ? true : undefined, color: r.color, appearance: r.appearance, material: r.material, mass: r.mass && { volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), massGrams: round(r.mass.mass, 2), centroid: vec(posedPoint(r.mass.centroid, pose)) }, params: r.params.map((p: any) => ({ name: p.name, value: p.value, unit: p.unit, overridden: p.overridden, preview: s.preview?.get(documentID)?.params[sourcePart(r.part)]?.[p.name] !== undefined || undefined })) };
+        const preview = s.preview?.get(documentID)?.params;
+        const color = r.color?.kind === "rgb" ? r.color.hex : r.color?.kind;
+        const entry: any = lean({
+          ...summary,
+          volume: undefined, // in mass
+          bbox: pose && r.bbox ? (({ min, max }) => ({ min: vec(min), max: vec(max) }))(posedBox(r.bbox, pose)) : summary.bbox,
+          posed: pose ? true : undefined,
+          color,
+          appearance: part ? r.appearance : undefined,
+          material: r.material?.name ? `${r.material.name}${r.material.density ? ` (${r.material.density} g/cm³)` : ""}` : r.material,
+          mass: r.mass && lean({ volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), grams: r.material?.density ? round(r.mass.mass, 2) : undefined, centroid: vec(posedPoint(r.mass.centroid, pose)) }),
+          // name: value with unit; get_params has defaults, bounds and sources
+          params: r.params.length ? Object.fromEntries(r.params.map((p: any) => [p.name, `${typeof p.value === "number" ? round(p.value, 4) : p.value}${p.unit && typeof p.value === "number" ? ` ${p.unit}` : ""}${p.overridden ? " (override)" : ""}${preview?.[sourcePart(r.part)]?.[p.name] !== undefined || preview?.["*"]?.[p.name] !== undefined ? " (preview)" : ""}`])) : undefined,
+        });
         if ((entities ?? !!part) && !r.empty) {
           const [all] = await engine(d, [{ op: "describeAll", part: r.part }]);
-          entry.faces = (all as any).faces.map(describeEntity).map(place);
-          entry.edges = (all as any).edges.map(describeEntity).map(place);
+          const opts = { neighbors: neighbors ? 1000 : 0 };
+          entry.faces = (all as any).faces.map((e: any) => describeEntity(place(e), opts));
+          entry.edges = (all as any).edges.map((e: any) => describeEntity(place(e), opts));
         }
         out.push(entry);
       }
@@ -742,24 +816,25 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "query",
-    'Evaluate a selector against the live model and return matching entities, e.g. ">Z", "base.side & |Z", "%circle", "bore".',
-    { document, expr: z.string(), part: z.string().optional(), kind: z.enum(["face", "edge", "vertex"]).optional() },
-    async ({ document: dd, expr, part, kind }) => {
+    'Evaluate a selector on a part (default the first) and describe the matches like describe_model, e.g. ">Z", "base.side & |Z", "%circle", "@finUnion". kind: face (default), edge or vertex. limit: default 50.',
+    { document, expr: z.string(), part: z.string().optional(), kind: z.enum(["face", "edge", "vertex"]).optional(), limit: z.number().int().min(1).max(500).optional(), neighbors: z.boolean().optional() },
+    async ({ document: dd, expr, part, kind, limit, neighbors }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const p = part ?? (await partsOf(d))[0];
       if (!p) throw new ToolError("This document has no parts.");
       await regen(d, [p]);
       const k = kind ?? "face";
+      const max = limit ?? 50;
       const [idx] = await engine(d, [{ op: "query", part: p, expr, kind: k }]);
-      const descs = await engine(d, (idx as number[]).slice(0, 100).map((index) => ({ op: "describe", part: p, kind: k, index })));
-      return text({ part: p, kind: k, count: (idx as number[]).length, entities: descs.map(describeEntity), truncated: (idx as number[]).length > 100 || undefined });
+      const descs = await engine(d, (idx as number[]).slice(0, max).map((index) => ({ op: "describe", part: p, kind: k, index })));
+      return text(lean({ part: p, kind: k, count: (idx as number[]).length, entities: descs.map((e: any) => describeEntity(e, { neighbors: neighbors ? 1000 : 0 })), truncated: (idx as number[]).length > max ? `first ${max}; pass limit for more` : undefined }));
     },
     { readOnlyHint: true },
   );
 
-  const ref = z.object({ part: z.string(), name: z.string().optional().describe("stable name or selector; omit for the whole part") });
-  tool("measure", "Distance, angle or minimum clearance between two entities or parts. Assembly instances (mechanism/box:lid) are measured where this session poses them (shared positions plus your set_pose previews).", { document, a: ref, b: ref }, async ({ document: dd, a, b }) => {
+  const ref = z.object({ part: z.string(), name: z.string().optional() });
+  tool("measure", "Minimum distance between two entities (name: stable name or selector) or whole parts (no name), with the closest points; the angle between faces/edges; the interference volume between parts. Instances (mechanism/box:lid) are where this session poses them.",{ document, a: ref, b: ref }, async ({ document: dd, a, b }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     // the engine is shared with other sessions: always set this session's poses (none unless an instance is involved)
@@ -795,14 +870,15 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   // ---------------- params & configurations ----------------
-  tool("get_params", "Each param's code default, override (if any) and effective value, per part. preview: true marks this session's set_param previews (scope \"session\").", { document, configuration: z.string().optional() }, async ({ document: dd, configuration }) => {
+  tool("get_params", "Params per part: code default, override, effective value, unit, bounds, source line; preview marks your session's set_param previews. configuration: switch this session's active configuration first (each session has its own; list_configurations lists them).", { document, configuration: z.string().optional() }, async ({ document: dd, configuration }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
     const results = await engine(d, (await partsOf(d)).map((part) => ({ op: "regenerate", part })));
     return text({
       configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default",
-      parts: (results as any[]).map((r) => ({ part: r.part, params: r.params.map((p: any) => ({ name: p.name, codeDefault: p.default, override: p.overridden ? p.expression : undefined, preview: s.preview?.get(documentID)?.params[r.part]?.[p.name] !== undefined || s.preview?.get(documentID)?.params["*"]?.[p.name] !== undefined || undefined, effective: p.value, unit: p.unit, min: p.min, max: p.max, step: p.step, options: p.options, source: p.source && `${p.source.file}:${p.source.line}`, error: p.error })) })),
+      // parts without params are left out
+      parts: (results as any[]).filter((r) => r.params.length).map((r) => ({ part: r.part, params: r.params.map((p: any) => ({ name: p.name, codeDefault: p.default, override: p.overridden ? p.expression : undefined, preview: s.preview?.get(documentID)?.params[r.part]?.[p.name] !== undefined || s.preview?.get(documentID)?.params["*"]?.[p.name] !== undefined || undefined, effective: p.value, unit: p.unit, min: p.min, max: p.max, step: p.step, options: p.options, source: p.source && `${p.source.file}:${p.source.line}`, error: p.error })) })),
     });
   }, { readOnlyHint: true });
 
@@ -827,18 +903,19 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "set_param",
-    'Override a param. scope "session" (default): a preview only this MCP session sees (render, measure, check, describe_model, query, export…); no version, nothing saved, other agents and people are unaffected; use it to try values or pose a mechanism for a picture. scope "shared": save it in your active configuration (creates one named after you if you\'re on Default) as a new version others can see. Never edits source. Returns the regeneration result.',
+    'Override a param without editing source. value: a number in its unit or an expression ("=width/2", "1/4 in"); null clears the override (by default your preview if you have one, else the shared one). scope "session" (default): a preview only this MCP session sees (render, measure, describe_model…), no version, nobody else affected. scope "shared": saved as a version in your active configuration (or `configuration`; one named after you is made if you are on Default). part: part id, instance id (its part) or "*" for a shared param. Returns the regenerated part.',
     {
       document,
-      part: z.string().describe('part id (an instance id means its part; "*" for a shared param)'),
+      part: z.string(),
       name: z.string(),
-      value: z.union([z.number(), z.string()]).describe('number in the param\'s unit, or an expression like "=width/2" or "1/4 in"'),
-      scope: z.enum(["session", "shared"]).optional().describe('"session" (default): private preview, no version. "shared": saved to your active configuration (a version).'),
-      configuration: z.string().optional().describe("shared scope: the configuration to save in (becomes your active one)"),
+      value: z.union([z.number(), z.string(), z.null()]),
+      scope: z.enum(["session", "shared"]).optional(),
+      configuration: z.string().optional(),
     },
     async ({ document: dd, part, name, value, scope, configuration }) => {
       const documentID = docID(dd);
       part = sourcePart(part);
+      if (value === null) return resetParam(documentID, part, name, scope, configuration);
       if ((scope ?? "session") === "session") {
         const d = await loadDoc(db, s.userID, documentID);
         const prev = previewOf(documentID);
@@ -859,7 +936,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           const known = raw.flatMap((r) => r?.params?.map((p: any) => p.name) ?? []);
           throw new ToolError(`No param "${name}" on ${part}.${known.length ? ` Params: ${[...new Set(known)].join(", ")}` : " Check the part id (get_params)."}`);
         }
-        return text({ scope: "session", note: "Preview for this session only: no version, nobody else sees it. Pass scope \"shared\" to save it.", sessionPreview: prev.params, regeneration: raw.map((r) => summarize(r)) });
+        return text({ scope: "session", sessionPreview: prev.params, regeneration: raw.map((r) => summarize(r)) });
       }
       await requireMember(db, s.userID, documentID, "editor");
       let d = await loadDoc(db, s.userID, documentID);
@@ -878,9 +955,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     },
   );
 
-  tool("reset_param", 'Clear an override. scope "session": drop your preview of it. scope "shared": clear it in your active configuration (a version). Default: your session preview if you have one for this param, else shared.', { document, part: z.string(), name: z.string(), scope: z.enum(["session", "shared"]).optional(), configuration: z.string().optional() }, async ({ document: dd, part, name, scope, configuration }) => {
-    const documentID = docID(dd);
-    part = sourcePart(part);
+  /** set_param with value null: drop the session preview, or clear the override in the configuration (a version). */
+  async function resetParam(documentID: string, part: string, name: string, scope?: "session" | "shared", configuration?: string) {
     const prev = s.preview?.get(documentID);
     if (scope === "session" || (!scope && prev?.params[part]?.[name] !== undefined)) {
       if (prev?.params[part]?.[name] === undefined) throw new ToolError(`No session preview for ${part}.${name}.`);
@@ -897,29 +973,25 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     await mutate(mutators.param.reset({ documentID, configurationID, part, name, versionID: newID() } as any));
     d = await loadDoc(db, s.userID, documentID);
     const [r] = await regen(d, [part]);
-    return text({ regeneration: r });
-  });
+    return text({ scope: "shared", regeneration: r });
+  }
 
-  tool("list_configurations", "Configurations (named sets of overrides) and this session's active one.", { document }, async ({ document: dd }) => {
-    const d = await loadDoc(db, s.userID, docID(dd));
-    return text({ active: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default", configurations: [{ name: "Default", overrides: [] }, ...d.configurations.map((c) => ({ id: c.id, name: c.name, overrides: c.overrides.map((o) => ({ part: o.part, name: o.name, expression: o.expression })) }))] });
-  }, { readOnlyHint: true });
-
-  tool("set_configuration", "Switch this session's active configuration (each session and user has its own).", { document, name: z.string() }, async ({ document: dd, name }) => {
+  // switching is session state only (no write): get_params / set_param take `configuration`, and so does this
+  tool("list_configurations", "Configurations (named override sets) with their overrides, and this session's active one. activate: switch this session's active configuration (each session has its own).", { document, activate: z.string().optional() }, async ({ document: dd, activate }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    s.activeConfig.set(documentID, findConfig(d, name));
-    return text({ active: name });
-  });
+    if (activate) s.activeConfig.set(documentID, findConfig(d, activate));
+    return text({ active: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default", configurations: [{ name: "Default" }, ...d.configurations.map((c) => lean({ id: c.id, name: c.name, overrides: c.overrides.map((o) => `${o.part}.${o.name} = ${o.expression}`) }))] });
+  }, { readOnlyHint: true });
 
   // ---------------- assembly poses ----------------
   tool(
     "set_pose",
-    'Set assembly joint values (degrees for angles, mm for lengths; 0 is where the parts are modeled; limits clamp) to pose a mechanism. scope "session" (default): a preview only this MCP session sees: render, measure, check, describe_model and export use it; nothing is saved and other agents and people are unaffected. scope "shared": save the resulting positions to the document, where everyone sees them (like dragging in the workspace; no version). Joints you don\'t name keep their current value or settle around the ones you set. reset: true first drops your session values for this assembly (or, shared, the saved positions). scope "shared" without joints saves your current session preview of it. Returns every joint\'s value and where it comes from (session, shared or home). describe_model lists assemblies and joints.',
+    'Pose a mechanism: joint values in degrees or mm, 0 where modeled, clamped to limits, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints; joints you don\'t name keep their value or settle. scope "session" (default): a preview only this MCP session sees (render, measure, check, describe_model, export), nothing saved. scope "shared": save the positions to the document for everyone (like dragging in the workspace; no version); without joints it saves your session preview. reset: true first drops your session values (shared: the saved positions). Returns each joint\'s value and source (session, shared or home).',
     {
       document,
-      assembly: z.string().describe("assembly id (e.g. mechanism) or name"),
-      joints: z.record(z.string(), z.union([z.number(), z.array(z.number())])).optional().describe('joint name -> value, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints'),
+      assembly: z.string(),
+      joints: z.record(z.string(), z.union([z.number(), z.array(z.number())])).optional(),
       scope: z.enum(["session", "shared"]).optional(),
       reset: z.boolean().optional(),
     },
@@ -951,21 +1023,22 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (!Object.keys(prev.poses[info.id]).length) delete prev.poses[info.id];
       }
       state = await assemblyState(await loadDoc(db, s.userID, documentID));
-      const { poses: _, ...out } = state.assemblies.find((a) => a.id === info.id)!;
+      // instances are in describe_model; the joints are what changed
+      const { poses: _, instances: __, ...out } = state.assemblies.find((a) => a.id === info.id)! as any;
       if (scope === "shared") await activity(documentID, `set pose ${info.name}`);
-      return text({ scope: scope ?? "session", ...(scope === "shared" ? {} : { note: 'Preview for this session only: nothing saved, nobody else sees it. Pass scope "shared" to save the positions to the document.' }), ...out, render: `render({ parts: ["${info.id}"] })` });
+      return text(lean({ scope: scope ?? "session", ...out }));
     },
   );
 
   // ---------------- problems & checks ----------------
   tool(
     "list_problems",
-    "Current errors and warnings per part, with the version and author that introduced them. Check at the start of a session and after each write.",
+    "Each part's status (\"ok\" or its error and warning lines), and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session.",
     { document },
     async ({ document: dd }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const results = await regen(d);
+      const results = await regenerateParts(d, await partsOf(d));
       const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
       const introduced = (file: string | undefined, kind: string) => {
         // the most recent version that changed this script (or params, for param problems)
@@ -973,23 +1046,30 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           const v = versions[i],
             prev = versions[i + 1];
           const changed = kind === "param" ? v.kind === "params" : !file || !prev || v.snapshot.scripts[file] !== prev.snapshot.scripts[file];
-          if (changed) return { version: Number(v.number), id: v.id, message: v.message, author: v.client_name ?? v.user_name ?? "someone", at: new Date(Number(v.created_at)).toISOString() };
+          if (changed) return `v${v.number} by ${v.client_name ?? v.user_name ?? "someone"} at ${when(v.created_at)}: ${v.message} (id ${v.id})`;
         }
         return undefined;
       };
-      const problems = results.flatMap((r: any) => r.problems.map((p: any) => ({ part: r.part, ...p, introducedBy: introduced(p.source?.file, p.kind) })));
-      return text({ problems, parts: results.map((r: any) => ({ part: r.part, ok: r.ok })) });
+      // one entry per file (or "params") with problems, not per problem
+      const introducedBy: Record<string, string> = {};
+      for (const r of results as any[]) for (const p of r.problems) {
+        const key = p.kind === "param" ? "params" : (p.source?.file ?? "unknown");
+        if (!(key in introducedBy)) introducedBy[key] = introduced(p.source?.file, p.kind) ?? "unknown";
+      }
+      return text(lean({ parts: partStatus(results), introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
     },
     { readOnlyHint: true },
   );
 
-  tool("check", "Validity (BRepCheck) of each part, and interference between parts (as modeled), plus between each assembly's instances where this session poses them.", { document, part: z.string().optional() }, async ({ document: dd, part }) => {
+  tool("check", "Geometry validity (BRepCheck) of each part, interference volumes between parts as modeled, and between each assembly's instances where this session poses them.", { document, part: z.string().optional() }, async ({ document: dd, part }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const parts = part ? [part] : await partsOf(d);
     await regen(d);
     const checks = await engine(d, parts.map((p) => ({ op: "check", part: p })));
-    const out: any = { validity: parts.map((p, i) => ({ part: p, valid: !(checks[i] as any[]).length, problems: checks[i] })) };
+    // valid parts by id; invalid ones with their problems
+    const invalid = parts.map((p, i) => ({ part: p, problems: checks[i] as any[] })).filter((x) => x.problems.length);
+    const out: any = { valid: parts.filter((_, i) => !(checks[i] as any[]).length), ...(invalid.length ? { invalid } : {}) };
     const all = await partsOf(d);
     const pairs: any[] = [];
     for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
@@ -1010,22 +1090,30 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   // ---------------- versions ----------------
-  tool("list_versions", "Version history (newest first).", { document, limit: z.number().int().min(1).max(200).optional() }, async ({ document: dd, limit }) => {
+  tool("list_versions", "Version history, newest first (limit: default 20).", { document, limit: z.number().int().min(1).max(200).optional() }, async ({ document: dd, limit }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID);
-    const rows = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.note_id, v.created_at, u.name AS user_name, a.client_name, a.label FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT ${limit ?? 50}`;
-    return text({ versions: rows.map((v: any) => ({ id: v.id, number: Number(v.number), kind: v.kind, message: v.message, note: v.note_id ?? undefined, author: v.client_name ? `${v.client_name}${v.label ? ` (${v.label})` : ""}` : v.user_name, at: new Date(Number(v.created_at)).toISOString() })) });
+    const rows = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.note_id, v.created_at, u.name AS user_name, a.client_name, a.label FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT ${limit ?? 20}`;
+    return text({ versions: rows.map((v: any) => ({ id: v.id, number: Number(v.number), kind: v.kind, message: v.message, note: v.note_id ?? undefined, author: v.client_name ? `${v.client_name}${v.label ? ` (${v.label})` : ""}` : v.user_name, at: when(v.created_at) })) });
   }, { readOnlyHint: true });
 
-  tool("read_version", "Scripts as they were at a version (optionally one path).", { document, id: z.string(), path: z.string().optional() }, async ({ document: dd, id, path }) => {
-    await requireMember(db, s.userID, docID(dd));
+  tool("read_version", "A script as it was at a version (path), or every script (content: true). With neither, lists the version's scripts and whether each is the same now.", { document, id: z.string(), path: z.string().optional(), content: z.boolean().optional() }, async ({ document: dd, id, path, content }) => {
+    const documentID = docID(dd);
+    await requireMember(db, s.userID, documentID);
+    if (!path && !content) {
+      const [v] = await db.sql`SELECT number, message, snapshot FROM versions WHERE id = ${id} AND document_id = ${documentID}`;
+      if (!v) throw new ToolError(`No version ${id} in this document (list_versions).`);
+      const now = new Map((await db.sql`SELECT path, content_hash FROM scripts WHERE document_id = ${documentID}`).map((r: any) => [r.path as string, r.content_hash as string]));
+      const scripts = Object.fromEntries(Object.entries((v.snapshot?.scripts ?? {}) as Record<string, string>).map(([p, h]) => [p, !now.has(p) ? "deleted since" : now.get(p) === h ? "same now" : "changed since"]));
+      return text({ version: Number(v.number), message: v.message, scripts });
+    }
     const v = await readVersion(db, id, s.userID, path).catch((e) => {
       throw new ToolError((e as Error).message);
     });
     return text({ version: v.version.number, message: v.version.message, scripts: v.scripts });
   }, { readOnlyHint: true });
 
-  tool("restore_version", "Copy a version to the tip as a new version (nothing is overwritten).", { document, id: z.string(), verbose }, async ({ document: dd, id, verbose }) => {
+  tool("restore_version", "Copy a version to the tip as a new version (nothing is overwritten). Result like write_script.", { document, id: z.string(), verbose }, async ({ document: dd, id, verbose }) => {
     const documentID = docID(dd);
     await requireMember(db, s.userID, documentID, "editor");
     const versionID = newID();
@@ -1044,7 +1132,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const bytes = Buffer.from((f as any).base64, "base64");
     const type = ({ step: "model/step", stl: "model/stl", "3mf": "model/3mf" } as Record<string, string>)[format as string];
     const url = await storeFile(documentID, new Uint8Array(bytes), type);
-    return text({ url: downloadURL(url), bytes: bytes.length, format });
+    return text({ url: downloadURL(url), bytes: bytes.length });
   }, { readOnlyHint: true });
 
   registerOutputTools({
@@ -1059,7 +1147,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     version: async (documentID) => (await latestVersion(documentID))?.number ?? null,
   });
 
-  tool("export_document", "The whole document as the plain-file zip format; returns a signed download URL (valid 1 hour). Pass base64: true to get the zip inline instead.", { document, notes: z.boolean().optional(), base64: z.boolean().optional().describe("return the zip inline as base64 instead of a URL") }, async ({ document: dd, notes, base64 }) => {
+  tool("export_document", "The whole document as a plain-file zip; returns a signed download URL (valid 1 hour), or the zip inline with base64: true.", { document, notes: z.boolean().optional(), base64: z.boolean().optional() },async ({ document: dd, notes, base64 }) => {
     const documentID = docID(dd);
     const payload = await exportDocument(db, documentID, s.userID, { notes: notes ?? true });
     const zip = buildDocumentZip(payload);
@@ -1069,10 +1157,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ filename, url: downloadURL(url), bytes: zip.length });
   }, { readOnlyHint: true });
 
-  tool("import_document", "Create a document from a plain-file zip (base64).", { zip: z.string().describe("base64 zip"), name: z.string().optional() }, async ({ zip, name }) => {
+  tool("import_document", "Create a document from a plain-file zip (zip: base64).", { zip: z.string(), name: z.string().optional() }, async ({ zip, name }) => {
     const payload = parseDocumentZip(new Uint8Array(Buffer.from(zip, "base64")));
     const { documentID } = await importDocument(db, payload, ctx(), { name });
     s.defaultDocument ??= documentID;
     return text({ id: documentID, name: name ?? payload.manifest.name, url: documentURL(documentID) });
   });
+
+  compactToolList(server);
 }

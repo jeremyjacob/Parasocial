@@ -78,7 +78,7 @@ test("document tools discover, select and manage documents with shared permissio
     expect(found.nextOffset).toBe(1);
     const next = await call("list_documents", { query: "bracket", limit: 1, offset: found.nextOffset });
     expect(next.documents[0].id).not.toBe(found.documents[0].id);
-    expect(next.nextOffset).toBeNull();
+    expect(next.nextOffset).toBeUndefined();
     expect((await call("list_documents", { query: "Private" })).documents).toEqual([]);
     expect((await call("get_document_context")).recentBrowserDocuments).toEqual([]);
     expect(session.defaultDocument).toBeUndefined();
