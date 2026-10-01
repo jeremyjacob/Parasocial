@@ -1,6 +1,6 @@
 // The `parasocial` module that studio scripts import. Everything here is frozen by the runtime.
 export { part, param } from "./part";
-export type { PartDef, PartTools, ParamOptions, ConnectorRef } from "./part";
+export type { PartDef, PartTools, PartOptions, ParamOptions, ConnectorRef } from "./part";
 export { assembly } from "./assembly";
 export type { AssemblyDef, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement } from "./assembly";
 export type { FrameSpec } from "./connector";
@@ -16,5 +16,5 @@ export { plane, Plane } from "./plane";
 export type { AxisLike } from "./plane";
 export { mm, cm, m, inch, ft, deg, rad, evaluate } from "./units";
 export type { Unit } from "./units";
-export type { Appearance } from "./types";
+export type { Appearance, Material, PartMeta } from "./types";
 export type { Vec3 } from "@parasocial/kernel";

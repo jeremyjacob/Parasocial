@@ -3,6 +3,7 @@
 // untrusted, and mutations are never reachable through this channel.
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
+import type { DrawingOptions } from "./drawing";
 import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
 
 export type EngineRequest =
@@ -38,6 +39,10 @@ export type EngineRequest =
   | { op: "interferences"; parts: string[]; ignore?: [string, string][]; poses?: Record<string, PartPose> }
   /** One part (`part`) or several together (`parts`: one STEP/STL compound, one 3MF object each). */
   | { op: "export"; part?: string; parts?: string[]; format: "step" | "stl" | "3mf" }
+  /** A 2D technical drawing of a part (SVG text, or PDF as base64). */
+  | { op: "drawing"; part: string; options?: DrawingOptions }
+  /** Bill of materials: every part once, or an assembly's copies counted. */
+  | { op: "bom"; assembly?: string; documentName?: string }
   | { op: "closestPoint"; part: string; kind: EntityKind; index: number; point: Vec3 }
   /** Regenerate a snapshot (another version) in a separate engine: compare ghosts, viewing old versions. */
   | { op: "regenerateSnapshot"; key: string; doc: DocumentState; part: string }

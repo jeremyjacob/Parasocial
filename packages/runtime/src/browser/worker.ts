@@ -3,6 +3,8 @@
 import { loadKernel, meshTransferables } from "@parasocial/kernel";
 import { Engine, type PartResult, type Interference, type PartPose } from "../engine";
 import { LatestWins } from "../scheduler";
+import { drawPart } from "../drawing";
+import { computeBom } from "../bom-engine";
 import type { EngineRequest, EngineInfo } from "../protocol";
 
 export type WorkerInit = { type: "init"; glueSingle: string; glueMulti: string; wasmSingle: string; wasmMulti: string; threads: boolean; build: string; /** compiled once by the engine page for all its workers */ wasmModule?: WebAssembly.Module };
@@ -107,6 +109,15 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       return { value: { base64: btoa(bin), bytes: bytes.length } };
     }
+    case "drawing": {
+      const { pdf, ...rest } = drawPart(engine, req.part, req.options);
+      if (!pdf) return { value: rest };
+      let bin = "";
+      for (let i = 0; i < pdf.length; i += 0x8000) bin += String.fromCharCode(...pdf.subarray(i, i + 0x8000));
+      return { value: { ...rest, base64: btoa(bin) } };
+    }
+    case "bom":
+      return { value: computeBom(engine, { assembly: req.assembly, documentName: req.documentName }) };
     case "assemblies":
       return { value: engine.assemblies() };
     case "setPoses":

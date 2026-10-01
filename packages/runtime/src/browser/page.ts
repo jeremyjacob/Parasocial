@@ -44,7 +44,7 @@ const keys = new Map<string, string>();
 const waiting = new Map<string, { id: number; req: any }[]>();
 
 /** Requests about one part: they go to the worker that owns it. */
-const PART_OPS = new Set(["regenerate", "names", "describe", "fromOperation", "query", "resolve", "resolveOne", "indexOfName", "check", "describeAll", "tangentChain", "loopOf", "opsAtLine", "closestPoint"]);
+const PART_OPS = new Set(["regenerate", "drawing", "names", "describe", "fromOperation", "query", "resolve", "resolveOne", "indexOfName", "check", "describeAll", "tangentChain", "loopOf", "opsAtLine", "closestPoint"]);
 const STATE_OPS = new Set(["setDocument", "setScript", "setOverrides", "setPoses"]);
 
 // Compile the kernel once for every worker (each compiling its own copy slows startup with several).

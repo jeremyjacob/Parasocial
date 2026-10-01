@@ -4,7 +4,7 @@
 import { boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
 import { zipSync, strToU8 } from "fflate";
@@ -109,6 +109,8 @@ export type PartResult = {
   color?: ColorSpec;
   appearance?: Appearance;
   material?: Material;
+  /** Part number, description, vendor (from `part(name, body, options)`). */
+  meta?: PartMeta;
   /** Named frames for assembly joints (part coordinates): one per connector, or several for a pattern. */
   connectors?: Record<string, ConnectorFrame[]>;
   quality: MeshQuality;
@@ -551,7 +553,8 @@ export class Engine {
       params: run?.params ?? [],
       color: run?.color,
       appearance: run?.appearance,
-      material: run?.material,
+      material: run?.material ?? def?.meta?.material,
+      meta: run?.meta ?? def?.meta,
       connectors: run?.connectors,
       quality,
       faces: [],
