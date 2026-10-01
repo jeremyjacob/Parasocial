@@ -10,6 +10,8 @@ export type { SweepOpts } from "./sketch";
 export { path3d, helix, Path3d } from "./path3d";
 export type { HelixOpts } from "./path3d";
 export { Solid, box, cylinder, measure, thicken, MATERIALS } from "./solid";
+export { std } from "./std";
+export type { HoleSpec, NutTrapOpts, MetricSize, HeadStandard, InsertSize, BearingSize, CirclipStandard, MgnRailSize, MgnCarriageSize } from "./std";
 export { EntitySet } from "./selection";
 export type { Entity } from "./selection";
 export { plane, Plane } from "./plane";

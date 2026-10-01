@@ -1,0 +1,22 @@
+{
+  "volume": 2229.9025,
+  "area": 1376.0176,
+  "faces": 12,
+  "edges": 18,
+  "vertices": 12,
+  "valid": true,
+  "faceNames": [
+    "parts:bearing/bearing-608 · side · bearing-608/line1",
+    "parts:bearing/bearing-608 · side · bearing-608/line10",
+    "parts:bearing/bearing-608 · side · bearing-608/line11",
+    "parts:bearing/bearing-608 · side · bearing-608/line12",
+    "parts:bearing/bearing-608 · side · bearing-608/line2",
+    "parts:bearing/bearing-608 · side · bearing-608/line3",
+    "parts:bearing/bearing-608 · side · bearing-608/line4",
+    "parts:bearing/bearing-608 · side · bearing-608/line5",
+    "parts:bearing/bearing-608 · side · bearing-608/line6",
+    "parts:bearing/bearing-608 · side · bearing-608/line7",
+    "parts:bearing/bearing-608 · side · bearing-608/line8",
+    "parts:bearing/bearing-608 · side · bearing-608/line9"
+  ]
+}

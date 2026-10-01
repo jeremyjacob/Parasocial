@@ -10,7 +10,7 @@ const out = join(root, ".data/api-dts");
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 await $`bunx tsc ${join(root, "packages/api/src/index.ts")} --declaration --emitDeclarationOnly --stripInternal --outDir ${out} --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --strict --lib ES2022,DOM --types bun`.quiet().nothrow();
-const files = ["index", "part", "assembly", "connector", "sketch", "path3d", "solid", "selection", "plane", "units", "types"];
+const files = ["index", "part", "assembly", "connector", "sketch", "path3d", "solid", "selection", "plane", "units", "types", "std/index", "std/parts", "std/holes", "std/tables"];
 let dts = `// The \`parasocial\` module studio scripts import. Generated from packages/api (doc comments included).\n`;
 for (const f of files) {
   const p = [...new Glob(`**/${f}.d.ts`).scanSync(out)].sort((a, b) => a.length - b.length)[0];
