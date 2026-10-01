@@ -239,6 +239,23 @@ describe("synced queries (permissions)", () => {
   });
 });
 
+describe("concurrent pushes", () => {
+  test("two clients saving against the same baseVersion: one wins, the other gets stale", async () => {
+    const ada = await signUp("Racer");
+    await push(ada.cookie, "document.create", { id: "doc-race", name: "R" }, { clientID: "r1" });
+    await push(ada.cookie, "script.write", { documentID: "doc-race", path: "lib/a.ts", content: "base", baseVersion: null }, { clientID: "r1" });
+    const [a, b] = await Promise.all([
+      push(ada.cookie, "script.write", { documentID: "doc-race", path: "lib/a.ts", content: "from r1", baseVersion: 1 }, { clientID: "r1" }),
+      push(ada.cookie, "script.edit", { documentID: "doc-race", path: "lib/a.ts", edits: [{ search: "base", replace: "from r2" }], baseVersion: 1 }, { clientID: "r2" }),
+    ]);
+    const results = [((await a.json()) as any).mutations[0].result, ((await b.json()) as any).mutations[0].result];
+    expect(results.filter((r) => r.error === undefined)).toHaveLength(1);
+    expect(results.find((r) => r.error)).toMatchObject({ error: "app", details: { code: "stale" } });
+    const s = await db.zql.run(zql.scripts.where("documentID", "doc-race").where("path", "lib/a.ts").one());
+    expect(s!.content).toBe(results[0].error ? "from r2" : "from r1");
+  });
+});
+
 describe("version contents", () => {
   test("members read a version's scripts; others get 404", async () => {
     const ada = await signUp("V");
