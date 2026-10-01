@@ -103,3 +103,39 @@ describe("anchors: name, nearest, orphaned", () => {
     expect(resolveTarget(rec, { kind: "face", name: "gone", point: [500, 500, 500] }).status).toBe("orphaned");
   });
 });
+
+describe("winch: history selection, helical groove, design rules", () => {
+  /** Area of the part of a circle (radius g, centered at distance d from the axis) inside the drum of radius R. */
+  const lens = (R: number, g: number, d: number) => {
+    const a = Math.acos((d * d + g * g - R * R) / (2 * d * g)), b = Math.acos((d * d + R * R - g * g) / (2 * d * R));
+    return g * g * a + R * R * b - 0.5 * Math.sqrt((-d + g + R) * (d + g - R) * (d - g + R) * (d + g + R));
+  };
+
+  test("the groove cut is right across sizes (no inverted or empty booleans) and the fin root fillet follows", () => {
+    const { engine } = engineFor(join(root, "tests/corpus/studios/winch.ts"));
+    for (const ov of [{}, { turns: 3 }, { turns: 7.5 }, { turns: 14 }, { radius: 15, pitch: 2.6, groove: 1 }, { radius: 30, pitch: 5, turns: 6 }]) {
+      const r = regen(engine, "winch", ov);
+      expect(r.problems.filter((p) => p.severity === "error")).toEqual([]);
+      const g = summarize(r.record);
+      expect(g.valid).toBe(true);
+      const R = ov.radius ?? 20, pitch = ov.pitch ?? 3, turns = ov.turns ?? 10, gr = ov.groove ?? 1.2;
+      const len = turns * pitch + 10;
+      const groove = lens(R, gr, R) * turns * Math.hypot(2 * Math.PI * R, pitch);
+      const want = Math.PI * R * R * (len + 10) + Math.PI * (R + 8) ** 2 * 4 - groove;
+      // the fin and its fillets add ~0.3%; a misclassified boolean is off by the whole groove or drum
+      expect(Math.abs(g.volume / want - 1)).toBeLessThan(0.01);
+      expect(g.faceNames.filter((n) => n.startsWith("winch/finRoot · fillet")).length).toBe(6);
+      expect(g.faceNames).toContain("winch/groove · side · wall");
+    }
+  }, 60_000);
+
+  test("a failed check() reports the rule with its script line", () => {
+    const { engine } = engineFor(join(root, "tests/corpus/studios/winch.ts"));
+    const r = regen(engine, "winch", { finGap: 1 });
+    expect(r.ok).toBe(false);
+    const p = r.problems[0];
+    expect(p.kind).toBe("rule");
+    expect(p.message).toBe("design rule failed: fin must clear the flange by 2 mm (has 1.00 mm) (winch.ts:18)");
+    expect(p.source).toMatchObject({ file: "studios/winch.ts", line: 18 });
+  });
+});

@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { loadKernel, helixEdge, edgeInfo, sweep, wireFromEdges, lineEdge, circleEdge, faceFromWires, isValid, massProps, explore, vertexPoint, KernelError, shapeKind } from "../src";
+import { loadKernel, helixEdge, helixEdges, edgeInfo, sweep, wireFromEdges, lineEdge, circleEdge, faceFromWires, isValid, massProps, explore, vertexPoint, KernelError, shapeKind } from "../src";
 
 beforeAll(async () => {
   await loadKernel();
@@ -26,6 +26,18 @@ test("helix edge: axis, origin, taper", () => {
   const t = edgeInfo(helixEdge({ radius: 2, pitch: 1, turns: 2, taper: Math.atan(0.1) }));
   close(t.start, [2, 0, 0]);
   close(t.end, [2 + 0.2, 0, 2], 1e-5);
+});
+
+test("helixEdges: half-turn pieces that join end to end", () => {
+  const es = helixEdges({ radius: 5, pitch: 2, turns: 3.25 });
+  expect(es.length).toBe(7);
+  const infos = es.map(edgeInfo);
+  close(infos[0].start, [5, 0, 0]);
+  close(infos[6].end, [0, 5, 6.5], 1e-5);
+  for (let i = 1; i < infos.length; i++) close(infos[i].start, infos[i - 1].end, 1e-6);
+  const total = infos.reduce((s, e) => s + e.length, 0);
+  expect(total).toBeCloseTo(3.25 * Math.hypot(2 * Math.PI * 5, 2), 4);
+  expect(isValid(wireFromEdges(es))).toBe(true);
 });
 
 test("helix edge: errors", () => {

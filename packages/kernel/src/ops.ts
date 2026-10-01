@@ -321,21 +321,18 @@ export function chamfer(solid: Shape, edges: Shape[], distance: number, distance
 export type BooleanKind = "union" | "subtract" | "intersect";
 
 export function boolean(kind: BooleanKind, a: Shape, b: Shape): Built {
-  const O = oc();
-  return guard(kind, () => scoped(() => {
-    const Ctor = kind === "union" ? O.BRepAlgoAPI_Fuse : kind === "subtract" ? O.BRepAlgoAPI_Cut : O.BRepAlgoAPI_Common;
-    const mk = new Ctor(a, b, progress());
-    if (!mk.IsDone() || mk.HasErrors?.()) {
-      mk.delete();
-      throw new KernelError(`${kind} failed`);
-    }
-    return { shape: downcast(mk.Shape()), maker: mk };
-  }));
+  return booleanMany(kind, a, [b]);
 }
 
-/** Boolean of `a` with several tools at once (one history for all). */
+/**
+ * Fuzzy tolerance for booleans (mm). Approximated BSpline surfaces (sweeps along helices and 3D
+ * splines) touch analytic ones only to ~1e-6, which OCCT's exact classification can get wrong
+ * (a helical groove cut into a drum came out inverted). 1e-4 mm is far below modelling precision.
+ */
+export const BOOLEAN_FUZZY = 1e-4;
+
+/** Boolean of `a` with one or several tools at once (one history for all). */
 export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[]): Built {
-  if (tools.length === 1) return boolean(kind, a, tools[0]);
   const O = oc();
   return guard(kind, () => scoped(() => {
     const mk = kind === "union" ? new O.BRepAlgoAPI_Fuse() : kind === "subtract" ? new O.BRepAlgoAPI_Cut() : new O.BRepAlgoAPI_Common();
@@ -345,6 +342,7 @@ export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[]): Built 
     for (const t of tools) tl.Append(t);
     mk.SetArguments(args);
     mk.SetTools(tl);
+    mk.SetFuzzyValue(BOOLEAN_FUZZY);
     mk.Build(progress());
     if (!mk.IsDone() || mk.HasErrors()) {
       mk.delete();
@@ -434,12 +432,19 @@ const list = (shapes: Shape[]) => {
  */
 export type SweepMode = "corrected" | "frenet" | { binormal: Vec3 };
 
-/** Sweep a profile (face or wire) along a path wire. */
-export function sweep(profile: Shape, path: Shape, opts: { mode?: SweepMode } = {}): Built {
+/**
+ * Sweep a profile (face or wire) along a path wire.
+ * `roundCorners`: the path has sharp corners (a polyline). The profile then turns each corner on a
+ * round bend, staying perpendicular to the path, instead of being sheared across the corner
+ * (BRepOffsetAPI_MakePipe keeps the section's orientation through a kink, which flattens a round
+ * rope to ~60% of its cross-section). Profiles with holes keep the plain pipe.
+ */
+export function sweep(profile: Shape, path: Shape, opts: { mode?: SweepMode; roundCorners?: boolean } = {}): Built {
   const O = oc();
   const mode = opts.mode ?? "corrected";
   return guard("sweep", () => scoped(() => {
-    if (mode === "corrected") {
+    const holes = profile.ShapeType() === O.TopAbs_ShapeEnum.TopAbs_FACE && explore(profile, "wire").items.length > 1;
+    if (mode === "corrected" && !(opts.roundCorners && !holes)) {
       const mk = new O.BRepOffsetAPI_MakePipe(O.TopoDS.Wire(path), profile);
       mk.Build(progress());
       if (!mk.IsDone()) throw new KernelError("sweep failed: check the profile sits at the start of the path and the path has no sharp kinks");
@@ -455,7 +460,9 @@ export function sweep(profile: Shape, path: Shape, opts: { mode?: SweepMode } = 
     } else if (kind !== "wire") throw new KernelError("sweep: this orientation mode needs a single closed profile (one region, no holes)");
     const mk = new O.BRepOffsetAPI_MakePipeShell(O.TopoDS.Wire(path));
     if (mode === "frenet") mk.SetMode(true);
+    else if (mode === "corrected") mk.SetMode(false);
     else mk.SetMode(dir(mode.binormal));
+    if (opts.roundCorners) mk.SetTransitionMode(O.BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RoundCorner);
     mk.Add(section, false, false);
     try {
       mk.Build(progress());
@@ -504,6 +511,17 @@ export function helixXDir(axis: Vec3): Vec3 {
 
 /** Helix edge (a line in the parameter space of a cylinder, or a cone when tapered). */
 export function helixEdge(o: HelixOpts): Shape {
+  return helixEdges(o, Infinity)[0];
+}
+
+/**
+ * A helix as consecutive edges of at most `maxTurnsPerEdge` turns each (default ½), for sweep paths.
+ * One multi-turn edge sweeps into a single face that wraps around its axis many times; OCCT's
+ * booleans misclassify such faces (a 10-turn drum groove came out inverted or empty, with
+ * unmeshable faces). Half-turn pieces keep every swept face under 180° of wrap, and each piece's
+ * 3D curve is a small BSpline (degree ~10, ~11 poles) instead of one with hundreds of poles.
+ */
+export function helixEdges(o: HelixOpts, maxTurnsPerEdge = 0.5): Shape[] {
   const O = oc();
   return guard("helix", () => scoped(() => {
     const { radius, pitch } = o;
@@ -524,11 +542,17 @@ export function helixEdge(o: HelixOpts): Shape {
     const surf = tmp(taper ? new O.Geom_ConicalSurface(ax3, taper, radius) : new O.Geom_CylindricalSurface(ax3, radius));
     const du = 2 * Math.PI * (o.leftHanded ? -1 : 1);
     const line = tmp(new O.Geom2d_Line(tmp(new O.gp_Pnt2d(0, 0)), tmp(new O.gp_Dir2d(du, dv))));
-    const mk = tmp(new O.BRepBuilderAPI_MakeEdge(line, surf, 0, turns * Math.hypot(du, dv)));
-    if (!mk.IsDone()) throw new KernelError("helix edge could not be built");
-    const e = mk.Edge();
-    O.BRepLib.BuildCurves3d(e, 1e-6, O.GeomAbs_Shape.GeomAbs_C1, 14, 200);
-    return e;
+    const len = turns * Math.hypot(du, dv);
+    const n = Number.isFinite(maxTurnsPerEdge) ? Math.max(1, Math.ceil(turns / maxTurnsPerEdge - 1e-9)) : 1;
+    const out: Shape[] = [];
+    for (let k = 0; k < n; k++) {
+      const mk = tmp(new O.BRepBuilderAPI_MakeEdge(line, surf, (len * k) / n, (len * (k + 1)) / n));
+      if (!mk.IsDone()) throw new KernelError("helix edge could not be built");
+      const e = mk.Edge();
+      O.BRepLib.BuildCurves3d(e, 1e-6, O.GeomAbs_Shape.GeomAbs_C1, 14, 200);
+      out.push(e);
+    }
+    return out;
   }));
 }
 

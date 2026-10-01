@@ -17,7 +17,7 @@ mkdirSync(out, { recursive: true });
 await $`bunx tsc ${join(root, "packages/api/src/index.ts")} --declaration --emitDeclarationOnly --stripInternal --outDir ${out} --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --strict --lib ES2022,DOM --types bun`.quiet().nothrow();
 
 /** Section order of the d.ts; each file is an api_reference topic (index.ts's is the cheat sheet). */
-const files = ["index", "part", "assembly", "connector", "sketch", "path3d", "solid", "selection", "plane", "units", "types", "std/index", "std/parts", "std/holes", "std/tables"];
+const files = ["index", "part", "assembly", "connector", "sketch", "path3d", "solid", "selection", "measure", "plane", "units", "types", "std/index", "std/parts", "std/holes", "std/tables"];
 
 /** `[start, end)` of a declaration (with its doc comment) in API_DTS. */
 type Span = [number, number];

@@ -94,7 +94,7 @@ test("lookups return the d.ts declarations verbatim, with their docs and example
   expect(miss.isError).toBe(true);
   expect(apiReference({ symbol: "Plane.off" }).text).toContain("Plane.offset");
   // the index is compact
-  expect(apiIndex().length).toBeLessThan(3000);
+  expect(apiIndex().length).toBeLessThan(3500);
 });
 
 test("api_reference is an MCP tool", async () => {

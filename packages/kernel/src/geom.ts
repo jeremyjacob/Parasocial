@@ -159,11 +159,18 @@ export function vertexPoint(v: Shape): Vec3 {
 
 export type BBox = { min: Vec3; max: Vec3 };
 
-export function boundingBox(shape: Shape): BBox {
+/**
+ * Axis-aligned box. The default uses the display triangulation when the shape has one and pads by
+ * tolerances (fast, for views). `geometric: true` ignores triangulation and padding, so the result
+ * doesn't depend on whether the shape was meshed: exact for planes and quadrics, a conservative hull
+ * for freeform (BSpline) faces. Use it for anything that feeds modelling or design rules.
+ */
+export function boundingBox(shape: Shape, opts: { geometric?: boolean } = {}): BBox {
   const O = oc();
   return scoped(() => {
     const box = tmp(new O.Bnd_Box());
-    O.BRepBndLib.Add(shape, box, true);
+    O.BRepBndLib.Add(shape, box, !opts.geometric);
+    if (opts.geometric) box.SetGap(0);
     if (box.IsVoid()) return { min: [0, 0, 0], max: [0, 0, 0] };
     return { min: [box.GetXMin(), box.GetYMin(), box.GetZMin()], max: [box.GetXMax(), box.GetYMax(), box.GetZMax()] };
   });
@@ -179,6 +186,26 @@ export function massProps(shape: Shape): MassProps {
     const sp = tmp(new O.GProp_GProps());
     O.BRepGProp.SurfaceProperties(shape, sp, false, false);
     return { volume: vp.Mass(), area: sp.Mass(), centroid: p3(tmp(vp.CentreOfMass())) };
+  });
+}
+
+/** Total length and length-weighted centroid of the edges in `shape`. */
+export function linearProps(shape: Shape): { length: number; centroid: Vec3 } {
+  const O = oc();
+  return scoped(() => {
+    const p = tmp(new O.GProp_GProps());
+    O.BRepGProp.LinearProperties(shape, p, false, false);
+    return { length: p.Mass(), centroid: p3(tmp(p.CentreOfMass())) };
+  });
+}
+
+/** Total area and area-weighted centroid of the faces in `shape`. */
+export function surfaceProps(shape: Shape): { area: number; centroid: Vec3 } {
+  const O = oc();
+  return scoped(() => {
+    const p = tmp(new O.GProp_GProps());
+    O.BRepGProp.SurfaceProperties(shape, p, false, false);
+    return { area: p.Mass(), centroid: p3(tmp(p.CentreOfMass())) };
   });
 }
 
