@@ -39,19 +39,17 @@ const DEFAULT_ROUGHNESS = 0.42;
 
 export const KIND_CODE: Record<EntityKind, number> = { face: 1, edge: 2, vertex: 3 };
 
-/** 24-bit index + 2-bit kind + 6-bit part slot -> RGBA bytes (id 0 = nothing). */
-export function encodeId(slot: number, kind: EntityKind, index: number): [number, number, number, number] {
-  const v = index + 1;
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255, (KIND_CODE[kind] << 6) | (slot & 63)];
-}
-
-export function decodeId(r: number, g: number, b: number, a: number): { slot: number; kind: EntityKind; index: number } | null {
-  const v = (r << 16) | (g << 8) | b;
-  if (!v) return null;
-  const k = a >> 6;
+/**
+ * ID buffer pixels are float RGBA: r = index + 1 (0 = nothing), g = part slot, b = kind code. Each is
+ * an exact integer up to 2^24, so neither parts nor entities are limited by the encoding.
+ */
+export function decodeId(r: number, g: number, b: number): { slot: number; kind: EntityKind; index: number } | null {
+  const v = Math.round(r);
+  if (v <= 0) return null;
+  const k = Math.round(b);
   const kind: EntityKind | undefined = k === 1 ? "face" : k === 2 ? "edge" : k === 3 ? "vertex" : undefined;
   if (!kind) return null;
-  return { slot: a & 63, kind, index: v - 1 };
+  return { slot: Math.round(g), kind, index: v - 1 };
 }
 
 const FACE_PICK_VERT = /* glsl */ `
@@ -68,7 +66,8 @@ void main() {
   #include <clipping_planes_vertex>
 }`;
 const FACE_PICK_FRAG = /* glsl */ `
-uniform float slotKind;
+uniform float slot;
+uniform float kind;
 uniform bool pickable;
 varying float vFaceId;
 #include <logdepthbuf_pars_fragment>
@@ -76,23 +75,19 @@ varying float vFaceId;
 void main() {
   #include <clipping_planes_fragment>
   #include <logdepthbuf_fragment>
-  float v = floor(vFaceId + 0.5) + 1.0;
-  float r = floor(v / 65536.0);
-  float g = floor((v - r * 65536.0) / 256.0);
-  float b = v - r * 65536.0 - g * 256.0;
-  gl_FragColor = pickable ? vec4(r / 255.0, g / 255.0, b / 255.0, slotKind / 255.0) : vec4(0.0);
+  gl_FragColor = pickable ? vec4(floor(vFaceId + 0.5) + 1.0, slot, kind, 1.0) : vec4(0.0);
 }`;
 
-/** Vertex pick proxy: a disc per vertex, `size` device px across, id in rgb and kind/slot in alpha. */
+/** Vertex pick proxy: a disc per vertex, `size` device px across. */
 const VERT_PICK_VERT = /* glsl */ `
-attribute vec3 idColor;
+attribute float vertexId;
 uniform float size;
-varying vec3 vId;
+varying float vId;
 #include <common>
 #include <logdepthbuf_pars_vertex>
 #include <clipping_planes_pars_vertex>
 void main() {
-  vId = idColor;
+  vId = vertexId;
   #include <begin_vertex>
   #include <project_vertex>
   #include <logdepthbuf_vertex>
@@ -100,15 +95,16 @@ void main() {
   gl_PointSize = size;
 }`;
 const VERT_PICK_FRAG = /* glsl */ `
-uniform float slotKind;
-varying vec3 vId;
+uniform float slot;
+uniform float kind;
+varying float vId;
 #include <logdepthbuf_pars_fragment>
 #include <clipping_planes_pars_fragment>
 void main() {
   if (length(gl_PointCoord - 0.5) > 0.5) discard;
   #include <clipping_planes_fragment>
   #include <logdepthbuf_fragment>
-  gl_FragColor = vec4(vId, slotKind / 255.0);
+  gl_FragColor = vec4(floor(vId + 0.5) + 1.0, slot, kind, 1.0);
 }`;
 
 /** Highlighted vertices: a disc fading from transparent at the centre to the full colour at its rim, `size` CSS px across. */
@@ -235,7 +231,7 @@ export class PartObject {
     this.pickFaceMaterial = new THREE.ShaderMaterial({
       vertexShader: FACE_PICK_VERT,
       fragmentShader: FACE_PICK_FRAG,
-      uniforms: { slotKind: { value: (KIND_CODE.face << 6) | slot }, pickable: { value: true } },
+      uniforms: { slot: { value: slot }, kind: { value: KIND_CODE.face }, pickable: { value: true } },
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: 4,
@@ -249,7 +245,7 @@ export class PartObject {
     this.pickVertMaterial = new THREE.ShaderMaterial({
       vertexShader: VERT_PICK_VERT,
       fragmentShader: VERT_PICK_FRAG,
-      uniforms: { slotKind: { value: (KIND_CODE.vertex << 6) | slot }, size: { value: 16 } },
+      uniforms: { slot: { value: slot }, kind: { value: KIND_CODE.vertex }, size: { value: 16 } },
       toneMapped: false,
       blending: THREE.NoBlending,
     });
@@ -329,18 +325,11 @@ export class PartObject {
     this.edgeLines.name = "edges";
     this.edgeLines.renderOrder = 1;
 
-    // edge pick proxy: wide lines, id colors per segment
+    // edge pick proxy: wide lines; vertex colors (index + 1, 1, 1) times the material color (1, slot, kind)
     const pg = new LineSegmentsGeometry();
     pg.setPositions(segs.positions);
-    const ids = new Float32Array(segs.positions.length);
-    for (let s = 0; s < segs.edgeOfSegment.length; s++) {
-      const c = encodeId(this.slot, "edge", segs.edgeOfSegment[s]);
-      for (let k = 0; k < 2; k++) {
-        ids[s * 6 + k * 3] = c[0] / 255;
-        ids[s * 6 + k * 3 + 1] = c[1] / 255;
-        ids[s * 6 + k * 3 + 2] = c[2] / 255;
-      }
-    }
+    const ids = new Float32Array(segs.positions.length).fill(1);
+    for (let s = 0; s < segs.edgeOfSegment.length; s++) ids[s * 6] = ids[s * 6 + 3] = segs.edgeOfSegment[s] + 1;
     pg.setColors(ids);
     this.pickEdges = new LineSegments2(pg, this.pickEdgeMaterial);
     this.pickEdges.renderOrder = 1;
@@ -351,23 +340,21 @@ export class PartObject {
       this.pickEdgeMaterial.resolution.set(pickViewport.z, pickViewport.w);
     };
     this.pickEdges.visible = false;
-    // alpha carries kind + slot; LineMaterial writes alpha = opacity, so encode it there
-    this.pickEdgeMaterial.opacity = ((KIND_CODE.edge << 6) | this.slot) / 255;
+    this.pickEdgeMaterial.color.setRGB(1, this.slot, KIND_CODE.edge);
     this.pickEdgeMaterial.transparent = false;
 
     // vertex pick proxy: a disc per pickable vertex, id colors per point
     this.pickableVertices = this.cornerVertices(d);
     const vIds = [...this.pickableVertices];
     const vPos = new Float32Array(vIds.length * 3);
-    const vCol = new Float32Array(vIds.length * 3);
+    const vNum = new Float32Array(vIds.length);
     vIds.forEach((v, k) => {
       vPos.set(d.vertices![v], k * 3);
-      const c = encodeId(this.slot, "vertex", v);
-      vCol.set([c[0] / 255, c[1] / 255, c[2] / 255], k * 3);
+      vNum[k] = v;
     });
     const vg = new THREE.BufferGeometry();
     vg.setAttribute("position", new THREE.BufferAttribute(vPos, 3));
-    vg.setAttribute("idColor", new THREE.BufferAttribute(vCol, 3));
+    vg.setAttribute("vertexId", new THREE.BufferAttribute(vNum, 1));
     this.pickVerts = new THREE.Points(vg, this.pickVertMaterial);
     this.pickVerts.renderOrder = 2;
     this.pickVerts.visible = false;
@@ -441,10 +428,10 @@ export class PartObject {
 
   setSlot(slot: number) {
     this.slot = slot;
-    this.pickFaceMaterial.uniforms.slotKind.value = (KIND_CODE.face << 6) | slot;
-    this.pickEdgeMaterial.opacity = ((KIND_CODE.edge << 6) | slot) / 255;
-    this.pickVertMaterial.uniforms.slotKind.value = (KIND_CODE.vertex << 6) | slot;
-    // edge ids don't include the slot (it's in alpha); the section cap's draw order does
+    this.pickFaceMaterial.uniforms.slot.value = slot;
+    this.pickEdgeMaterial.color.setRGB(1, slot, KIND_CODE.edge);
+    this.pickVertMaterial.uniforms.slot.value = slot;
+    // the section cap's draw order depends on the slot
     this.orderCap();
   }
 
@@ -691,9 +678,10 @@ export class PartObject {
   /** Parts share the stencil buffer: each part's passes and cap run back to back, before any faces. */
   private orderCap() {
     if (!this.cap) return;
-    const order = -3 + this.slot * 0.01;
+    // increasing with the slot but always within [-3, -2), however many parts there are
+    const order = -3 + this.slot / (this.slot + 1);
     for (const m of this.capStencil) m.renderOrder = order;
-    this.cap.renderOrder = order + 0.005;
+    this.cap.renderOrder = -3 + (this.slot + 0.5) / (this.slot + 1.5);
   }
 
   private showCap(on: boolean) {

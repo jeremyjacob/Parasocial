@@ -94,10 +94,10 @@ export class Viewer {
   private resolution = new THREE.Vector2(1, 1);
   /** device px per CSS px, shared with the parts (vertex dots are sized in CSS px) */
   private pixelRatio = { value: 1 };
-  private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
-  private pickBuf = new Uint8Array(4 * 13 * 13);
-  private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true });
-  private facePickBuf = new Uint8Array(4);
+  private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
+  private pickBuf = new Float32Array(4 * 13 * 13);
+  private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
+  private facePickBuf = new Float32Array(4);
   private needsRender = true;
   private raf = 0;
   private useOrtho = false;
@@ -289,7 +289,6 @@ export class Viewer {
     }
     let slot = prev ? prev.slot : this.slots.indexOf(null);
     if (slot < 0) slot = this.slots.length;
-    if (slot > 63) throw new Error("viewer supports up to 64 parts");
     this.slots[slot] = d.id;
     if (prev && this.parts.get(d.id) === prev) {
       this.scene.remove(prev.group);
@@ -1070,7 +1069,7 @@ export class Viewer {
     const R = Math.ceil(Math.max(vSnap, eSnap));
     const size = R * 2 + 1;
     if (this.pickTarget.width !== size) this.pickTarget.setSize(size, size);
-    if (this.pickBuf.length !== size * size * 4) this.pickBuf = new Uint8Array(size * size * 4);
+    if (this.pickBuf.length !== size * size * 4) this.pickBuf = new Float32Array(size * size * 4);
     const px = Math.round(x * dpr),
       py = Math.round(y * dpr);
     const lines = this.mode !== "shaded";
@@ -1088,7 +1087,7 @@ export class Viewer {
     for (let j = 0; j < size; j++)
       for (let i = 0; i < size; i++) {
         const o = (j * size + i) * 4;
-        const id = decodeId(this.pickBuf[o], this.pickBuf[o + 1], this.pickBuf[o + 2], this.pickBuf[o + 3]);
+        const id = decodeId(this.pickBuf[o], this.pickBuf[o + 1], this.pickBuf[o + 2]);
         if (!id) continue;
         if (id.kind === "vertex") {
           const key = `${id.slot}:${id.index}`;
@@ -1128,7 +1127,7 @@ export class Viewer {
     const R = Math.ceil(full);
     const size = R * 2 + 1;
     if (this.facePickTarget.width !== size) this.facePickTarget.setSize(size, size);
-    if (this.facePickBuf.length !== size * size * 4) this.facePickBuf = new Uint8Array(size * size * 4);
+    if (this.facePickBuf.length !== size * size * 4) this.facePickBuf = new Float32Array(size * size * 4);
     this.camera.setViewOffset(W, H, px - R, py - R, size, size);
     this.renderIds(this.facePickTarget, false, true);
     this.camera.clearViewOffset();
@@ -1136,7 +1135,7 @@ export class Viewer {
     this.renderer.readRenderTargetPixels(this.facePickTarget, 0, 0, size, size, buf);
     const at = (i: number, j: number) => (j * size + i) * 4;
     const c = at(R, R);
-    const id = decodeId(buf[c], buf[c + 1], buf[c + 2], buf[c + 3]);
+    const id = decodeId(buf[c], buf[c + 1], buf[c + 2]);
     if (id?.kind !== "face") return null;
     const same = (i: number, j: number) => {
       const o = at(i, j);
@@ -1286,17 +1285,17 @@ export class Viewer {
     const scale = Math.min(1, 512 / Math.max(w, h)); // cap the readback
     const rw = Math.max(1, Math.round(w * scale)),
       rh = Math.max(1, Math.round(h * scale));
-    const rt = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.UnsignedByteType });
+    const rt = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.FloatType });
     const cam = this.camera;
     cam.setViewOffset(this.canvas.width, this.canvas.height, Math.round(ax * dpr), Math.round(ay * dpr), w, h);
     this.renderIds(rt, wantEdge, wantFace || this.filter.part, wantVertex);
     cam.clearViewOffset();
-    const buf = new Uint8Array(rw * rh * 4);
+    const buf = new Float32Array(rw * rh * 4);
     this.renderer.readRenderTargetPixels(rt, 0, 0, rw, rh, buf);
     rt.dispose();
     const seen = new Set<string>();
     for (let i = 0; i < buf.length; i += 4) {
-      const id = decodeId(buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
+      const id = decodeId(buf[i], buf[i + 1], buf[i + 2]);
       if (!id) continue;
       const part = this.slots[id.slot];
       if (!part) continue;
@@ -1409,17 +1408,17 @@ export class Viewer {
       return s && s.x >= 0 && s.y >= 0 && s.x <= W && s.y <= H ? s : null;
     });
     if (!screen.some(Boolean)) return points.map(() => false);
-    const rt = (this.visTarget ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: true }));
+    const rt = (this.visTarget ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, depthBuffer: true }));
     if (rt.width !== W || rt.height !== H) rt.setSize(W, H);
     this.renderIds(rt, false, true);
-    const px = new Uint8Array(4);
+    const px = new Float32Array(4);
     const cam = this.camera.position;
     const scale = Math.max(1, this.modelSphere().radius);
     return points.map((p, i) => {
       const s = screen[i];
       if (!s) return false;
       this.renderer.readRenderTargetPixels(rt, Math.min(W - 1, Math.floor(s.x)), H - 1 - Math.min(H - 1, Math.floor(s.y)), 1, 1, px);
-      const id = decodeId(px[0], px[1], px[2], px[3]);
+      const id = decodeId(px[0], px[1], px[2]);
       const part = id?.kind === "face" ? this.slots[id.slot] : null;
       if (!id || !part) return true;
       const hit = this.pickPoint(s.x, s.y, { part, kind: "face", index: id.index });
