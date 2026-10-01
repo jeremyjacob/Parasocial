@@ -637,7 +637,7 @@ export class Engine {
     {
       const tm = performance.now();
       scoped(() => {
-        const bb = boundingBox(rec!.shape);
+        const bb = boundingBox(rec!.shape, { geometric: true });
         // OCCT takes NaN coordinates without complaint and builds a shape nothing can mesh
         if (![...bb.min, ...bb.max].every(Number.isFinite)) throw new Error("its geometry has invalid (NaN or infinite) coordinates");
         result.bbox = bb;

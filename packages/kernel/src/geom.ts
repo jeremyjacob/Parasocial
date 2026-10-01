@@ -162,15 +162,18 @@ export type BBox = { min: Vec3; max: Vec3 };
 /**
  * Axis-aligned box. The default uses the display triangulation when the shape has one and pads by
  * tolerances (fast, for views). `geometric: true` ignores triangulation and padding, so the result
- * doesn't depend on whether the shape was meshed: exact for planes and quadrics, a conservative hull
- * for freeform (BSpline) faces. Use it for anything that feeds modelling or design rules.
+ * doesn't depend on whether the shape was meshed (BRepBndLib.AddOptimal without shape tolerances, so
+ * the 1e-4 mm boolean fuzz doesn't pad it): tight for planes, quadrics and freeform faces. Use it for
+ * anything that feeds modelling or design rules.
  */
 export function boundingBox(shape: Shape, opts: { geometric?: boolean } = {}): BBox {
   const O = oc();
   return scoped(() => {
     const box = tmp(new O.Bnd_Box());
-    O.BRepBndLib.Add(shape, box, !opts.geometric);
-    if (opts.geometric) box.SetGap(0);
+    if (opts.geometric) {
+      O.BRepBndLib.AddOptimal(shape, box, false, false);
+      box.SetGap(0);
+    } else O.BRepBndLib.Add(shape, box, true);
     if (box.IsVoid()) return { min: [0, 0, 0], max: [0, 0, 0] };
     return { min: [box.GetXMin(), box.GetYMin(), box.GetZMin()], max: [box.GetXMax(), box.GetYMax(), box.GetZMax()] };
   });
