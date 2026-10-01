@@ -19,6 +19,10 @@ export type RenderOptions = {
   width?: number;
   height?: number;
   style?: "shaded" | "shadedEdges" | "wireframe" | "hiddenLine";
+  /** Which model axis points up on screen for named views (and the ground grid): "z" like the workspace viewer (default), or "y". */
+  up?: "z" | "y";
+  /** Assembly instances moved from where their part is modeled (row-major rotation + translation). */
+  poses?: Record<string, { r: number[]; t: number[] }>;
 };
 
 /** Same as the viewer's view cube directions (viewcube.ts). */
@@ -30,6 +34,16 @@ const VIEW_DIRS: Record<string, Vec3> = {
   top: [0, 0, 1],
   bottom: [0, 0, -1],
   iso: norm([1, -1, 1]),
+};
+/** Y-up views: front looks down -Z from +Z, top looks down from +Y. */
+const VIEW_DIRS_Y: Record<string, Vec3> = {
+  front: [0, 0, 1],
+  back: [0, 0, -1],
+  right: [1, 0, 0],
+  left: [-1, 0, 0],
+  top: [0, 1, 0],
+  bottom: [0, -1, 0],
+  iso: norm([1, 1, 1]),
 };
 const PALETTE = ["#8e939a", "#93b29c", "#8d8fd6", "#d2c27f", "#5fa6a4", "#cf96a4"];
 const FOV = (35 * Math.PI) / 180;
@@ -101,6 +115,7 @@ struct Cam {
   bgBottom: vec4f,
   gridMinor: vec4f,
   gridMajor: vec4f,
+  ground: vec4f,   // xyz: the up axis (ground grid normal); w = 1 when it's +Y
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 fn cut(p: vec3f) -> bool { return cam.flags.x > 0.5 && dot(p, cam.plane.xyz) > cam.plane.w; }
@@ -122,15 +137,19 @@ fn lines(p: vec2f, fw: vec2f, s: f32) -> f32 {
 }
 @fragment fn fs(v: V) -> @location(0) vec4f {
   var c = mix(cam.bgBottom.rgb, cam.bgTop.rgb, v.ndc.y * 0.5 + 0.5);
-  // ground grid on z = 0 (three decades, fading with cell size and distance, like the viewer's)
+  // ground grid through the origin, normal to the up axis (three decades, fading with cell size and distance, like the viewer's)
   let a = cam.invViewProj * vec4f(v.ndc, 0.0, 1.0);
   let b = cam.invViewProj * vec4f(v.ndc, 1.0, 1.0);
   let ro = a.xyz / a.w;
   let rd = b.xyz / b.w - ro;
-  let t = -ro.z / select(rd.z, 1e-9, abs(rd.z) < 1e-9);
+  let rn = dot(rd, cam.ground.xyz);
+  let t = -dot(ro, cam.ground.xyz) / select(rn, 1e-9, abs(rn) < 1e-9);
   let hit = ro + rd * t;
   let s = cam.forward.w;
-  let local = hit.xy - round(cam.eye.xy / (s * 100.0)) * s * 100.0;
+  let yUp = cam.ground.w > 0.5;
+  let h2 = select(hit.xy, hit.xz, yUp);
+  let e2 = select(cam.eye.xy, cam.eye.xz, yUp);
+  let local = h2 - round(e2 / (s * 100.0)) * s * 100.0;
   let fw = max(fwidth(local), vec2f(1e-6));
   let a1 = lines(local, fw, s) * 0.9;
   let a2 = max(lines(local, fw, s * 10.0), lines(local, fw, s * 100.0));
@@ -154,7 +173,7 @@ struct V { @builtin(position) pos: vec4f, @location(0) world: vec3f, @location(1
   if (dot(n, e) < 0.0) { n = -n; } // two-sided, whatever the winding
   let key = max(dot(n, cam.key.xyz), 0.0);
   let fill = max(dot(n, cam.fill.xyz), 0.0);
-  let sky = mix(vec3f(0.36, 0.36, 0.38), vec3f(0.62), n.z * 0.5 + 0.5);
+  let sky = mix(vec3f(0.36, 0.36, 0.38), vec3f(0.62), dot(n, cam.ground.xyz) * 0.5 + 0.5);
   let h = normalize(cam.key.xyz + e);
   let spec = pow(max(dot(n, h), 0.0), 48.0) * 0.1;
   return vec4f(v.color * (sky + key * 0.62 + fill * 0.16) + spec, 1.0);
@@ -296,12 +315,15 @@ function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) 
     orthoHeight = 2 * Math.hypot(...sub(eye, target)) * Math.tan(FOV / 2);
   } else {
     // Viewer.fit: keep the view direction, back off until the bounding sphere fits
-    const d = VIEW_DIRS[o.view ?? "iso"] ?? VIEW_DIRS.iso;
+    const dirs = o.up === "y" ? VIEW_DIRS_Y : VIEW_DIRS;
+    const d = dirs[o.view ?? "iso"] ?? dirs.iso;
     const fitH = b.radius / Math.sin(FOV / 2);
     const fitW = b.radius / Math.sin(Math.atan(Math.tan(FOV / 2) * aspect));
     eye = add(b.center, d, Math.max(fitH, fitW) * 1.12);
     target = b.center;
-    up = Math.abs(d[2]) > 0.999 ? [0, d[2] > 0 ? 1 : -1, 0] : [0, 0, 1];
+    // looking straight along the up axis, the screen's up is the next axis round (+Y for top in Z-up, -Z in Y-up)
+    if (o.up === "y") up = Math.abs(d[1]) > 0.999 ? [0, 0, d[1] > 0 ? -1 : 1] : [0, 1, 0];
+    else up = Math.abs(d[2]) > 0.999 ? [0, d[2] > 0 ? 1 : -1, 0] : [0, 0, 1];
     ortho = false;
     orthoHeight = b.radius * 2.3 * Math.max(1, 1 / aspect);
   }
@@ -341,6 +363,31 @@ function hatchFor(id: string) {
   return { angle: (angles[h % angles.length] * Math.PI) / 180, scale: scales[(h >>> 8) % scales.length] };
 }
 
+/** A part's render data moved by its assembly pose (positions, normals, edges, vertices). */
+export function posed(r: RenderPart, pose?: { r: number[]; t: number[] }): RenderPart {
+  if (!pose) return r;
+  const R = pose.r,
+    T = pose.t;
+  const xf = (src: Float32Array, translate: boolean) => {
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i += 3) {
+      const x = src[i],
+        y = src[i + 1],
+        z = src[i + 2];
+      out[i] = R[0] * x + R[1] * y + R[2] * z + (translate ? T[0] : 0);
+      out[i + 1] = R[3] * x + R[4] * y + R[5] * z + (translate ? T[1] : 0);
+      out[i + 2] = R[6] * x + R[7] * y + R[8] * z + (translate ? T[2] : 0);
+    }
+    return out;
+  };
+  const m = r.mesh;
+  return {
+    ...r,
+    mesh: { ...m, positions: xf(m.positions, true), normals: xf(m.normals, false), edgePositions: xf(m.edgePositions, true) },
+    vertices: r.vertices?.map((v) => [...xf(new Float32Array(v), true)] as Vec3),
+  };
+}
+
 // ---------- render ----------
 /** Render parts to a PNG; returns it base64-encoded. */
 export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions): Promise<string> {
@@ -350,13 +397,14 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
     H = o.height ?? 768;
   const style = o.style ?? "shadedEdges";
   const t = LIGHT;
-  const entries = [...all].filter(([id, r]) => r.mesh && (!o.parts || o.parts.includes(id)));
+  const entries = [...all].filter(([id, r]) => r.mesh && (!o.parts || o.parts.includes(id))).map(([id, r]): [string, RenderPart] => [id, posed(r, o.poses?.[id])]);
   const parts = entries.map(([, r]) => r);
   const b = bounds(parts);
   const c = camera(o, b, W / H);
   const bias = b.radius * 0.003;
   const section = o.section ? { n: norm(o.section.normal), d: dot(norm(o.section.normal), o.section.origin) } : null;
-  const gridSize = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1]) * 1.6;
+  const yUp = o.up === "y";
+  const gridSize = Math.max(b.max[0] - b.min[0], yUp ? b.max[2] - b.min[2] : b.max[1] - b.min[1]) * 1.6;
   const gridStep = Math.pow(10, Math.floor(Math.log10(Math.max(gridSize, 1) / 8)));
 
   const destroy: any[] = [];
@@ -375,11 +423,11 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   };
   const rgba = (v: Vec3, a = 1) => [...v, a];
 
-  const camData = new Float32Array(16 * 2 + 4 * 11); // Cam: two matrices, eleven vec4s
+  const camData = new Float32Array(16 * 2 + 4 * 12); // Cam: two matrices, twelve vec4s
   camData.set(c.viewProj, 0);
   camData.set(invert(c.viewProj), 16);
   camData.set([...c.eye, c.ortho ? 1 : 0, ...c.forward, gridStep, ...c.key, 0, ...c.fill, 0, W, H, bias, c.reach, ...(section ? [...section.n, section.d] : [0, 0, 1, 0]), section ? 1 : 0, style === "hiddenLine" ? 1 : 0, (2 * Math.tan(FOV / 2)) / H, c.orthoHeight / H], 32);
-  camData.set([...rgba(linear(t.backgroundTop ?? t.background)), ...rgba(linear(t.background)), ...rgba(linear(t.grid)), ...rgba(linear(t.gridMajor))], 32 + 4 * 7);
+  camData.set([...rgba(linear(t.backgroundTop ?? t.background)), ...rgba(linear(t.background)), ...rgba(linear(t.grid)), ...rgba(linear(t.gridMajor)), ...(yUp ? [0, 1, 0, 1] : [0, 0, 1, 0])], 32 + 4 * 7);
   const camGroup = dev.createBindGroup({ layout: pipes.camLayout, entries: [{ binding: 0, resource: { buffer: buffer(camData, U.UNIFORM) } }] });
 
   // highlight semantics as in Viewer.restyle

@@ -66,6 +66,8 @@ async function call(req: any): Promise<any> {
       const { mesh, ...meta } = v;
       return { ok: true, value: meta };
     }
+    // overlap volumes only: their meshes are for the viewer
+    if (req.op === "interferences" && Array.isArray(v)) return { ok: true, value: v.map(({ mesh, ...x }: any) => x) };
     return { ok: true, value: v };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e), timeout: !!e?.timeout };

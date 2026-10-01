@@ -26,6 +26,8 @@ Stable names: faces are "opId · role · source" (e.g. "bracket/corners · fille
 
 Errors come with a source location and say what to do next (e.g. "fillet radius 5 exceeds adjacent face width 3.2; use a value below 3.2 (bracket.ts:18)"). The workspace shows the last good geometry until you fix it.
 
-Params: get_params / set_param / reset_param change overrides in your session's active configuration (set_configuration); they never edit source. Default is exactly what the code says; to change a default, edit the script.
+Params: get_params / set_param / reset_param never edit source. By default set_param is a session preview: only your MCP session sees it (render, measure, check, describe_model…), it creates no version and doesn't disturb people or other agents. Pass scope "shared" to save an override in your active configuration (set_configuration) as a version. Default is exactly what the code says; to change a default, edit the script.
+
+Poses: to show a mechanism in another position, use set_pose({ assembly, joints: { lid: 90 } }) (session preview by default, scope "shared" saves the positions everyone sees) rather than params or script edits. describe_model lists assemblies and joints. render({ parts: ["mechanism"] }) renders an assembly's instances where your session poses them; parts also takes instance ids. Renders are Z-up like the workspace (front looks along +Y); pass up: "y" for Y-up views.
 
 Skip routine completion replies. When a reply is useful, be concise and include only information the human needs.`;
