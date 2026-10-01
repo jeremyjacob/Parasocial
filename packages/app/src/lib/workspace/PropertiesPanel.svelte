@@ -95,6 +95,21 @@
 			a.joints.filter((j) => ws.asm.drivers[a.id]?.includes(j.name) ?? j.type !== 'fastened').map((j) => ({ asm: a.id, joint: j, name: jointName(j), value: ws.asm.values[a.id]?.[j.name] ?? j.value }))
 		)
 	);
+	/** Joints tied together (gear, rack and pinion, screw): the follower moves with its driver, so only drivers have fields above. */
+	const RELATION_LABEL = { gear: 'Gear', rackPinion: 'Rack and pinion', screw: 'Screw', linear: 'Linear' } as const;
+	const relations = $derived(
+		(studio?.assemblies ?? []).flatMap((a) =>
+			(a.relations ?? []).map((r) => {
+				const named = (n: string) => {
+					const j = a.joints.find((x) => x.name === n);
+					return j ? jointName(j) : n;
+				};
+				const perTurn = `${num(r.ratio * 360, 3)} mm/turn`;
+				const how = r.kind === 'gear' ? `${num(r.ratio, 4)}×` : r.kind === 'linear' ? `${num(r.ratio, 4)}×${r.offset ? ` ${r.offset > 0 ? '+' : '−'} ${num(Math.abs(r.offset), 3)}` : ''}` : perTurn;
+				return { key: `${a.id}/${r.a}:${r.ia}/${r.b}:${r.ib}`, label: RELATION_LABEL[r.kind], joints: r.a === r.b ? named(r.a) : `${named(r.a)} → ${named(r.b)}`, how, source: r.source };
+			})
+		)
+	);
 	const problems = $derived.by(() => {
 		if (!studio) return [];
 		const asm = ws.asm.problems.filter((p) => studio.assemblies.some((a) => a.id === p.assembly)).map((p) => p.message);
@@ -157,6 +172,18 @@
 							{:else}
 								<span class="tabular-nums text-fg-tertiary">{num(Math.hypot(...j.value), 1)}°</span>
 							{/if}
+						</div>
+					{/each}
+				</PropertySection>
+			{/if}
+			{#if relations.length}
+				<PropertySection bodyClass="gap-0.5" title="Relations" meta={String(relations.length)}>
+					{#each relations as r (r.key)}
+						<div class={row} data-relation={r.key}>
+							<span class="truncate text-fg-secondary">{r.label}</span>
+							<button class="focus-ring flex min-w-0 items-center justify-between gap-2 rounded-xs text-left hover:underline" title="{r.joints} · {r.how}" onclick={() => reveal(r.source?.file, r.source?.line)}>
+								<span class="truncate">{r.joints}</span><span class="shrink-0 tabular-nums text-fg-tertiary">{r.how}</span>
+							</button>
 						</div>
 					{/each}
 				</PropertySection>

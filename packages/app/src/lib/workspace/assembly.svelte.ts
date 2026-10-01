@@ -86,10 +86,10 @@ export class AssemblyController {
 				(part) => this.nameOf(part)
 			);
 			for (const p of resolved.problems) problems.push({ assembly: info.id, ...p });
-			const { joints, home } = resolved.spec;
+			const { joints, home, couplings } = resolved.spec;
 			if (resolved.pending || (!joints.length && Object.values(home ?? {}).every((p) => isIdentity(p)))) continue;
 			const fixed = info.fixed;
-			const key = JSON.stringify([joints, fixed, home]);
+			const key = JSON.stringify([joints, couplings, fixed, home]);
 			const prev = this.built.get(info.id);
 			if (prev && prev.key === key) {
 				next.set(info.id, { ...prev, info });

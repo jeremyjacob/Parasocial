@@ -8,6 +8,9 @@
 //
 // Unknowns are the joint variables. A spanning tree from the fixed parts turns most joints into
 // forward kinematics; joints that close a loop become 6-D residuals the solver drives to zero.
+// Couplings (gears, rack and pinion, screws) tie one joint variable to another linearly,
+// q_b = ratio·q_a + offset: one more residual each, so DOF, drivers and movability count them,
+// and a coupled joint stopped by its limit stops the joint driving it.
 // Dragging adds a soft goal (a point on the grabbed part follows the cursor) and a small pull
 // toward the previous values, so only free degrees of freedom move and the mechanism stays on
 // its current branch. Damped least squares (Levenberg–Marquardt) with a numerical Jacobian;
@@ -44,8 +47,22 @@ export type JointSpec = {
   value?: number[];
 };
 
+/** A linear relation between two joint variables: q_b = ratio·q_a + offset (each in its own unit, degrees or mm). */
+export type CouplingSpec = {
+  /** Joint names (the same joint for a screw on a cylindrical joint: angle to travel). */
+  a: string;
+  b: string;
+  /** Which variable of each joint (default 0). */
+  ia?: number;
+  ib?: number;
+  ratio: number;
+  offset?: number;
+};
+
 export type MechanismSpec = {
   joints: JointSpec[];
+  /** Joint variables tied to each other (gears, rack and pinion, screws). */
+  couplings?: CouplingSpec[];
   /** Parts that never move. Each connected group without one keeps its first part still. */
   fixed?: string[];
   /** Where bodies sit with every joint at 0 (default: the identity, where the part is modeled). Bodies listed here without joints stay put. */
@@ -74,6 +91,7 @@ export function motion(type: JointType, q: ArrayLike<number>, o = 0): Pose {
 
 type Joint = JointSpec & { Fa: Pose; Fb: Pose; FaInv: Pose; FbInv: Pose; off: number; n: number; lo: number[]; hi: number[] };
 type Link = { body: string; parent: string; joint: Joint; forward: boolean };
+type Coupling = { a: number; b: number; ratio: number; offset: number; scale: number };
 
 export class Mechanism {
   readonly bodies: string[];
@@ -83,6 +101,9 @@ export class Mechanism {
   x: Float64Array;
   private links: Link[] = [];
   private loops: Joint[] = [];
+  private couplings: Coupling[] = [];
+  /** Variables in some coupling. */
+  private coupled = new Set<number>();
   private L: number;
   private home: Map<string, Pose>;
 
@@ -146,6 +167,27 @@ export class Mechanism {
       }
     }
     this.loops = this.joints.filter((j) => !used.has(j));
+    // couplings: residual (q_b - ratio·q_a - offset), weighted like the loops (angles by the length scale)
+    const varOf = (name: string, i: number | undefined, what: string) => {
+      const j = this.joints.find((x) => x.name === name);
+      if (!j) throw new Error(`coupling: no joint "${name}"`);
+      const k = i ?? 0;
+      if (!Number.isInteger(k) || k < 0 || k >= j.n) throw new Error(`coupling: joint "${name}" (${j.type}) has no variable ${k} (${what})`);
+      return j.off + k;
+    };
+    for (const c of spec.couplings ?? []) {
+      if (!Number.isFinite(c.ratio) || !Number.isFinite(c.offset ?? 0)) throw new Error(`coupling ${c.a} → ${c.b}: ratio and offset must be finite`);
+      const a = varOf(c.a, c.ia, "a"),
+        b = varOf(c.b, c.ib, "b");
+      if (a === b) throw new Error(`coupling: a joint variable can't drive itself (${c.a})`);
+      this.coupled.add(a).add(b);
+      this.couplings.push({ a, b, ratio: c.ratio, offset: c.offset ?? 0, scale: this.kindOf(b) === "angle" ? this.L * DEG : 1 });
+    }
+  }
+
+  /** Anything for the solver to satisfy beyond forward kinematics (loops, couplings)? */
+  private get constrained() {
+    return this.loops.length > 0 || this.couplings.length > 0;
   }
 
   /** Every body's transform (its part's coordinates to the world) for variables `x`. */
@@ -160,7 +202,10 @@ export class Mechanism {
     return out;
   }
 
-  /** Loop-closure residuals (6 per loop joint: rotation scaled by the characteristic length, then translation). */
+  /**
+   * Constraint residuals: loop closure (6 per loop joint: rotation scaled by the characteristic
+   * length, then translation), then one per coupling.
+   */
   private loopResiduals(poses: Map<string, Pose>, x: ArrayLike<number>, out: number[]) {
     for (const j of this.loops) {
       const E = compose(j.FaInv, compose(inverse(poses.get(j.a)!), compose(poses.get(j.b)!, j.Fb)));
@@ -168,6 +213,7 @@ export class Mechanism {
       const w = logRot(D.r);
       out.push(w[0] * this.L, w[1] * this.L, w[2] * this.L, D.t[0], D.t[1], D.t[2]);
     }
+    for (const c of this.couplings) out.push((x[c.b] - c.ratio * x[c.a] - c.offset) * c.scale);
   }
 
   /** Largest loop-closure error (mm-ish): 0 when every joint is satisfied. */
@@ -184,7 +230,7 @@ export class Mechanism {
   /**
    * Levenberg–Marquardt on residual(x). Returns the improved x (clamped to limits).
    */
-  private leastSquares(x0: Float64Array, residual: (x: Float64Array) => number[], iterations = 30): Float64Array {
+  private leastSquares(x0: Float64Array, residual: (x: Float64Array) => number[], iterations = 30, frozen?: Set<number>): Float64Array {
     const n = x0.length;
     let x = new Float64Array(x0);
     if (!n) return x;
@@ -193,7 +239,7 @@ export class Mechanism {
     let mu = 1e-3;
     for (let it = 0; it < iterations && cost > 1e-18; it++) {
       const m = r.length;
-      const J = jacobian(residual, x, r);
+      const J = jacobian(residual, x, r, frozen);
       const A = new Float64Array(n * n);
       const g = new Float64Array(n);
       for (let a = 0; a < n; a++) {
@@ -236,9 +282,9 @@ export class Mechanism {
     return x;
   }
 
-  /** Pull x back onto the loop constraints (minimum change): damped Gauss–Newton. */
-  private project(x: Float64Array): Float64Array {
-    if (!this.loops.length) return x;
+  /** Pull x back onto the constraints (minimum change; `frozen` variables stay put): damped Gauss–Newton. */
+  private project(x: Float64Array, frozen?: Set<number>): Float64Array {
+    if (!this.constrained) return x;
     const residual = (y: Float64Array) => {
       const r: number[] = [];
       this.loopResiduals(this.poses(y), y, r);
@@ -249,7 +295,7 @@ export class Mechanism {
       // a whisper of regularization picks the nearest solution when the loops leave freedom
       for (let i = 0; i < y.length; i++) r.push((y[i] - x[i]) * 1e-4);
       return r;
-    }, 50);
+    }, 50, frozen);
   }
 
   /** Satisfy the loop joints, starting from (and staying near) the current values. Returns the remaining error. */
@@ -274,7 +320,8 @@ export class Mechanism {
       const p = applyPoint(poses.get(body)!, local);
       r.push(p[0] - target[0], p[1] - target[1], p[2] - target[2]);
       // stay near where we were: free directions the goal doesn't care about don't wander
-      for (let i = 0; i < y.length; i++) r.push((y[i] - x0[i]) * scaleOf(i) * 0.003);
+      // (not coupled ones: a fast lead screw would hold the carriage back from the cursor)
+      for (let i = 0; i < y.length; i++) r.push(this.coupled.has(i) ? 0 : (y[i] - x0[i]) * scaleOf(i) * 0.003);
       return r;
     };
     let x = this.leastSquares(x0, residual, 25);
@@ -292,7 +339,7 @@ export class Mechanism {
   /** Remaining degrees of freedom (joint variables not pinned down by closed loops). */
   dof(): number {
     const n = this.x.length;
-    if (!this.loops.length) return n;
+    if (!this.constrained) return n;
     const residual = (y: Float64Array) => {
       const r: number[] = [];
       this.loopResiduals(this.poses(y), y, r);
@@ -373,13 +420,47 @@ export class Mechanism {
     return out;
   }
 
-  /** Set values by joint name (unknown names and wrong arities are ignored), then settle. */
+  /**
+   * Set values by joint name (unknown names and wrong arities are ignored), then settle: the rest
+   * follow the values that changed. When a follower reaches its limit, the changed values go only
+   * as far as it lets them; when nothing works, everything settles to the nearest pose that does.
+   */
   setValues(v: Record<string, number[] | undefined>): number {
+    const from = new Float64Array(this.x);
+    const to = new Float64Array(this.x);
+    const given = new Set<number>();
     for (const j of this.joints) {
       const q = v[j.name];
       if (!Array.isArray(q) || q.length !== j.n) continue;
-      for (let i = 0; i < j.n; i++) if (Number.isFinite(q[i])) this.x[j.off + i] = clamp(q[i], j.lo[i], j.hi[i]);
+      for (let i = 0; i < j.n; i++) {
+        if (!Number.isFinite(q[i])) continue;
+        const k = j.off + i;
+        to[k] = clamp(q[i], j.lo[i], j.hi[i]);
+        if (Math.abs(to[k] - from[k]) > 1e-12) given.add(k);
+      }
     }
+    this.x = to;
+    if (!given.size || given.size === to.length || !this.constrained) return this.settle();
+    // the changed values a fraction t of the way there, the rest following (null: they can't)
+    const reach = (t: number) => {
+      const y = new Float64Array(from);
+      for (const k of given) y[k] = from[k] + t * (to[k] - from[k]);
+      // twice: the second pass starts on the answer, so its pull toward the start no longer biases it
+      const held = this.project(this.project(y, given), given);
+      return this.error(held) <= 1e-6 ? held : null;
+    };
+    let best = reach(1);
+    if (!best) {
+      let lo = 0,
+        hi = 1;
+      for (let it = 0; it < 24; it++) {
+        const mid = (lo + hi) / 2;
+        const y = reach(mid);
+        if (y) (lo = mid), (best = y);
+        else hi = mid;
+      }
+    }
+    if (best) this.x = best;
     return this.settle();
   }
 
@@ -389,12 +470,14 @@ export class Mechanism {
   }
 }
 
-function jacobian(f: (x: Float64Array) => number[], x: Float64Array, r0: number[]): Float64Array {
+/** Forward differences; `frozen` columns stay 0 (those variables don't move). */
+function jacobian(f: (x: Float64Array) => number[], x: Float64Array, r0: number[], frozen?: Set<number>): Float64Array {
   const n = x.length,
     m = r0.length;
   const J = new Float64Array(m * n);
   const y = new Float64Array(x);
   for (let i = 0; i < n; i++) {
+    if (frozen?.has(i)) continue;
     const h = 1e-6 * Math.max(1, Math.abs(x[i]));
     y[i] = x[i] + h;
     const r = f(y);

@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { readDocumentDir } from "@parasocial/sync/server";
 
 const DIR = process.env.EXAMPLES_DIR ?? resolve(process.cwd(), existsSync(resolve(process.cwd(), "examples")) ? "examples" : "../../examples");
-const ORDER = ["lamp", "bracket", "flange", "enclosure", "hinge", "knob", "gasket"];
+const ORDER = ["lamp", "bracket", "flange", "enclosure", "hinge", "slide", "knob", "gasket"];
 let cache: unknown[] | null = null;
 
 export const GET = async ({ locals }) => {

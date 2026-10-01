@@ -1,0 +1,17 @@
+{
+  "volume": 2809.3378,
+  "area": 1538.3751,
+  "faces": 7,
+  "edges": 9,
+  "vertices": 6,
+  "valid": true,
+  "faceNames": [
+    "slide:crank/gear · cap.end",
+    "slide:crank/gear · cap.start",
+    "slide:crank/gear · side",
+    "slide:crank/handle · cap.start",
+    "slide:crank/handle · side",
+    "slide:crank/shaft · cap.end",
+    "slide:crank/shaft · side"
+  ]
+}

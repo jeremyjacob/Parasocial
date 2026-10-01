@@ -1,7 +1,7 @@
 // An assembly as the solver sees it: connector frames looked up in the parts' regenerations, every
 // copy laid out at home (placed, or put against another by connector-to-connector joints), and
 // each joint's frame on each body. Shared by the app and tests so they build the same solver.
-import { layout, flipFrame, type Frame, type JointSpec, type LayoutJoint, type MechanismSpec, type Pose } from "@parasocial/assembly";
+import { layout, flipFrame, type Frame, type CouplingSpec, type JointSpec, type LayoutJoint, type MechanismSpec, type Pose } from "@parasocial/assembly";
 import { sourcePart, type AssemblyInfo, type AssemblyJoint, type ConnectorAt } from "./protocol";
 
 type ConnectorFrame = Frame;
@@ -67,5 +67,8 @@ export function resolveAssembly(info: AssemblyInfo, connectors: (part: string) =
   });
   const homes: Record<string, Pose> = {};
   for (const [id, p] of home) homes[id] = p;
-  return { spec: { joints: specs, fixed: info.fixed, home: homes }, problems, pending };
+  // relations between joints that were set up (one with a missing connector is reported above)
+  const set = new Set(specs.map((j) => j.name));
+  const couplings: CouplingSpec[] = (info.relations ?? []).filter((r) => set.has(r.a) && set.has(r.b)).map((r) => ({ a: r.a, ia: r.ia, b: r.b, ib: r.ib, ratio: r.ratio, offset: r.offset }));
+  return { spec: { joints: specs, couplings, fixed: info.fixed, home: homes }, problems, pending };
 }
