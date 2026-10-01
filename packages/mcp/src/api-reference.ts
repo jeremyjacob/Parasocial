@@ -41,7 +41,7 @@ function dedent(text: string) {
 
 const fileOf = (d: Decl) => topics.find((t) => t.name === d.topic)!.file;
 
-function declText(name: string) {
+function declText(name: string): string {
   const d = decls[name];
   const text = d.text ?? API_DTS.slice(d.span[0], d.span[1]);
   const out = `// ${name} · ${fileOf(d)}\n${d.parent ? dedent(text) : text}`;

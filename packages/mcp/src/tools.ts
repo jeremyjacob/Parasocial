@@ -710,11 +710,6 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (t.unknown.length) throw new ToolError(`No part, instance or assembly "${part}". Parts: ${parts.join(", ") || "none"}${asm.infos.length ? `. Assemblies: ${asm.infos.map((a) => a.id).join(", ")}` : ""}`);
         parts = t.ids;
       }
-      const results = await engine(d, parts.map((p) => ({ op: "regenerate", part: p })));
-  }
-
-  /**
-      const parts = part ? [part] : await partsOf(d);
       const results = await regenerateParts(d, parts);
       const out: any[] = [];
       for (const r of results as any[]) {
