@@ -8,6 +8,7 @@ import { sketch } from "./sketch";
 import type { Appearance, ColorSpec, Material } from "./types";
 import { toFrame, transformFrame, type ConnectorFrame, type FrameSpec } from "./connector";
 import { resolveHole, nutTrapTools, freeTag, type HoleSpec, type NutTrapOpts } from "./std/holes";
+import { num, optNum, positive, int, vec3 } from "./check";
 
 type EdgesArg = EntitySet | EntitySet[] | string;
 type FacesArg = EntitySet | EntitySet[] | string;
@@ -98,6 +99,8 @@ export class Solid {
    */
   chamfer(edges: EdgesArg, distance: number, opts: OpOpts & { distance2?: number; angle?: number } = {}): Solid {
     positive(distance, "chamfer distance");
+    if (opts.distance2 !== undefined) positive(opts.distance2, "chamfer distance2");
+    optNum(opts.angle, "chamfer angle");
     const idx = this.resolve(edges, "edge", "chamfer");
     const input = this.record;
     const rec = runOp({
@@ -147,7 +150,7 @@ export class Solid {
   // ---------- transforms ----------
   /** Move by `[dx, dy, dz]` mm. Names are kept. */
   translate(v: Vec3, opts: OpOpts = {}): Solid {
-    return transformOp(this, "translate", { translate: v }, opts);
+    return transformOp(this, "translate", { translate: vec3(v, "translate") }, opts);
   }
   /** Alias of translate. */
   move(v: Vec3, opts: OpOpts = {}): Solid {
@@ -155,7 +158,9 @@ export class Solid {
   }
   /** Rotate by `angle` degrees about `axis` (default Z) through `origin` (default world origin). */
   rotate(angle: number, opts: OpOpts & { axis?: AxisLike; origin?: Vec3 } = {}): Solid {
-    return transformOp(this, "rotate", { rotate: { origin: opts.origin ?? [0, 0, 0], axis: axisVec(opts.axis ?? "Z"), angleRad: (angle * Math.PI) / 180 } }, opts);
+    num(angle, "rotate angle");
+    const origin = opts.origin === undefined ? ([0, 0, 0] as Vec3) : vec3(opts.origin, "rotate origin");
+    return transformOp(this, "rotate", { rotate: { origin, axis: axisVec(opts.axis ?? "Z", "rotate axis"), angleRad: (angle * Math.PI) / 180 } }, opts);
   }
   /**
    * Mirror across a plane: a `Plane`, or "XY" (z → −z), "XZ" (y → −y), "YZ" (x → −x) through the
@@ -172,7 +177,9 @@ export class Solid {
    * @example peg.linearPattern("X", 4, 10) // 4 pegs, 10 mm apart
    */
   linearPattern(direction: AxisLike, count: number, spacing: number, opts: OpOpts = {}): Solid {
-    const d = axisVec(direction);
+    const d = axisVec(direction, "linearPattern direction");
+    int(count, "linearPattern count", 1);
+    num(spacing, "linearPattern spacing");
     return patternOp(this, count, (k) => ({ translate: vec.scale(d, spacing * k) }), opts);
   }
   /**
@@ -180,9 +187,12 @@ export class Solid {
    * @example hole.circularPattern(6) // 6 holes, 60° apart around Z
    */
   circularPattern(count: number, opts: OpOpts & { axis?: AxisLike; origin?: Vec3; angle?: number } = {}): Solid {
-    const total = opts.angle ?? 360;
+    int(count, "circularPattern count", 1);
+    const total = optNum(opts.angle, "circularPattern angle") ?? 360;
+    const origin = opts.origin === undefined ? ([0, 0, 0] as Vec3) : vec3(opts.origin, "circularPattern origin");
+    const axis = axisVec(opts.axis ?? "Z", "circularPattern axis");
     const step = Math.abs(total - 360) < 1e-9 ? total / count : total / Math.max(1, count - 1);
-    return patternOp(this, count, (k) => ({ rotate: { origin: opts.origin ?? [0, 0, 0], axis: axisVec(opts.axis ?? "Z"), angleRad: (step * k * Math.PI) / 180 } }), opts);
+    return patternOp(this, count, (k) => ({ rotate: { origin, axis, angleRad: (step * k * Math.PI) / 180 } }), opts);
   }
 
   // ---------- M6: shell, draft, split, holes ----------
@@ -208,9 +218,10 @@ export class Solid {
 
   /** Taper `faces` by `angle` degrees about a neutral plane (default XY), pulling along `pull` (default +Z). */
   draft(faces: FacesArg, angle: number, opts: OpOpts & { pull?: AxisLike; neutral?: Plane } = {}): Solid {
+    num(angle, "draft angle");
     const idx = this.resolve(faces, "face", "draft");
     const input = this.record;
-    const pull = axisVec(opts.pull ?? "Z");
+    const pull = axisVec(opts.pull ?? "Z", "draft pull");
     const neutral = opts.neutral ?? new Plane([0, 0, 0], [0, 0, 1]);
     const rec = runOp({
       type: "draft",
@@ -267,9 +278,13 @@ export class Solid {
       if (spec.connector !== undefined) connector = { name: spec.connector, seat: h.seat };
     }
     positive(diameter, "hole diameter");
-    const pts = (Array.isArray(points[0]) ? points : [points]) as Vec3[];
-    if (!pts.length) userError("hole needs at least one point");
-    const dir = axisVec(opts.direction ?? ([0, 0, -1] as Vec3));
+    const raw = (Array.isArray(points) && (Array.isArray(points[0]) || ArrayBuffer.isView(points[0])) ? points : [points]) as Vec3[];
+    if (!raw.length) userError("hole needs at least one point");
+    const pts = raw.map((p, i) => vec3(p, raw.length > 1 ? `hole: point ${i + 1}` : "hole point"));
+    if (opts.depth !== undefined) positive(opts.depth, "hole depth");
+    if (opts.counterbore) (positive(opts.counterbore.diameter, "hole counterbore diameter"), positive(opts.counterbore.depth, "hole counterbore depth"));
+    if (opts.countersink) (positive(opts.countersink.diameter, "hole countersink diameter"), optNum(opts.countersink.angle, "hole countersink angle"));
+    const dir = axisVec(opts.direction ?? ([0, 0, -1] as Vec3), "hole direction");
     const bb = kBBox(this.record.shape);
     const depth = opts.depth ?? 2 * Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) + 1;
     const r = diameter / 2;
@@ -428,10 +443,6 @@ function checkKind(s: EntitySet, kind: EntityKind, what: string) {
   return s;
 }
 
-function positive(v: number, what: string) {
-  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) userError(`${what} must be a positive number (got ${v})`);
-}
-
 function splitOpts(args: (Solid | OpOpts)[]): [Solid[], OpOpts] {
   const solids = args.filter((a): a is Solid => a instanceof Solid);
   const opts = (args.find((a) => !(a instanceof Solid)) as OpOpts) ?? {};
@@ -481,7 +492,7 @@ function transformOp(s: Solid, type: string, t: Parameters<typeof kTransform>[1]
 }
 
 function patternOp(s: Solid, count: number, trsf: (k: number) => Parameters<typeof kTransform>[1], opts: OpOpts): Solid {
-  if (!Number.isInteger(count) || count < 1) userError(`pattern count must be a positive integer (got ${count})`);
+  int(count, "pattern count", 1);
   if (count === 1) return s;
   // instance 0 keeps its names; instance k is a copy whose faces are named `copy · #k · (original)`
   const copies = [...Array(count - 1)].map((_, i) => transformOp(s, "copy", trsf(i + 1), {}, `#${i + 1}`));
@@ -541,6 +552,9 @@ export const MATERIALS: Record<string, Material> = {
  * @example box(40, 30, 10, { center: "xy", tag: "base" })
  */
 export function box(w: number, d: number, h: number, opts: OpOpts & { center?: boolean | "xy" } = {}): Solid {
+  positive(w, "box width");
+  positive(d, "box depth");
+  positive(h, "box height");
   const corner: Vec3 = opts.center === true ? [-w / 2, -d / 2, -h / 2] : opts.center === "xy" ? [-w / 2, -d / 2, 0] : [0, 0, 0];
   const rec = runOp({
     type: "box",
@@ -558,8 +572,10 @@ export function box(w: number, d: number, h: number, opts: OpOpts & { center?: b
  * @example cylinder(3, 20, { at: [10, 0, -5], tag: "bore" }) // z −5..15
  */
 export function cylinder(radius: number, height: number, opts: OpOpts & { at?: Vec3; axis?: AxisLike; center?: boolean } = {}): Solid {
-  const ax = axisVec(opts.axis ?? "Z");
-  const base = opts.at ?? [0, 0, 0];
+  positive(radius, "cylinder radius");
+  positive(height, "cylinder height");
+  const ax = axisVec(opts.axis ?? "Z", "cylinder axis");
+  const base: Vec3 = opts.at === undefined ? [0, 0, 0] : vec3(opts.at, "cylinder at");
   const origin: Vec3 = opts.center ? vec.add(base, vec.scale(ax, -height / 2)) : base;
   const rec = runOp({
     type: "cylinder",
@@ -599,6 +615,8 @@ export type { KernelError };
  */
 export function thicken(faces: EntitySet, thickness: number, opts: OpOpts = {}): Solid {
   if (!(faces instanceof EntitySet) || faces.kind !== "face" || !faces.length) userError("thicken(faces, t) needs a face selection, e.g. thicken(part.faces(\">Z\"), 2)");
+  num(thickness, "thicken thickness");
+  if (thickness === 0) userError("thicken thickness must be non-zero");
   const input = faces.record;
   const idx = [...faces.indices];
   const rec = runOp({

@@ -1,7 +1,7 @@
 // The engine: holds a document's scripts + overrides, regenerates parts through the per-op
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
-import { boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
+import { noteKernelFault, faultMessage, boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
@@ -510,10 +510,40 @@ export class Engine {
     return out;
   }
 
-  /** `known`: the key of the geometry the caller already has at this quality; if it's still current, meshing is skipped. */
+  /**
+   * `known`: the key of the geometry the caller already has at this quality; if it's still current, meshing is skipped.
+   * Never throws: whatever goes wrong (including inside the kernel) is a problem on this part's result.
+   */
   regenerate(part: string, quality: MeshQuality = "fine", known?: string): PartResult {
     // an assembly instance is its source part's geometry
     if (sourcePart(part) !== part) return { ...this.regenerate(sourcePart(part), quality, known), part };
+    try {
+      return this.regenerateUnsafe(part, quality, known);
+    } catch (e) {
+      const fault = noteKernelFault(e);
+      const info = this.discovered?.find((p) => p.id === part);
+      const file = info?.file ?? `studios/${part.split(":")[0]}.ts`;
+      const message = fault ? `the geometry kernel crashed while regenerating ${part} (${faultMessage(e)}); the engine restarts` : `regenerating ${part} failed: ${(e as Error)?.message ?? e}`;
+      return {
+        part,
+        file,
+        name: info?.name ?? part,
+        ok: false,
+        partial: true,
+        empty: true,
+        problems: [{ severity: "error", kind: "runtime", message, part, source: { file, line: 1 } }],
+        params: this.runs.get(part)?.params ?? [],
+        quality,
+        faces: [],
+        edges: [],
+        vertices: [],
+        faceEdges: [],
+        timings: { total: 0, script: 0, ops: 0, mesh: 0, cacheHits: 0, cacheMisses: 0 },
+      };
+    }
+  }
+
+  private regenerateUnsafe(part: string, quality: MeshQuality, known?: string): PartResult {
     const t0 = performance.now();
     this.dropForeign(part);
     const infos = this.partInfos();
@@ -580,9 +610,33 @@ export class Engine {
     };
     if (rec && known !== undefined && rec.key === known) result.unchanged = true;
     else if (rec) {
+      try {
+        this.describeResult(result, rec, quality, run);
+      } catch (e) {
+        // the script ran, but its result can't be measured or meshed: say so on this part, keep the rest
+        const fault = noteKernelFault(e);
+        const last = run?.ops.at(-1)?.callSite;
+        const where = last ? ` (${last.file.split("/").pop()}:${last.line})` : "";
+        const message = fault
+          ? `the geometry kernel crashed while meshing ${result.name} (${faultMessage(e)})${where}; the engine restarts. Check the inputs of the last operations for NaN or huge values`
+          : `couldn't mesh ${result.name}: ${(e as Error)?.message ?? e}${where}`;
+        result.problems = [...result.problems, { severity: "error", kind: "operation", message, part, source: last ? { file: last.file, line: last.line, col: last.col } : { file, line: 1 } }];
+        Object.assign(result, { ok: false, partial: true, empty: true, mesh: undefined, bbox: undefined, mass: undefined, faces: [], edges: [], vertices: [], faceEdges: [], key: undefined });
+        if (this.lastGood.get(part) === rec) this.lastGood.delete(part);
+      }
+    }
+    result.timings.total = performance.now() - t0;
+    return result;
+  }
+
+  /** Bounding box, mesh, entity summaries and mass of a regenerated record (throws if it can't be meshed). */
+  private describeResult(result: PartResult, rec: OpRecord, quality: MeshQuality, run?: PartRun) {
+    {
       const tm = performance.now();
       scoped(() => {
         const bb = boundingBox(rec!.shape);
+        // OCCT takes NaN coordinates without complaint and builds a shape nothing can mesh
+        if (![...bb.min, ...bb.max].every(Number.isFinite)) throw new Error("its geometry has invalid (NaN or infinite) coordinates");
         result.bbox = bb;
         const diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]);
         const tol = meshTolerances(diag, quality);
@@ -604,8 +658,6 @@ export class Engine {
         result.mass = { volume: m.volume, area: m.area, centroid: m.centroid, mass: (m.volume / 1000) * (run?.material?.density ?? 1) };
       }
     }
-    result.timings.total = performance.now() - t0;
-    return result;
   }
 
   /**
@@ -985,7 +1037,7 @@ function scriptProblem(e: unknown, part: string, file: string): Problem {
   }
   const err = e instanceof Error ? e : new Error(String(e));
   // runtime error at module top level
-  const m = /ps:\/\/\/([^:]+):(\d+):(\d+)/.exec(err.stack ?? "");
+  const m = /ps:\/\/\/([^:,]+)(?:, <anonymous>)?:(\d+):(\d+)/.exec(err.stack ?? "");
   const mapped = m ? mapScriptFrame({ file: `ps:///${m[1]}`, line: +m[2], col: +m[3] }) : null;
   const loc = mapped ? ` (${mapped.file.split("/").pop()}:${mapped.line})` : "";
   return { severity: "error", kind: "runtime", message: `${err.message}${loc}`, part, source: mapped ? { file: mapped.file, line: mapped.line, col: mapped.col } : { file, line: 1 } };

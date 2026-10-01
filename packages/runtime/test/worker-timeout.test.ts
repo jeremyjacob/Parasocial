@@ -21,8 +21,17 @@ async function host(kind: "browser" | "pool", search = "") {
     sent: any[] = [];
     terminated = false;
     constructor() { workers.push(this); }
-    addEventListener(type: string, fn: (event: any) => void) { if (type === "message") this.listeners.add(fn); }
-    removeEventListener(_type: string, fn: (event: any) => void) { this.listeners.delete(fn); }
+    onerror?: (event: any) => void;
+    errorListeners = new Set<(event: any) => void>();
+    addEventListener(type: string, fn: (event: any) => void) { if (type === "message") this.listeners.add(fn); else if (type === "error") this.errorListeners.add(fn); }
+    removeEventListener(_type: string, fn: (event: any) => void) { this.listeners.delete(fn); this.errorListeners.delete(fn); }
+    /** An uncaught error in the worker (it's dead afterwards). */
+    crash(message: string) {
+      const ev = { message, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+      for (const fn of this.errorListeners) fn(ev);
+      this.onerror?.(ev);
+      return ev;
+    }
     postMessage(message: any) { this.sent.push(message); }
     emit(message: any) {
       for (const fn of this.listeners) fn({ data: message });
@@ -165,7 +174,7 @@ test("worker announces execution before running live or snapshot geometry, inclu
   }
   const self: any = { postMessage: (m: any) => events.push(m) };
   const source = readFileSync(new URL("../src/browser/worker.ts", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
-  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins });
+  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => null, noteKernelFault: () => false });
   for (const [id, op, part] of [[1, "regenerate", "a"], [2, "regenerateSnapshot", "b"], [3, "regenerate", "bad"]] as const) {
     await self.onmessage({ data: { id, req: { op, part, key: "snapshot", doc: {} } } });
     await flush();
@@ -241,4 +250,102 @@ describe("browser: parts regenerate on several workers", () => {
     await measure();
     expect(sentTo(h.workers[1], "shapeOf").length).toBe(2);
   });
+});
+
+describe("self-healing", () => {
+  for (const kind of ["browser", "pool"] as const) {
+    const answer = async (w: any, id: number, value: unknown = []) => {
+      w.emit({ type: "result", id, ok: true, value });
+      await flush();
+    };
+    const lastId = (w: any, op: string) => w.sent.filter((m: any) => m.req?.op === op).at(-1).id;
+
+    test(`${kind}: a crashed worker fails its requests clearly; the replacement gets the state without running scripts`, async () => {
+      const h = await host(kind);
+      await answer(h.workers[0], await h.request({ op: "setDocument", doc: { scripts: { "studios/a.ts": "v1", "studios/b.ts": "b" } } }));
+      await answer(h.workers[0], await h.request({ op: "setScript", path: "studios/a.ts", content: "v2" }));
+      await answer(h.workers[0], await h.request({ op: "setScript", path: "studios/b.ts", content: null }));
+      await answer(h.workers[0], await h.request({ op: "setOverrides", part: "a", overrides: { w: 3 } }), true);
+      const id = await h.request({ op: "regenerate", part: "a" });
+      const ev = h.workers[0].crash("RuntimeError: unreachable");
+      await flush();
+      // handled: it never reaches (and kills) the host
+      expect(ev.defaultPrevented).toBe(true);
+      expect(h.workers[0].terminated).toBe(true);
+      const failed = h.replies.find((r) => r.id === id);
+      expect(failed).toMatchObject({ ok: false });
+      expect(failed.error).toContain("crashed");
+      // one quiet setDocument with the latest scripts and overrides
+      expect(h.workers[1].sent.filter((m: any) => m.req).map((m: any) => m.req)).toEqual([{ op: "setDocument", doc: { scripts: { "studios/a.ts": "v2" }, overrides: { a: { w: 3 } } }, quiet: true }]);
+      h.workers[1].emit({ type: "ready", info });
+      await flush();
+      const next = await h.request({ op: "regenerate", part: "a" });
+      await answer(h.workers[1], lastId(h.workers[1], "regenerate"), { part: "a" });
+      expect(h.replies.at(-1)).toMatchObject({ id: next, ok: true });
+    });
+
+    test(`${kind}: after a kernel fault, the request that hit it keeps its answer and the others go to the replacement`, async () => {
+      const h = await host(kind);
+      const bad = await h.request({ op: "regenerate", part: "a" });
+      const other = await h.request({ op: "describe", part: "a", kind: "face", index: 0 });
+      h.workers[0].emit({ type: "result", id: lastId(h.workers[0], "regenerate"), ok: true, value: { part: "a", ok: false } });
+      h.workers[0].emit({ type: "poisoned", error: "Out of bounds memory access" });
+      await flush();
+      expect(h.workers[0].terminated).toBe(true);
+      expect(h.replies.map((r) => [r.id, r.ok])).toEqual([[bad, true]]);
+      const resent = h.workers[1].sent.find((m: any) => m.req?.op === "describe");
+      expect(resent).toBeDefined();
+      h.workers[1].emit({ type: "ready", info });
+      await answer(h.workers[1], resent.id, { name: "face" });
+      expect(h.replies.at(-1)).toMatchObject({ id: other, ok: true, value: { name: "face" } });
+    });
+
+    test(`${kind}: a script looping at its top level times out while loading`, async () => {
+      const h = await host(kind);
+      const id = await h.request({ op: "setScript", path: "studios/a.ts", content: "while (true) {}" });
+      h.workers[0].emit({ type: "started", id: lastId(h.workers[0], "setScript") });
+      await h.tick(100);
+      expect(h.workers[0].terminated).toBe(true);
+      const r = h.replies.find((x) => x.id === id);
+      expect(r).toMatchObject({ ok: false, timeout: true });
+      expect(r.error).toContain("loading the scripts timed out");
+      // the replacement only restores it: the loop doesn't run again until something asks
+      expect(h.workers[1].sent.filter((m: any) => m.req).map((m: any) => m.req.quiet)).toEqual([true]);
+    });
+
+    test(`${kind}: repeated crashes back off before starting another worker`, async () => {
+      const h = await host(kind);
+      h.workers[0].crash("boom");
+      await flush();
+      h.workers[1].crash("boom again");
+      await flush();
+      const before = h.workers.length;
+      await h.tick(100);
+      expect(h.workers.length).toBe(before);
+      await h.tick(200);
+      expect(h.workers.length).toBe(before + 1);
+    });
+  }
+});
+
+test("worker: a kernel fault is reported after the answer, and the worker answers nothing more", async () => {
+  const events: any[] = [];
+  let fault: string | null = null;
+  class Engine {
+    setDocument() {}
+    regenerate(part: string) {
+      if (part === "bad") fault = "Out of bounds memory access";
+      return { part };
+    }
+  }
+  const self: any = { postMessage: (m: any) => events.push(m) };
+  const source = readFileSync(new URL("../src/browser/worker.ts", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => fault, noteKernelFault: () => false });
+  await self.onmessage({ data: { id: 1, req: { op: "regenerate", part: "bad" } } });
+  await flush();
+  expect(events.map((e) => e.type)).toEqual(["started", "result", "poisoned"]);
+  expect(events[2].error).toBe("Out of bounds memory access");
+  await self.onmessage({ data: { id: 2, req: { op: "regenerate", part: "a" } } });
+  await flush();
+  expect(events.length).toBe(3);
 });

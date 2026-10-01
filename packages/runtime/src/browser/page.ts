@@ -1,5 +1,9 @@
 // Engine page (runs in the cross-origin iframe). Owns the engine workers and a warm spare;
-// relays requests from the app's MessagePort; kills and replaces a worker on timeout (§5, §7).
+// relays requests from the app's MessagePort; kills and replaces a worker on timeout, when it
+// crashes, and when its kernel faults (a WebAssembly trap leaves OCCT's memory corrupt) (§5, §7).
+// A replacement gets the document state back (quietly: no script runs until the next request);
+// on a kernel fault the requests still waiting go to it too, since the one that hit the fault has
+// its answer already. Replacements back off while crashes repeat, so a crash loop can't spin.
 // Parts regenerate in parallel: each part belongs to one worker (the first idle one when it's
 // first asked for), document state goes to every worker, and cross-part requests (measure,
 // interference, export) run on worker 0 after it adopts the other workers' shapes as B-rep.
@@ -15,7 +19,8 @@ const threads = params.get("threads") === "1";
 const COUNT = Math.min(8, Math.max(1, Number(params.get("workers")) || Math.min(4, (navigator.hardwareConcurrency || 2) - 2)));
 
 type Slot = {
-  worker: Worker;
+  /** null until a delayed (backed-off) replacement starts */
+  worker: Worker | null;
   ready: Promise<any>;
   /** messages held until the worker has its init (which waits for the compiled WASM) */
   backlog: unknown[] | null;
@@ -23,6 +28,10 @@ type Slot = {
   busy: number;
   /** part -> key of the shape adopted from its owner */
   adopted: Map<string, string>;
+  /** the worker failed to start or crashed */
+  failed: boolean;
+  /** the slot's message handler, once attached (set on the worker when it starts) */
+  onmessage?: (ev: MessageEvent) => void;
 };
 type Pending = { slot: Slot; timer: any; req: any; internal?: (m: any) => void };
 
@@ -46,50 +55,80 @@ const waiting = new Map<string, { id: number; req: any }[]>();
 /** Requests about one part: they go to the worker that owns it. */
 const PART_OPS = new Set(["regenerate", "names", "describe", "fromOperation", "query", "resolve", "resolveOne", "indexOfName", "check", "describeAll", "tangentChain", "loopOf", "opsAtLine", "closestPoint"]);
 const STATE_OPS = new Set(["setDocument", "setScript", "setOverrides", "setPoses"]);
+/** Requests that run user script code: the watchdog covers them once the worker says "started". */
+const WATCHED = new Set(["regenerate", "regenerateSnapshot", "setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies"]);
+const CRASH_WINDOW_MS = 60_000;
+/** When workers were replaced recently (crash-loop backoff). */
+const crashes: number[] = [];
 
 // Compile the kernel once for every worker (each compiling its own copy slows startup with several).
 const useThreads = threads && (globalThis as any).crossOriginIsolated === true && typeof SharedArrayBuffer !== "undefined";
 const compiled: Promise<WebAssembly.Module | undefined> =
   typeof fetch === "function" ? WebAssembly.compileStreaming(fetch(useThreads ? cfg.assets.wasmMulti : cfg.assets.wasmSingle)).catch(() => undefined) : Promise.resolve(undefined);
 
-function spawn(): Slot {
-  // content-versioned so a cached worker never outlives its build
-  const worker = new Worker(new URL(`./worker.js?v=${cfg.assets.build}`, location.href), { type: "module", name: "parasocial-engine" });
-  const ready = new Promise((resolve, reject) => {
+/** A worker slot; with `delay`, its worker starts later (messages wait in the backlog meanwhile). */
+function spawn(delay = 0): Slot {
+  let resolveReady!: (v: unknown) => void, rejectReady!: (e: Error) => void;
+  const ready = new Promise((resolve, reject) => ((resolveReady = resolve), (rejectReady = reject)));
+  const slot: Slot = { worker: null, ready, backlog: [], busy: 0, adopted: new Map(), failed: false };
+  ready.catch(() => {});
+  const start = () => {
+    // content-versioned so a cached worker never outlives its build
+    const worker = new Worker(new URL(`./worker.js?v=${cfg.assets.build}`, location.href), { type: "module", name: "parasocial-engine" });
+    slot.worker = worker;
     const onMsg = (ev: MessageEvent) => {
       if (ev.data?.type === "ready") {
         worker.removeEventListener("message", onMsg);
-        resolve(ev.data.info);
-      } else if (ev.data?.type === "fatal") reject(new Error(ev.data.error));
+        resolveReady(ev.data.info);
+      } else if (ev.data?.type === "fatal") crashed(slot, `the engine failed to start: ${ev.data.error}`);
     };
     worker.addEventListener("message", onMsg);
-    // a worker whose module fails to load or evaluate never posts anything: surface it instead of hanging
-    worker.addEventListener("error", (ev) => reject(new Error(ev.message || "the engine worker failed to load")), { once: true });
-  });
-  ready.catch(() => {});
-  const slot: Slot = { worker, ready, backlog: [], busy: 0, adopted: new Map() };
-  compiled.then((wasmModule) => {
-    worker.postMessage({ type: "init", threads, ...cfg.assets, wasmModule });
-    for (const m of slot.backlog!) worker.postMessage(m);
-    slot.backlog = null;
-  });
+    // a worker whose module fails to load or evaluate never posts anything, and one that throws
+    // outside a request dies: surface both instead of hanging
+    worker.addEventListener("error", (ev: any) => {
+      ev?.preventDefault?.();
+      crashed(slot, `the engine crashed: ${ev?.message || "the engine worker failed to load"}`);
+    });
+    if (slot.onmessage) worker.onmessage = slot.onmessage;
+    compiled.then((wasmModule) => {
+      if (slot.failed) return;
+      worker.postMessage({ type: "init", threads, ...cfg.assets, wasmModule });
+      for (const m of slot.backlog!) worker.postMessage(m);
+      slot.backlog = null;
+    });
+  };
+  const crashed = (s: Slot, message: string) => {
+    if (s.failed) return;
+    s.failed = true;
+    rejectReady(new Error(message));
+    if (spare === s) spare = null;
+    else if (slots.includes(s)) replaceWorker(s, { message }, false);
+  };
+  if (delay > 0) setTimeout(start, delay);
+  else start();
   return slot;
 }
 
 function postTo(slot: Slot, m: unknown) {
   if (slot.backlog) slot.backlog.push(m);
-  else slot.worker.postMessage(m);
+  else slot.worker!.postMessage(m);
 }
 
 function attach(slot: Slot) {
-  slot.worker.onmessage = (ev) => {
+  slot.onmessage = (ev) => {
     if (!slots.includes(slot)) return;
     const m = ev.data;
     if (m?.type === "started") {
       const p = pending.get(m.id);
-      if (p && p.timer === null && (p.req.op === "regenerate" || p.req.op === "regenerateSnapshot")) p.timer = setTimeout(() => replaceWorker(slot), cfg.timeoutMs);
+      if (p && p.slot === slot && p.timer === null && WATCHED.has(p.req.op)) {
+        const regen = p.req.op === "regenerate" || p.req.op === "regenerateSnapshot";
+        const message = regen ? `regeneration timed out after ${cfg.timeoutMs / 1000} s: the script may loop forever` : `loading the scripts timed out after ${cfg.timeoutMs / 1000} s: a script may loop forever at its top level`;
+        p.timer = setTimeout(() => replaceWorker(slot, { message, timeout: true }, false), cfg.timeoutMs);
+      }
       return;
     }
+    // the kernel faulted: whatever it answered before this stands; everything still waiting goes to a replacement
+    if (m?.type === "poisoned") return replaceWorker(slot, { message: `the geometry kernel crashed (${m.error})` }, true);
     if (m?.type !== "result") return;
     const p = pending.get(m.id);
     if (!p) return;
@@ -104,6 +143,7 @@ function attach(slot: Slot) {
     if (p.internal) return p.internal(m);
     port?.postMessage(m, collectTransfer(m.value));
   };
+  if (slot.worker) slot.worker.onmessage = slot.onmessage;
 }
 
 function collectTransfer(v: any): Transferable[] {
@@ -135,25 +175,59 @@ function dispatch() {
   }
 }
 
-async function replaceWorker(slot: Slot) {
-  // a runaway script: kill the worker, promote the warm spare, replay document state, fail its requests
+/** Document state as one quiet setDocument (plus poses): restores, runs no script code. */
+function replay(): any[] {
+  const [first, ...rest] = docState;
+  let out: any[];
+  if (first?.op !== "setDocument") out = docState.map((r) => (r.op === "setScript" ? { ...r, quiet: true } : r));
+  else {
+    const scripts = { ...first.doc.scripts };
+    const overrides = { ...(first.doc.overrides ?? {}) };
+    for (const r of rest) {
+      if (r.op === "setScript") r.content === null ? delete scripts[r.path] : (scripts[r.path] = r.content);
+      else if (r.op === "setOverrides") overrides[r.part] = r.overrides;
+    }
+    out = [{ op: "setDocument", doc: { ...first.doc, scripts, overrides }, quiet: true }];
+  }
+  return poses ? [...out, poses] : out;
+}
+
+/**
+ * Kill a worker and put the warm spare (or a new worker) in its place with the document state.
+ * Its requests fail with `error` (timeout, crash), or with `resend` go to the replacement (kernel fault).
+ */
+function replaceWorker(slot: Slot, error: { message: string; timeout?: boolean }, resend: boolean) {
   const i = slots.indexOf(slot);
   if (i < 0) return;
-  slot.worker.terminate();
-  const error = `regeneration timed out after ${cfg.timeoutMs / 1000} s: the script may loop forever`;
-  for (const [id, p] of pending) {
-    if (p.slot !== slot) continue;
-    clearTimeout(p.timer);
-    pending.delete(id);
-    if (p.internal) p.internal({ type: "result", id, ok: false, error, timeout: true });
-    else port?.postMessage({ type: "result", id, ok: false, error, timeout: true });
-  }
-  const next = spare ?? spawn();
-  spare = spawn();
+  slot.failed = true;
+  slot.worker?.terminate();
+  const now = Date.now();
+  crashes.push(now);
+  while (crashes.length && now - crashes[0] > CRASH_WINDOW_MS) crashes.shift();
+  // the first replacement in a while is immediate; repeated ones back off (250 ms, 500 ms… 30 s)
+  const delay = crashes.length <= 1 ? 0 : Math.min(30_000, 250 * 2 ** (crashes.length - 2));
+  const next = delay === 0 && spare && !spare.failed ? spare : spawn(delay);
+  if (next === spare || spare?.failed) spare = null;
+  spare ??= spawn(delay);
   slots[i] = next;
   attach(next);
   for (const [part, s] of owner) if (s === slot) owner.delete(part);
-  for (const r of poses ? [...docState, poses] : docState) postTo(next, { id: -1, req: r });
+  for (const r of replay()) postTo(next, { id: -1, req: r });
+  for (const [id, p] of pending) {
+    if (p.slot !== slot) continue;
+    clearTimeout(p.timer);
+    p.timer = null;
+    if (resend) {
+      p.slot = next;
+      if (p.req.op === "regenerate") next.busy++;
+      postTo(next, { id, req: p.req });
+      continue;
+    }
+    pending.delete(id);
+    const reply = { type: "result", id, ok: false, error: error.message, ...(error.timeout ? { timeout: true } : {}) };
+    if (p.internal) p.internal(reply);
+    else port?.postMessage(reply);
+  }
   dispatch();
 }
 

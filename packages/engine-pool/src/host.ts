@@ -2,10 +2,12 @@
 // access to the engine build and nothing else (no network, env, writes or subprocesses), so a
 // script that escapes the loader's scope still can't reach anything. Runs the engine worker
 // (same build as the browser) and renders with WebGPU. The server drives it over stdin/stdout,
-// one JSON message per line: {id, req} or {id, render} in; {id, ...result} out.
+// one JSON message per line: {id, req} or {id, render} in; {id, ...result} out, each prefixed with
+// LINE_PREFIX (OCCT and Emscripten print to stdout too: the server treats anything else as log).
 import "./config";
 import "./engine";
 import { renderPNG } from "./render";
+import { LINE_PREFIX } from "./pool";
 
 declare const Deno: any;
 const g = globalThis as any;
@@ -13,7 +15,7 @@ const g = globalThis as any;
 const out = Deno.stdout.writable.getWriter();
 const enc = new TextEncoder();
 let writing: Promise<unknown> = Promise.resolve();
-const send = (m: unknown) => (writing = writing.then(() => out.write(enc.encode(JSON.stringify(m) + "\n"))));
+const send = (m: unknown) => (writing = writing.then(() => out.write(enc.encode(LINE_PREFIX + JSON.stringify(m) + "\n"))));
 
 async function handle(m: { id: number; req?: unknown; render?: any }) {
   if (m.render) {
@@ -38,7 +40,15 @@ for await (const chunk of Deno.stdin.readable.pipeThrough(new TextDecoderStream(
   while ((nl = buf.indexOf("\n")) >= 0) {
     const line = buf.slice(0, nl);
     buf = buf.slice(nl + 1);
-    if (line.trim()) handle(JSON.parse(line));
+    if (!line.trim()) continue;
+    let m: any;
+    try {
+      m = JSON.parse(line);
+    } catch {
+      console.error(`engine host: unreadable request ${line.slice(0, 200)}`);
+      continue;
+    }
+    handle(m).catch((e) => send({ id: m.id, ok: false, error: String(e?.message ?? e) }));
   }
 }
 await writing;

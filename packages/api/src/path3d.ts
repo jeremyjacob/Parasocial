@@ -5,6 +5,7 @@ import type { OpRecord } from "@parasocial/naming";
 import { ctx } from "./context";
 import { runOp, userError } from "./op";
 import { axisVec, vec, type AxisLike } from "./plane";
+import { vec3 } from "./check";
 import { namer } from "./sketch";
 
 type Seg3 =
@@ -34,10 +35,7 @@ export type HelixOpts = {
   tag?: string;
 };
 
-const finite = (p: unknown, what: string): Vec3 => {
-  if (!Array.isArray(p) || p.length !== 3 || !p.every((c) => typeof c === "number" && Number.isFinite(c))) userError(`${what} must be a 3D point [x, y, z] (got ${JSON.stringify(p)})`);
-  return [...(p as Vec3)] as Vec3;
-};
+const finite = (p: unknown, what: string): Vec3 => vec3(p, what);
 const same = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 1e-9;
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
@@ -64,10 +62,10 @@ export class Path3d {
     const taper = o.taper ?? 0;
     if (typeof taper !== "number" || !(Math.abs(taper) < 89)) userError(`helix taper is a cone half-angle in degrees between -89 and 89 (got ${taper})`);
     const origin = o.origin ? finite(o.origin, "helix origin") : ([0, 0, 0] as Vec3);
-    const axis = axisVec(o.axis ?? "Z");
+    const axis = axisVec(o.axis ?? "Z", "helix axis");
     let xDir = helixXDir(axis);
     if (o.startDirection !== undefined) {
-      const s = axisVec(o.startDirection);
+      const s = axisVec(o.startDirection, "helix startDirection");
       const x = vec.add(s, vec.scale(axis, -vec.dot(s, axis)));
       if (Math.hypot(...x) < 1e-9) userError("helix startDirection must not be parallel to the axis");
       xDir = vec.unit(x);
@@ -127,7 +125,7 @@ export class Path3d {
    */
   splineTo(points: Vec3[], opts: { tag?: string; startTangent?: Vec3; endTangent?: Vec3 } = {}): this {
     if (!Array.isArray(points) || !points.length) userError("splineTo needs at least one point, e.g. .splineTo([[10, 5, 0], [20, 0, 5]])");
-    const pts = points.map((p, i) => finite(p, `splineTo point ${i}`));
+    const pts = points.map((p, i) => finite(p, `splineTo: point ${i + 1}`));
     const st = opts.startTangent && finite(opts.startTangent, "splineTo startTangent");
     const et = opts.endTangent && finite(opts.endTangent, "splineTo endTangent");
     this.add({ kind: "spline", pts: [this.need(), ...pts], ...(st && { startTangent: st }), ...(et && { endTangent: et }) }, opts.tag);

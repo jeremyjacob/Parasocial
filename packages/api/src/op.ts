@@ -1,5 +1,5 @@
 // Executing an operation through the per-op cache, with provenance and friendly errors.
-import { KernelError, scoped } from "@parasocial/kernel";
+import { KernelError, scoped, noteKernelFault, faultMessage } from "@parasocial/kernel";
 import { createRecord, hash, stableStringify, type OpRecord, type RecordInit } from "@parasocial/naming";
 import { ctx, shortLoc, type Frame } from "./context";
 import type { Problem } from "./types";
@@ -57,6 +57,8 @@ export function runOp(spec: OpSpec): OpRecord {
       rec = scoped(() => createRecord({ ...spec.build(), id, type: spec.type, tag: spec.tag, key, inputs: spec.inputs, params: spec.params, callSite: toLoc(site), callChain }));
     } catch (e) {
       if (e instanceof OpError) throw e;
+      // a trap/abort inside OCCT: this part fails here; the engine replaces the kernel afterwards
+      if (noteKernelFault(e)) fail(spec, `${spec.type} crashed the geometry kernel (${faultMessage(e)}); check its inputs`, site, id);
       const base = e instanceof Error ? e.message : String(e);
       const better = e instanceof KernelError ? spec.explain?.(e) : undefined;
       fail(spec, better ?? base, site, id, e instanceof KernelError ? "operation" : "runtime");

@@ -128,10 +128,23 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return { infos, ...solveAssemblies(infos, (p) => meta.get(p), shared && typeof shared === "object" ? shared : {}, s.preview?.get(d.id)?.poses) };
   }
 
+  /**
+   * Regenerate parts. A part whose regeneration fails outright (it timed out or crashed the engine)
+   * gets a result with that error as its problem: the other parts' results still come back.
+   */
+  async function regenerateParts(d: DocState, parts: string[]) {
+    const res = await pool.run({ document: `${d.id}:${configOf(d) ?? "default"}`, scripts: scriptMap(d), overrides: mergeOverrides(overridesFor(d, configOf(d)), s.preview?.get(d.id)), units: d.units, ops: parts.map((part) => ({ op: "regenerate", part })) });
+    return res.map((r: any, i: number) => {
+      if (r.ok) return r.value;
+      const problem = { severity: "error", kind: r.timeout ? "timeout" : "runtime", message: r.error };
+      return { part: parts[i], name: parts[i], ok: false, partial: true, empty: true, problems: [problem], params: [], faces: [], edges: [], timings: { total: 0, ops: 0 } };
+    });
+  }
+
   /** Regenerate parts; compact results in the shape the UI shows (§8 Errors). */
   async function regen(d: DocState, parts?: string[]) {
     parts ??= await partsOf(d);
-    const out = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
+    const out = await regenerateParts(d, parts);
     return out.map((r: any) => summarize(r));
   }
 
@@ -698,6 +711,11 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         parts = t.ids;
       }
       const results = await engine(d, parts.map((p) => ({ op: "regenerate", part: p })));
+  }
+
+  /**
+      const parts = part ? [part] : await partsOf(d);
+      const results = await regenerateParts(d, parts);
       const out: any[] = [];
       for (const r of results as any[]) {
         // instances: part coordinates -> where this session poses them

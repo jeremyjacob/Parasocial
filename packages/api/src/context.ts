@@ -105,7 +105,8 @@ export function parseStack(stack: string): Frame[] {
 }
 
 function stripUrl(f: string) {
-  return f.replace(/^file:\/\//, "").replace(/^async /, "");
+  // recent V8 names `new Function` code by its sourceURL plus ", <anonymous>"
+  return f.replace(/^file:\/\//, "").replace(/^async /, "").replace(/, <anonymous>$/, "");
 }
 
 let current: PartContext | null = null;

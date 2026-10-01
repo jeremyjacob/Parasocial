@@ -1,6 +1,6 @@
 // Engine worker: loads OCCT, runs the Engine, answers requests from the engine page.
 // Meshes are transferred, never copied (§9).
-import { loadKernel, meshTransferables } from "@parasocial/kernel";
+import { loadKernel, meshTransferables, kernelFault, noteKernelFault } from "@parasocial/kernel";
 import { Engine, type PartResult, type Interference, type PartPose } from "../engine";
 import { LatestWins } from "../scheduler";
 import type { EngineRequest, EngineInfo } from "../protocol";
@@ -12,6 +12,14 @@ const engine = new Engine();
 const snapshot = { engine: new Engine(), key: "" };
 const stats = { results: 0, transferred: 0 };
 let ready: Promise<EngineInfo> | null = null;
+/**
+ * Set once the kernel has faulted (a WebAssembly trap or abort): its memory can't be trusted. The
+ * worker tells its host ("poisoned") right after answering the request that hit it, and answers
+ * nothing more; the host replaces it and sends the requests still waiting to the replacement.
+ */
+let poisoned = false;
+/** Requests that run user script code: the host's watchdog covers them from "started". */
+const RUNS_SCRIPTS = new Set(["setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies"]);
 
 async function boot(cfg: WorkerInit): Promise<EngineInfo> {
   const t0 = performance.now();
@@ -35,6 +43,7 @@ async function boot(cfg: WorkerInit): Promise<EngineInfo> {
 
 const regen = new LatestWins<{ id: number; part: string; quality: "coarse" | "fine"; known?: string }, PartResult>(({ id, part, quality, known }) => {
   // Arm the host's watchdog only when computation starts, not while waiting in a queue.
+  if (poisoned) throw new Error("the engine is restarting");
   (self as any).postMessage({ type: "started", id });
   return engine.regenerate(part, quality, known);
 });
@@ -45,15 +54,18 @@ const overlaps = new LatestWins<{ parts: string[]; ignore?: [string, string][]; 
 });
 
 async function handle(req: EngineRequest, id: number): Promise<{ value: unknown; transfer?: Transferable[] }> {
+  // (not for replays, id -1: nobody waits on them)
+  if (RUNS_SCRIPTS.has(req.op) && id !== -1) (self as any).postMessage({ type: "started", id });
   switch (req.op) {
     case "ping":
       return { value: { pong: true, ...stats } };
     case "setDocument":
       engine.setDocument(req.doc);
-      return { value: engine.partInfos() };
+      // a replay into a replacement worker only restores state: scripts run on the next real request
+      return { value: req.quiet ? true : engine.partInfos() };
     case "setScript":
       engine.setScript(req.path, req.content);
-      return { value: engine.partInfos() };
+      return { value: req.quiet ? true : engine.partInfos() };
     case "parts":
       return { value: engine.partInfos() };
     case "snapshotParts":
@@ -150,10 +162,11 @@ self.onmessage = async (ev: MessageEvent) => {
     }
     return;
   }
-  if (typeof m?.id !== "number") return;
+  if (typeof m?.id !== "number" || poisoned) return;
   try {
     await ready;
     const { value, transfer } = await handle(m.req as EngineRequest, m.id);
+    if (poisoned) return;
     (self as any).postMessage({ type: "result", id: m.id, ok: true, value }, transfer ?? []);
     if (transfer?.length) {
       stats.results++;
@@ -161,6 +174,14 @@ self.onmessage = async (ev: MessageEvent) => {
       if ((transfer as ArrayBuffer[]).every((b) => b.byteLength === 0)) stats.transferred++;
     }
   } catch (e) {
-    (self as any).postMessage({ type: "result", id: m.id, ok: false, error: String((e as Error)?.message ?? e) });
+    if (poisoned) return;
+    const fault = noteKernelFault(e);
+    const error = String((e as Error)?.message ?? e);
+    (self as any).postMessage({ type: "result", id: m.id, ok: false, error: fault ? `the geometry kernel crashed (${error}); the engine restarts` : error });
+  }
+  const fault = kernelFault();
+  if (fault && !poisoned) {
+    poisoned = true;
+    (self as any).postMessage({ type: "poisoned", error: fault });
   }
 };

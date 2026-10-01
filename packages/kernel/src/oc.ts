@@ -48,16 +48,59 @@ export function isKernelLoaded() {
   return instance !== null;
 }
 
+// ---------- faults ----------
+// A WebAssembly trap (out-of-bounds access, `unreachable`), an Emscripten abort or a stack overflow
+// inside the kernel unwinds through C++ frames without running their cleanup: the kernel's memory
+// (heap, stack pointer, OCCT's globals) can't be trusted afterwards, even though the call that hit
+// it threw a catchable error. The engine notes the fault and its worker is replaced.
+
+let fault: string | null = null;
+
+/** Is this error a kernel fault (not an ordinary OCCT exception or script error)? */
+export function isKernelFault(e: unknown): boolean {
+  if (typeof WebAssembly !== "undefined" && e instanceof (WebAssembly as any).RuntimeError) return true;
+  if (!(e instanceof Error)) return false;
+  const m = e.message ?? "";
+  if (/^Aborted\(|out of bounds memory access|memory access out of bounds|^unreachable( executed)?$|call stack exhausted/i.test(m)) return true;
+  // a stack overflow while inside the kernel (wasm frames on the stack)
+  return e instanceof RangeError && /Maximum call stack/i.test(m) && /wasm/i.test(e.stack ?? "");
+}
+
+/** Record `e` if it's a kernel fault; returns whether it was. */
+export function noteKernelFault(e: unknown): boolean {
+  if (!isKernelFault(e)) return false;
+  fault ??= faultMessage(e);
+  return true;
+}
+
+/** A kernel fault's message without engine-internal noise. */
+export function faultMessage(e: unknown): string {
+  return String((e as Error)?.message ?? e).replace(/\s*\(evaluating [^)]*\)\s*$/, "");
+}
+
+/** The first kernel fault since load (null if none): this kernel instance should be replaced. */
+export function kernelFault(): string | null {
+  return fault;
+}
+
+/** Tests only: forget a recorded fault. */
+export function clearKernelFault() {
+  fault = null;
+}
+
 /** Human-readable message for an OCCT/embind exception. */
 export function occtMessage(e: unknown): string {
+  noteKernelFault(e);
   if (e instanceof Error) return e.message;
-  if (typeof e === "number" && instance) {
+  // a C++ exception: a pointer (JS exceptions build) or a WebAssembly.Exception (wasm EH build)
+  const wasmException = typeof WebAssembly !== "undefined" && (WebAssembly as any).Exception && e instanceof (WebAssembly as any).Exception;
+  if ((typeof e === "number" || wasmException) && instance) {
     try {
       const m = (instance as any).getExceptionMessage?.(e);
-      if (Array.isArray(m)) return m.filter(Boolean).join(": ");
+      if (Array.isArray(m)) return m.filter(Boolean).join(": ") || "OCCT exception";
       if (m) return String(m);
     } catch {}
-    return `OCCT exception ${e}`;
+    return wasmException ? "OCCT exception" : `OCCT exception ${e}`;
   }
   return String(e);
 }
