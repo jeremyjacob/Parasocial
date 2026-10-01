@@ -32,7 +32,7 @@ export async function createSessionServer(session: Session, deps: ToolDeps) {
   server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
     const id = session.defaultDocument;
     const [d] = id ? await deps.db.sql`SELECT id, name, units, settings FROM documents d JOIN document_members m ON m.document_id = d.id AND m.user_id = ${session.userID} WHERE d.id = ${id}` : [];
-    return { contents: [{ uri: uri.href, text: JSON.stringify(d ?? { note: "No default document for this session" }, null, 2), mimeType: "application/json" }] };
+    return { contents: [{ uri: uri.href, text: JSON.stringify(d ?? { note: "No default document for this session" }), mimeType: "application/json" }] };
   });
   return server;
 }

@@ -17,17 +17,18 @@ export type OutputToolHelpers = {
   version: (documentID: string) => Promise<number | null>;
 };
 
-const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] });
+// compact JSON, like every other tool result
+const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }] });
 const round = (x: number | undefined, d: number) => (x === undefined ? undefined : Math.round(x * 10 ** d) / 10 ** d);
 
-const vec3 = z.tuple([z.number(), z.number(), z.number()]);
+const vec3 = z.array(z.number()).length(3);
 const planeName = z.enum(["front", "back", "top", "bottom", "right", "left"]);
 
 export function registerOutputTools(h: OutputToolHelpers) {
   h.tool(
     "bom",
-    "Bill of materials. Without `assembly`: every part of the document once. With an assembly id: its copies counted per part (inserted copies and subassemblies included). Rows show part number, description, vendor, material, volume, mass (when the material has a density), and bounding-box size; parts sharing a part number (or standard parts with the same name and vendor) are one row. Declare these with part(name, body, { material, partNumber, description, vendor, standard }). format \"json\" (default) returns rows; \"csv\" or \"markdown\" return the table text.",
-    { document: h.document, assembly: z.string().optional().describe("Assembly id, e.g. \"mechanism\" for studios/mechanism.ts (a document BOM lists them); omit for the whole document"), format: z.enum(["json", "csv", "markdown"]).optional() },
+    'Bill of materials: every part of the document once, or with `assembly` (an id like "mechanism") its copies counted per part, subassemblies included. Rows: part number, description, vendor, material, volume, mass, bounding-box size; parts sharing a part number (or standard parts with the same name and vendor) are one row. Declare these with part(name, body, { material, partNumber, description, vendor, standard }). format: json (default), csv or markdown.',
+    { document: h.document, assembly: z.string().optional(), format: z.enum(["json", "csv", "markdown"]).optional() },
     async ({ document, assembly, format }) => {
       const d = await h.load(document);
       const [bom] = (await h.engine(d, [{ op: "bom", assembly, documentName: d.name }])) as [Bom];
@@ -35,7 +36,9 @@ export function registerOutputTools(h: OutputToolHelpers) {
       if (format === "markdown") return text(bomToMarkdown(bom));
       return text({
         ...bom,
-        rows: bom.rows.map((r) => ({ ...r, volume: round(r.volume, 1), mass: round(r.mass, 2), size: r.size?.map((v) => round(v, 3)), instances: r.instances && r.instances.length > 12 ? [...r.instances.slice(0, 12), `… ${r.instances.length - 12} more`] : r.instances })),
+        // the document's name is the caller's; density is in the material
+        name: assembly ? bom.name : undefined,
+        rows: bom.rows.map(({ density: _, ...r }: any) => ({ ...r, volume: round(r.volume, 1), mass: round(r.mass, 2), size: r.size?.map((v: number) => round(v, 3)), instances: r.instances && r.instances.length > 12 ? [...r.instances.slice(0, 12), `… ${r.instances.length - 12} more`] : r.instances })),
         totals: { ...bom.totals, mass: round(bom.totals.mass, 2) },
       });
     },
@@ -44,24 +47,22 @@ export function registerOutputTools(h: OutputToolHelpers) {
 
   h.tool(
     "drawing",
-    'A 2D technical drawing of a part for manufacturing, as SVG or PDF; returns a signed download URL (valid 1 hour). Orthographic views (third-angle by default) with dashed hidden lines, an isometric view, optional section views (cut, hatched, labelled A–A, with the cutting line on a view that shows it edge-on), overall dimensions, hole diameter callouts, scale and a title block (part, document, version, date, material, part number). Sections: { plane: "front" } cuts parallel to the front view through the middle of the part (at: position along its normal axis, mm); or { plane: { origin, normal } } with the normal pointing at the viewer (material on that side is removed). Drawn from the default geometry of this session\'s configuration.',
+    'A 2D technical drawing of a part (an instance id draws its part) as SVG or PDF; returns a signed download URL (valid 1 hour). Orthographic views (third-angle unless projection "first"; default views front, top, right, iso) with dashed hidden lines, overall dimensions, hole callouts, scale (default: the largest standard that fits; 2 = 2:1) and a title block. sections: cuts drawn as hatched views A–A, B–B…: { plane: "front" } cuts parallel to the front view through the middle (at: offset along its normal, mm), or { plane: { origin, normal } } with the normal toward the viewer. Uses this session\'s configuration.',
     {
       document: h.document,
-      part: z.string().describe("Part id (an assembly instance id draws its source part)"),
-      views: z.array(z.enum(["front", "back", "top", "bottom", "right", "left", "iso"])).optional().describe("Default front, top, right, iso"),
-      section: z
-        .union([z.object({ plane: z.union([planeName, z.object({ origin: vec3, normal: vec3 })]), at: z.number().optional(), label: z.string().max(2).optional() }), z.array(z.object({ plane: z.union([planeName, z.object({ origin: vec3, normal: vec3 })]), at: z.number().optional(), label: z.string().max(2).optional() })).max(4)])
-        .optional(),
+      part: z.string(),
+      views: z.array(z.enum(["front", "back", "top", "bottom", "right", "left", "iso"])).optional(),
+      sections: z.array(z.object({ plane: z.union([planeName, z.object({ origin: vec3, normal: vec3 })]), at: z.number().optional(), label: z.string().max(2).optional() })).max(4).optional(),
       projection: z.enum(["third", "first"]).optional(),
-      hidden: z.boolean().optional().describe("Dashed hidden lines (default true)"),
+      hidden: z.boolean().optional(),
       sheet: z.enum(["A4", "A3", "A2", "A1"]).optional(),
-      scale: z.number().positive().optional().describe("Paper/model: 2 = 2:1, 0.5 = 1:2 (default: the largest standard scale that fits)"),
+      scale: z.number().positive().optional(),
       format: z.enum(["svg", "pdf"]).optional(),
     },
-    async ({ document, part, views, section, projection, hidden, sheet, scale, format }) => {
+    async ({ document, part, views, sections, projection, hidden, sheet, scale, format }) => {
       const d = await h.load(document);
       const version = await h.version(d.id);
-      const options = { views, sections: section === undefined ? undefined : Array.isArray(section) ? section : [section], projection, hidden, sheet, scale, format, document: d.name, version: version !== null ? `v${version}` : undefined };
+      const options = { views, sections, projection, hidden, sheet, scale, format, document: d.name, version: version !== null ? `v${version}` : undefined };
       const [r] = await h.engine(d, [{ op: "drawing", part, options }]);
       const bytes = r.svg !== undefined ? new TextEncoder().encode(r.svg) : new Uint8Array(Buffer.from(r.base64, "base64"));
       const url = await h.store(d.id, bytes, r.svg !== undefined ? "image/svg+xml" : "application/pdf");

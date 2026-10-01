@@ -44,17 +44,46 @@ const fileOf = (d: Decl) => topics.find((t) => t.name === d.topic)!.file;
 function declText(name: string): string {
   const d = decls[name];
   const text = d.text ?? API_DTS.slice(d.span[0], d.span[1]);
-  const out = `// ${name} · ${fileOf(d)}\n${d.parent ? dedent(text) : text}`;
+  const out = `// ${name} · ${fileOf(d)}\n${d.parent ? dedent(text) : leanText(text)}`;
   // object members declared as `screw: typeof screw;` (std.screw): follow to the real declaration
   const alias = d.parent && text.match(/:\s*typeof\s+([\w$]+);\s*$/)?.[1];
   return alias && decls[alias] && !decls[alias].parent ? `${out}\n${declText(alias)}` : out;
+}
+
+/** Indentation from which declaration text counts as an inlined literal type (data, not API). */
+const DEEP = 12;
+
+/**
+ * Collapse object types nested DEEP or more spaces in (`inserts: { … };`). The std section
+ * inlines every dimension table as a literal type (~13k chars of `readonly M3x4: { readonly d: 3; … }`);
+ * the tables have their own topic, std/tables.
+ */
+export function collapseDeep(text: string) {
+  const out: string[] = [];
+  let dropped = false;
+  for (const line of text.split("\n")) {
+    if (line.length - line.trimStart().length >= DEEP && line.trim()) {
+      dropped = true;
+      continue;
+    }
+    if (dropped && out.length && out[out.length - 1]!.trimEnd().endsWith("{") && /^\s*}/.test(line)) out[out.length - 1] = `${out[out.length - 1]!.trimEnd()} … ${line.trim()}`;
+    else out.push(line);
+    dropped = false;
+  }
+  return out.join("\n");
 }
 
 function topicText(name: string) {
   const t = topics.find((x) => x.name === name)!;
   // the cheat sheet is index.ts's module doc; the rest of that section is just export lists
   if (name === "cheatsheet") return t.doc ? API_DTS.slice(t.doc[0], t.doc[1]) : "";
-  return API_DTS.slice(t.span[0], t.span[1]);
+  return leanText(API_DTS.slice(t.span[0], t.span[1]));
+}
+
+/** Declarations with inlined data collapsed, only where it dominates (std): elsewhere deep lines are real option types. */
+function leanText(text: string) {
+  const lean = collapseDeep(text);
+  return text.length - lean.length > 4000 ? `${lean}\n// (… = inlined data, collapsed: see topic "std/tables")` : text;
 }
 
 /** Declarations for one query: an exact name, a topic, or a member name on any owner ("fillet"). */
@@ -90,7 +119,7 @@ export function apiIndex() {
 }
 
 export const API_REFERENCE_DESCRIPTION =
-  'Docs for the modeling API that scripts import from "parasocial", as its TypeScript declarations with JSDoc and examples. No arguments: index of every name by topic. symbol: a name like "Solid.fillet", "EntitySet.filter", "plane.XZ", "fillet", or several. topic: cheatsheet, plane (sketch axes and normals), selection (selectors and filters), sketch, solid, part (params, names), assembly, units, …. full: true returns the whole d.ts.';
+  'Docs for the modeling API scripts import from "parasocial": TypeScript declarations with JSDoc and examples. No arguments: every name by topic. symbol: e.g. "Solid.fillet", "plane.XZ", "fillet", or a list. topic: cheatsheet, plane (sketch axes, normals), selection (selectors, filters), sketch, solid, path3d, part (params, names), assembly, connector, measure, units, types, std (standard parts), std/holes, std/parts, std/tables. full: true is the whole d.ts (~100k chars).';
 
 export function apiReference(args: { symbol?: string | string[]; topic?: string; full?: boolean }): { text: string; isError: boolean } {
   if (args.full) return { text: API_DTS, isError: false };
@@ -108,9 +137,9 @@ export function registerApiReference(server: McpServer, session: { id: string; c
     {
       description: API_REFERENCE_DESCRIPTION,
       inputSchema: {
-        symbol: z.union([z.string(), z.array(z.string()).max(20)]).optional().describe('e.g. "Solid.fillet", "plane.XZ", "fillet", or a list'),
-        topic: z.string().optional().describe("cheatsheet, plane, selection, sketch, solid, path3d, part, assembly, connector, units, types, std, std/holes, std/tables"),
-        full: z.boolean().optional().describe("The whole d.ts"),
+        symbol: z.union([z.string(), z.array(z.string()).max(20)]).optional(),
+        topic: z.string().optional(),
+        full: z.boolean().optional(),
       },
       annotations: { readOnlyHint: true },
     } as any,

@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadKernel } from "@parasocial/kernel";
-import { Engine } from "@parasocial/runtime";
+import { FakePool } from "./fake-pool";
 import { mutators } from "@parasocial/sync";
 import { FsBlobStore } from "@parasocial/sync/server";
 import { createTestDb, createUser, createAgentSession, newDoc, run } from "../../sync/test/helpers";
@@ -22,63 +22,6 @@ const SCRIPTS = { "studios/box.ts": readFileSync(join(root, "studios/box.ts"), "
 beforeAll(async () => {
   await loadKernel();
 });
-
-/** The pool's job protocol over an in-process engine, one per pool document (like the real pool). */
-class FakePool {
-  renders: any[] = [];
-  private slots = new Map<string, { e: Engine; scripts: string; overrides: Record<string, Record<string, string | number>> }>();
-  async run(job: { document: string; scripts: Record<string, string>; overrides?: Record<string, Record<string, string | number>>; ops: any[] }) {
-    let slot = this.slots.get(job.document);
-    const scripts = JSON.stringify(job.scripts);
-    if (!slot || slot.scripts !== scripts) {
-      const e = new Engine();
-      e.setDocument({ scripts: job.scripts, overrides: job.overrides ?? {} });
-      this.slots.set(job.document, (slot = { e, scripts, overrides: job.overrides ?? {} }));
-    } else {
-      const o = job.overrides ?? {};
-      for (const part of new Set([...Object.keys(o), ...Object.keys(slot.overrides)])) slot.e.setOverrides(part, o[part] ?? {});
-      slot.overrides = o;
-    }
-    const e = slot.e;
-    return job.ops.map((op) => {
-      try {
-        return { ok: true as const, value: this.op(e, op) };
-      } catch (err) {
-        return { ok: false as const, error: (err as Error).message };
-      }
-    });
-  }
-  private op(e: Engine, op: any): unknown {
-    switch (op.op) {
-      case "parts":
-        return e.partInfos();
-      case "regenerate": {
-        const { mesh, ...meta } = e.regenerate(op.part);
-        return meta;
-      }
-      case "assemblies":
-        return e.assemblies();
-      case "setPoses":
-        return void e.setPoses(op.poses);
-      case "interferences":
-        if (op.poses) e.setPoses(op.poses);
-        return e.interferences(op.parts, op.ignore).map(({ mesh, ...x }) => x);
-      case "interference":
-        return e.interference(op.a, op.b);
-      case "measure":
-        return e.measure(op.a, op.b);
-      case "check":
-        return e.check(op.part);
-      case "describeAll":
-        return e.describeAll(op.part);
-      case "render":
-        this.renders.push(op);
-        return { png: "" };
-      default:
-        throw new Error(`fake pool: ${op.op}`);
-    }
-  }
-}
 
 test("previews are per session; shared scope writes the document", async () => {
   const db = await createTestDb();
@@ -125,7 +68,7 @@ test("previews are per session; shared scope writes the document", async () => {
     expect((await A.call("get_params")).parts.find((p: any) => p.part === "box").params.find((p: any) => p.name === "height")).toMatchObject({ override: "60", preview: true, effective: 60 });
     await expect(A.call("set_param", { part: "box", name: "heigth", value: 1 })).rejects.toThrow(/No param "heigth" on box\. Params: height, bay/);
     expect(A.session.preview?.get(doc)?.params).toEqual({ box: { height: 60 } });
-    await A.call("reset_param", { part: "box", name: "height" });
+    await A.call("set_param", { part: "box", name: "height", value: null });
     expect(await top(A, "box")).toBe(40);
     expect(await versions()).toBe(v0);
 
