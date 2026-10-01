@@ -349,49 +349,119 @@ const scriptFile = z.object({ path: z.string(), content: z.string().max(1_000_00
 
 // ───────────────────────────── implementations ─────────────────────────────
 
-async function writeScriptImpl(
+/** One file in a script write: full `content`, `edits` against the current content, or `content: null` to delete. */
+export type ScriptChange = {
+  path: string;
+  content: string | null; // null = delete
+  baseVersion: number | null;
+  edits?: readonly ScriptEdit[] | undefined;
+};
+
+/** Server: a script's content as of document version `number` (from that version's snapshot), if known. */
+async function contentAtVersion(tx: Tx, documentID: string, number: number, path: string): Promise<string | undefined> {
+  if (!isServer(tx)) return undefined;
+  const rows = await pg(
+    tx,
+    "SELECT c.content FROM versions v JOIN script_contents c ON c.hash = v.snapshot->'scripts'->>$3::text WHERE v.document_id = $1 AND v.number = $2",
+    [documentID, number, path],
+  );
+  return rows[0]?.content as string | undefined;
+}
+
+function scriptsMessage(changes: readonly { path: string; verb: string }[]): string {
+  if (changes.length === 1) return `${changes[0]!.verb} ${changes[0]!.path}`;
+  const verb = new Set(changes.map((x) => x.verb)).size === 1 ? changes[0]!.verb : "Edit";
+  const names = changes.slice(0, 3).map((x) => x.path);
+  return `${verb} ${names.join(", ")}${changes.length > 3 ? ` and ${changes.length - 3} more` : ""}`;
+}
+
+/**
+ * Script writes (write, edit, delete, writeMany). Every change in one call lands in one
+ * transaction as one version, or none does.
+ *
+ * Concurrency is a strict compare-and-swap: on the server each change claims its row with
+ * `UPDATE … WHERE id = $id AND version = $baseVersion` (`INSERT … ON CONFLICT DO NOTHING` for
+ * creates, `DELETE … WHERE version = $baseVersion` for deletes) and fails stale when no row
+ * matched, so two writers holding the same baseVersion can never both succeed, whatever the
+ * isolation level or locking around it.
+ *
+ * Retries are safe: a change whose result is already the current content (a full write of the
+ * same text, an edit whose effect is already there, a delete of a missing file) is skipped
+ * whatever its baseVersion, and a `versionID` that already committed returns without writing.
+ */
+async function writeScriptsImpl(
   tx: Tx,
   ctx: Ctx,
   a: {
     documentID: string;
-    path: string;
-    content: string | null; // null = delete
-    baseVersion: number | null;
+    files: readonly ScriptChange[];
     message?: string | undefined;
     noteID?: string | undefined;
     versionID?: string | undefined;
-    edits?: readonly ScriptEdit[] | undefined;
   },
 ) {
-  const pathError = validateScriptPath(a.path);
-  if (pathError) fail("invalid_path", pathError, { path: a.path });
+  const seen = new Set<string>();
+  for (const f of a.files) {
+    const pathError = validateScriptPath(f.path);
+    if (pathError) fail("invalid_path", pathError, { path: f.path });
+    if (seen.has(f.path)) fail("invalid", `${f.path} appears more than once`, { path: f.path });
+    seen.add(f.path);
+  }
   const c = await authorize(tx, ctx, a.documentID, "editor");
-  const current = await tx.run(zql.scripts.where("documentID", a.documentID).where("path", a.path).one());
-  const staleDetails = (s: Script | undefined) => ({
-    path: a.path,
-    baseVersion: a.baseVersion,
-    current: s ? { content: s.content, version: s.version, contentHash: s.contentHash } : null,
-  });
 
-  // Optimistic concurrency. baseVersion null means "this script must not exist yet".
-  if (a.baseVersion === null) {
-    if (current) fail("exists", `${a.path} already exists (version ${current.version}); pass its version as baseVersion`, staleDetails(current));
-    if (a.content === null || a.edits) fail("not_found", `${a.path} does not exist`, staleDetails(current));
-  } else if (!current) {
-    // Client may simply not have it synced; only the server can prove it's gone.
-    if (isServer(tx)) fail("stale", `${a.path} no longer exists`, staleDetails(undefined));
-    return;
-  } else if (current.version !== a.baseVersion) {
-    fail("stale", `${a.path} changed since version ${a.baseVersion} (now ${current.version}); re-read and retry`, staleDetails(current));
+  // Idempotent retry: this exact write (same version id) already committed.
+  if (a.versionID) {
+    const done = await tx.run(zql.versions.where("id", a.versionID).one());
+    if (done) {
+      if (done.documentID !== a.documentID) fail("invalid", "versionID belongs to another document");
+      return;
+    }
   }
 
-  let content = a.content;
-  if (a.edits && current) {
-    const r = applyEdits(current.content, a.edits);
-    if (!r.ok) fail("edit_failed", `Edit ${r.index + 1} failed: ${r.reason}`, { ...staleDetails(current), index: r.index });
-    content = r.content;
+  type Planned = { path: string; current: Script | undefined; content: string | null; verb: string };
+  const planned: Planned[] = [];
+  for (const f of a.files) {
+    const current = await tx.run(zql.scripts.where("documentID", a.documentID).where("path", f.path).one());
+    const staleDetails = (s: Script | undefined) => ({
+      path: f.path,
+      baseVersion: f.baseVersion,
+      current: s ? { content: s.content, version: s.version, contentHash: s.contentHash } : null,
+    });
+
+    // Already in the wanted state (e.g. a retry of a write that committed): nothing to do, whatever the base.
+    if (!f.edits) {
+      const done = f.content === null ? !current && f.baseVersion !== null && isServer(tx) : current?.content === f.content;
+      if (done) continue;
+    }
+
+    // Optimistic concurrency. baseVersion null means "this script must not exist yet".
+    if (f.baseVersion === null) {
+      if (current) fail("exists", `${f.path} already exists (version ${current.version}); pass its version as baseVersion`, staleDetails(current));
+      if (f.content === null || f.edits) fail("not_found", `${f.path} does not exist`, staleDetails(current));
+    } else if (!current) {
+      // Client may simply not have it synced; only the server can prove it's gone.
+      if (isServer(tx)) fail("stale", `${f.path} no longer exists`, staleDetails(undefined));
+      return;
+    } else if (current.version !== f.baseVersion) {
+      // A retried edit whose effect is already there (it committed before the caller saw the result).
+      if (f.edits) {
+        const base = await contentAtVersion(tx, a.documentID, f.baseVersion, f.path);
+        const replay = base === undefined ? undefined : applyEdits(base, f.edits);
+        if (replay?.ok && replay.content === current.content) continue;
+      }
+      fail("stale", `${f.path} changed since version ${f.baseVersion} (now ${current.version}); re-read and retry`, staleDetails(current));
+    }
+
+    let content = f.content;
+    if (f.edits && current) {
+      const r = applyEdits(current.content, f.edits);
+      if (!r.ok) fail("edit_failed", `Edit ${r.index + 1} failed${a.files.length > 1 ? ` on ${f.path}` : ""}: ${r.reason}`, { ...staleDetails(current), index: r.index });
+      content = r.content;
+    }
+    if (content !== null && current && content === current.content) continue; // no-op
+    planned.push({ path: f.path, current, content, verb: content === null ? "Delete" : current ? "Edit" : "Create" });
   }
-  if (content !== null && current && content === current.content) return; // no-op write: no version
+  if (planned.length === 0) return; // nothing changed: no version
 
   const versionID = a.versionID ?? newID();
   const doc = await tx.run(zql.documents.where("id", a.documentID).one());
@@ -400,16 +470,37 @@ async function writeScriptImpl(
   const now = Date.now();
   const who = author(c);
 
-  if (content === null) {
-    await tx.mutate.scripts.delete({ id: current!.id });
-  } else {
-    const hash = await sha256Hex(content);
-    await storeContent(tx, hash, content);
+  for (const p of planned) {
+    const id = p.current?.id ?? scriptID(a.documentID, p.path);
+    if (isServer(tx)) {
+      // Claim the row with a conditional write; zero rows means a concurrent writer got there first.
+      const claimed = !p.current
+        ? await pg(tx, "INSERT INTO scripts (id, document_id, path, content, content_hash, version) VALUES ($1, $2, $3, '', '', $4) ON CONFLICT DO NOTHING RETURNING id", [id, a.documentID, p.path, number])
+        : p.content === null
+          ? await pg(tx, "DELETE FROM scripts WHERE id = $1 AND version = $2 RETURNING id", [id, p.current.version])
+          : await pg(tx, "UPDATE scripts SET version = $3 WHERE id = $1 AND version = $2 RETURNING id", [id, p.current.version, number]);
+      if (claimed.length === 0) {
+        const [row] = await pg(tx, "SELECT content, version, content_hash FROM scripts WHERE document_id = $1 AND path = $2", [a.documentID, p.path]);
+        fail(p.current ? "stale" : "exists", `${p.path} was changed by a concurrent write; re-read and retry`, {
+          path: p.path,
+          baseVersion: p.current?.version ?? null,
+          current: row ? { content: row.content as string, version: Number(row.version), contentHash: row.content_hash as string } : null,
+        });
+      }
+      if (p.content === null) continue; // the conditional DELETE already removed it
+    }
+
+    if (p.content === null) {
+      await tx.mutate.scripts.delete({ id });
+      continue;
+    }
+    const hash = await sha256Hex(p.content);
+    await storeContent(tx, hash, p.content);
     await tx.mutate.scripts.upsert({
-      id: current?.id ?? scriptID(a.documentID, a.path),
+      id,
       documentID: a.documentID,
-      path: a.path,
-      content,
+      path: p.path,
+      content: p.content,
       contentHash: hash,
       version: number,
       updatedAt: now,
@@ -417,14 +508,22 @@ async function writeScriptImpl(
       updatedByAgent: who.agentID,
     });
   }
-  const verb = content === null ? "Delete" : current ? "Edit" : "Create";
   await createVersion(tx, c, {
     id: versionID,
     documentID: a.documentID,
     kind: "script",
-    message: a.message?.trim() || `${verb} ${a.path}`,
+    message: a.message?.trim() || scriptsMessage(planned),
     noteID: a.noteID,
   });
+}
+
+async function writeScriptImpl(
+  tx: Tx,
+  ctx: Ctx,
+  a: ScriptChange & { documentID: string; message?: string | undefined; noteID?: string | undefined; versionID?: string | undefined },
+) {
+  const { documentID, message, noteID, versionID, ...file } = a;
+  await writeScriptsImpl(tx, ctx, { documentID, message, noteID, versionID, files: [file] });
 }
 
 type OverrideInput = z.infer<typeof overrideInput>;
@@ -885,6 +984,43 @@ export const mutators = defineMutators({
         versionID: id.optional(),
       }),
       async ({ tx, ctx, args }) => writeScriptImpl(tx, ctx, { ...args, content: null }),
+    ),
+
+    /**
+     * write_scripts: several files in one transaction and one version (a lib change and the
+     * studios that use it). Each file gives `content`, `edits` or `delete: true`, plus its own
+     * baseVersion; any stale base rejects the whole write.
+     */
+    writeMany: defineMutator(
+      z.object({
+        documentID: id,
+        files: z
+          .array(
+            z.object({
+              path: z.string(),
+              content: z.string().max(1_000_000).optional(),
+              edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1).max(200).optional(),
+              delete: z.boolean().optional(),
+              baseVersion: z.number().int().nullable(),
+            }),
+          )
+          .min(1)
+          .max(50),
+        message: z.string().max(500).optional(),
+        noteID: id.optional(),
+        versionID: id.optional(),
+      }),
+      async ({ tx, ctx, args }) => {
+        const files = args.files.map((f): ScriptChange => {
+          const given = [f.content !== undefined, f.edits !== undefined, f.delete === true].filter(Boolean).length;
+          if (given !== 1) fail("invalid", `${f.path}: give exactly one of content, edits or delete`, { path: f.path });
+          if (f.delete || f.edits) {
+            if (f.baseVersion === null) fail("invalid", `${f.path}: ${f.delete ? "delete" : "edits"} need the script's baseVersion`, { path: f.path });
+          }
+          return { path: f.path, baseVersion: f.baseVersion, content: f.delete ? null : (f.content ?? ""), edits: f.edits };
+        });
+        await writeScriptsImpl(tx, ctx, { documentID: args.documentID, files, message: args.message, noteID: args.noteID, versionID: args.versionID });
+      },
     ),
   },
 
