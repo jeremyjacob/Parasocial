@@ -16,6 +16,8 @@ import { HEADS, INSERTS, METRIC, NUTS, type InsertSize, type MetricSize } from "
  * - `countersink: "ISO10642"` a 90° countersink for a flush countersunk head (plus `headDepth`);
  * - `{ insert: "M3x5.7" }` a heat-set insert hole (recommended diameter, insert length + 1 deep).
  *
+ * `std.screw` / `std.insert` given the same point and direction (`{ at, direction }`) sit in the hole.
+ *
  * `depth` omitted = through all (inserts: blind). `connector` names a connector with one frame per
  * hole at the screw's seat (under-head face for counterbores, the surface otherwise), its axis
  * pointing out of the part, so `std.screw(...).at("head")` mates straight in.

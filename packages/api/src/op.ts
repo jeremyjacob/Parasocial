@@ -1,7 +1,7 @@
 // Executing an operation through the per-op cache, with provenance and friendly errors.
 import { KernelError, scoped, noteKernelFault, faultMessage, occtMessage } from "@parasocial/kernel";
 import { createRecord, hash, stableStringify, type OpRecord, type RecordInit } from "@parasocial/naming";
-import { ctx, shortLoc, type Frame } from "./context";
+import { ctx, shortLoc, chainLoc, type Frame } from "./context";
 import type { Problem } from "./types";
 import type { EntityKind } from "@parasocial/kernel";
 
@@ -42,8 +42,9 @@ export function runOp(spec: OpSpec): OpRecord {
   const id = spec.tag ? `${c.part}/${spec.tag}${sketchy ? ".sketch" : ""}` : c.autoId(spec.type, frames);
   if (spec.tag) {
     const key = sketchy ? `sketch:${spec.tag}` : spec.tag;
-    if (c.tags.has(key)) fail(spec, `${sketchy ? "sketch " : ""}tag "${spec.tag}" is used twice in ${c.part}; tags must be unique within a part`, site, id);
-    c.tags.set(key, toLoc(site));
+    const first = c.tags.get(key);
+    if (first) duplicateTag(spec, `${sketchy ? "sketch " : ""}tag "${spec.tag}"`, first, frames, id);
+    c.tags.set(key, frames);
   }
   const key = hash(stableStringify({ v: ENGINE_VERSION, type: spec.type, id, params: spec.params, inputs: spec.inputs.map((i) => i.key) }));
   let rec = c.cache.get(key);
@@ -73,6 +74,32 @@ export function runOp(spec: OpSpec): OpRecord {
   }
   c.ops.push(rec!);
   return rec!;
+}
+
+/**
+ * A tag taken twice, with both uses' whole user call chains (a helper's line alone doesn't say which
+ * call made the duplicate). The problem points at the outermost frame where the second chain parts
+ * from the first: the second call; for identical chains (a loop, a helper run twice), the helper's caller.
+ */
+function duplicateTag(spec: OpSpec, what: string, first: Frame[], again: Frame[], id: string): never {
+  const c = ctx();
+  const a = first.slice().reverse(), b = again.slice().reverse();
+  const same = a.length === b.length && a.every((f, i) => f.file === b[i].file && f.line === b[i].line);
+  let k = 0;
+  while (k < b.length - 1 && a[k] && a[k].file === b[k].file && a[k].line === b[k].line) k++;
+  const at = same ? (again[1] ?? again[0]) : b[k];
+  const text =
+    `${what} is used twice in ${c.part}: first at ${chainLoc(first)}; again at ${chainLoc(again)}. ` +
+    `${same ? "The same call ran twice (a loop, or a helper called more than once): " : ""}tags must be unique within a part; ` +
+    `pass a distinct tag per call (e.g. \`${spec.tag}\${i}\`) or leave the operation untagged`;
+  throw new OpError(text, {
+    severity: "error",
+    kind: "operation",
+    message: text,
+    part: c.part,
+    source: at && { file: at.file, line: at.line, col: at.col },
+    op: { id, type: spec.type, tag: spec.tag },
+  });
 }
 
 function validateTag(tag: string, site?: Frame) {

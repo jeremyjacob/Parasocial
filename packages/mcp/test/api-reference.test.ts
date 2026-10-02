@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as api from "@parasocial/api";
-import { API_INDEX } from "../src/resources";
+import { API_DTS, API_INDEX, EXAMPLES } from "../src/resources";
 import { apiIndex, apiReference, lookup, registerApiReference, API_DTS_URI } from "../src/api-reference";
 import { ESSENTIALS, INSTRUCTIONS } from "../src/instructions";
 import { CHANNEL_INSTRUCTIONS } from "../../mcp-local/src/channel";
@@ -67,6 +67,31 @@ test("every public method and property of the exported classes and plane is in t
   expect(apiIndex()).toContain("Solid{");
   expect(apiIndex()).toMatch(/EntitySet\{[^}]*\bfilter\b[^}]*\bplanar\b/);
   expect(apiIndex()).toMatch(/plane\{XY XZ YZ/);
+});
+
+test("names the docs use resolve: std.x / measure.x / plane.x paths, Class.member, aliased members", () => {
+  // docs: the d.ts (minus its section headers), instructions and the example scripts
+  const docs = [API_DTS.replace(/^\/\/ ───── .*$/gm, ""), INSTRUCTIONS, CHANNEL_INSTRUCTIONS, EXAMPLES].join("\n");
+  const bad = new Set<string>();
+  // namespaces: exported objects, and functions carrying members (measure)
+  const spaces = Object.entries(api).filter(([, v]) => (typeof v === "object" && v) || (typeof v === "function" && !/^class\s/.test(Function.prototype.toString.call(v)) && Object.keys(v).length));
+  for (const [ns, root] of spaces)
+    for (const m of docs.matchAll(new RegExp(`(?<![\\w.])${ns}((?:\\.[A-Za-z_]\\w*)+)`, "g"))) {
+      let v: any = root;
+      for (const k of m[1].slice(1).split(".")) {
+        if (v === null || (typeof v !== "object" && typeof v !== "function")) break; // a number's .toFixed etc.
+        if (!(k in v)) {
+          bad.add(`${ns}${m[1]}`);
+          break;
+        }
+        v = v[k];
+      }
+    }
+  // Class.member (`Solid.fillet`): a member the reference knows
+  for (const m of docs.matchAll(/(?<![\w.])([A-Z]\w*)\.([a-z_]\w*)\b/g)) if (API_INDEX.decls[m[1]] && !API_INDEX.decls[`${m[1]}.${m[2]}`]) bad.add(m[0]);
+  // `name: typeof other` in the d.ts shows agents a name the API doesn't have (std.mgnRailHoles was `typeof railHoles`)
+  for (const m of API_DTS.matchAll(/(\w+): typeof (\w+);/g)) if (m[1] !== m[2]) bad.add(m[0]);
+  expect([...bad]).toEqual([]);
 });
 
 test("lookups return the d.ts declarations verbatim, with their docs and examples", () => {
