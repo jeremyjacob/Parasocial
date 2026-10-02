@@ -19,11 +19,21 @@
  * is required from the second copy on), then join connector to connector,
  * `revolute(chassis.at("axle", 0), w.at("hub"))` (puts w's connector on the chassis's; 0 is where
  * they meet; `{ flip: true }` faces it the other way), or `insert(part, { name, place: { translate, rotate: { axis, angle } } })`.
+ * A placed copy carries everything joined to it (fastened, or by any joint, at its current value):
+ * joints keep parts as modeled relative to each other. To orient a whole assembly (stand it up),
+ * place its root part, `insert(frame, { place: { rotate: { axis: "X", angle: 90 } } })`: without a
+ * name that's the same copy as `frame`, so instance ids, joint names and notes don't change.
  * Loops make patterns. A connector on several faces/edges (`.connector("bolt", holes)`) or an array
  * of frames has one frame each: `part.at("bolt", i)`, 0-based, ordered by x, then y, then z. The
  * assembly script can't see geometry, so share counts (a constant in lib/) between part and assembly.
  * `insert(otherAssembly, { name })` adds a subassembly with its joints (parts `mechanism/corner@left/cart:wheel`);
- * reach its parts with `sub.part(wheel).at("hub")`; its `fix()` only holds its parts to each other.
+ * reach its parts with `sub.part(wheel).at("hub")`; its `fix()` only holds its parts to each other,
+ * and `fix(sub)` holds it by its root part (its own joints still move).
+ * Joint names: a joint is named by `{ name }`, else by its two parts (`box:base+box:lid`); a
+ * subassembly's joints are prefixed with where it's inserted, `<its assembly id>@<insert name>/`:
+ * `spin` in `insert(drive, { name: "upright" })`, drive exported by studio winch_assembly.ts as
+ * `export const drive = assembly(...)`, is `winch_assembly:drive@upright/spin` (unnamed insert:
+ * `winch_assembly:drive/spin`; nested: `a@1/b@2/spin`). Saved positions and set_pose use these names.
  *
  * Joints: every joint is 0 where the parts are modeled; limits are degrees or mm from there.
  * Positive revolute angles follow the right-hand rule about the joint axis and positive slides go
@@ -52,7 +62,10 @@ export type Range = {
 };
 
 export type JointOpts = {
-  /** Stable name (dragged positions are saved under it). Default: the two part ids. */
+  /**
+   * Stable name (dragged positions are saved under it). Default: the two part ids, `box:base+box:lid`.
+   * In an inserted assembly it gets that insert's prefix: `winch_assembly:drive@upright/spin`.
+   */
   name?: string;
   /** The two parts overlap on purpose (press fit, modeled threads): don't flag it as a collision. */
   overlap?: boolean;
@@ -79,7 +92,12 @@ export type InsertOpts = {
    * id is `<assembly>/<part>@<name>`, and dragged positions and notes stay with the name.
    */
   name?: string;
-  /** Where it goes (default: where it's modeled, or where a connector-to-connector joint puts it). */
+  /**
+   * Where it goes (default: where it's modeled, or where a joint to a copy laid out before it puts it).
+   * Everything joined to it follows (it keeps its modeled place relative to this copy), so placing
+   * the root part orients the whole assembly. Two copies placed separately and joined keep their
+   * places, with a warning: place one, the rest follow.
+   */
   place?: Placement;
 };
 
@@ -117,7 +135,11 @@ export type AssemblyTools = {
    */
   insert(part: PartDef, opts?: InsertOpts): Instance;
   insert(assembly: AssemblyDef, opts?: InsertOpts): SubAssembly;
-  /** These never move (a subassembly: all its parts). Without it, each connected group keeps its first part still. */
+  /**
+   * These never move. Without it, each connected group keeps its first part still. A subassembly is
+   * held by its root part (its first fixed part, else the first part of its first joint), so its own
+   * joints still move; to hold another of its parts, `fix(sub.part(gearbox))`.
+   */
   fix(...parts: (Body | SubAssembly)[]): void;
   /** Rigidly joined: where they are, or connector to connector. */
   fastened(a: Body, b: Body, opts?: JointOpts): Joint;

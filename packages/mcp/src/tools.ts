@@ -989,7 +989,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   // ---------------- assembly poses ----------------
   tool(
     "set_pose",
-    'Pose a mechanism: joint values in degrees or mm, 0 where modeled, clamped to limits, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints; joints you don\'t name keep their value or settle. scope "session" (default): a preview only this MCP session sees (render, measure, check, describe_model, export), nothing saved. scope "shared": save the positions to the document for everyone (like dragging in the workspace; no version); without joints it saves your session preview. reset: true first drops your session values (shared: the saved positions). Returns each joint\'s value and source (session, shared or home).',
+    'Pose a mechanism: joint values in degrees or mm, 0 where modeled, clamped to limits, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints; joints you don\'t name keep their value or settle. Joint names: the script\'s { name }, else "<partA>+<partB>"; joints of an inserted assembly are prefixed "<its assembly id>@<insert name>/", e.g. "winch_assembly:drive@upright/Drum rotation" (describe_model lists them). scope "session" (default): a preview only this MCP session sees (render, measure, check, describe_model, export), nothing saved. scope "shared": save the positions to the document for everyone (like dragging in the workspace; no version); without joints it saves your session preview. reset: true first drops your session values (shared: the saved positions). Returns each joint\'s value and source (session, shared or home).',
     {
       document,
       assembly: z.string(),
