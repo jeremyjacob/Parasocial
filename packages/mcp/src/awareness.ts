@@ -69,12 +69,13 @@ export async function othersOn(db: Db, s: Who & { userID: string }, documentID: 
   return out;
 }
 
-/** Relative imports of a script, resolved to document paths (`../lib/size` → `lib/size.ts`). */
+/** Relative imports of a script, resolved to document paths (`../lib/size` → `lib/size.ts`). Commented-out imports don't count. */
 export function importsOf(path: string, content: string): string[] {
   const dir = path.split("/").slice(0, -1);
   const out = new Set<string>();
-  for (const m of content.matchAll(/(?:import|export)\s[^'"]*?from\s*["'](\.{1,2}\/[^"']+)["']|import\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g)) {
-    const spec = m[1] ?? m[2]!;
+  const code = content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  for (const m of code.matchAll(/(?:import|export)\s[^'"]*?from\s*["'](\.{1,2}\/[^"']+)["']|import\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)|import\s*["'](\.{1,2}\/[^"']+)["']/g)) {
+    const spec = m[1] ?? m[2] ?? m[3]!;
     const parts = [...dir];
     for (const seg of spec.split("/")) {
       if (seg === "." || seg === "") continue;

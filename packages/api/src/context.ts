@@ -1,5 +1,5 @@
 // The per-part regeneration context: op cache, params, provenance, counters.
-import { OpCache, type OpRecord, type SourceLoc } from "@parasocial/naming";
+import { OpCache, type OpRecord } from "@parasocial/naming";
 import type { ParamDecl, Problem } from "./types";
 import { SI_DEFAULT, type DocUnits } from "./units";
 
@@ -35,7 +35,8 @@ export class PartContext {
   readonly ops: OpRecord[] = [];
   readonly problems: Problem[] = [];
   readonly counters = new Map<string, number>();
-  readonly tags = new Map<string, SourceLoc | undefined>();
+  /** Tag → the user frames (innermost first) of the op that took it, for "used twice" errors. */
+  readonly tags = new Map<string, Frame[]>();
   /** Latest successful solid result: shown when a later op fails (§8 Errors). */
   lastSolid?: OpRecord;
   private mapFrame: (f: Frame) => Frame | null;
@@ -133,4 +134,11 @@ export function withContext<T>(c: PartContext, fn: () => T): T {
 export function shortLoc(f?: { file: string; line: number }) {
   if (!f) return "";
   return `${f.file.split("/").pop()}:${f.line}`;
+}
+
+/** A call chain (frames innermost first) as the user reads it, outermost first: `winch.ts:300 via join() at x.ts:200`. */
+export function chainLoc(frames: Frame[]): string {
+  if (!frames.length) return "an unknown place";
+  const [outer, ...inner] = frames.slice().reverse();
+  return [shortLoc(outer), ...inner.map((f) => `via ${cleanFn(f.fn) ?? "a helper"}() at ${shortLoc(f)}`)].join(" ");
 }

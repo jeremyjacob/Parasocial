@@ -36,20 +36,46 @@ test("mates place copies: each wheel's hub lands on its axle", () => {
   close(m.pointAt("cart/wheel@fl", [10, 0, 0]), applyPoint(home.get("cart/wheel@fl")!, [10, 0, 0])); // others don't move
 });
 
-test("placed copies sit where placed; legacy frames in scope coordinates become a frame on each", () => {
+test("a placed copy carries what's joined to it (frames in scope coordinates move with them)", () => {
   const place = { r: rotation([0, 0, 1], Math.PI / 2), t: [100, 0, 0] as Vec3 };
-  const { home, frames } = layout({
+  const { home, frames, conflicts } = layout({
     root: "a",
     bodies: [
       { id: "a/base", scope: "a" },
       { id: "a/arm@2", scope: "a", place },
+      { id: "a/pin", scope: "a" },
+    ],
+    joints: [
+      { a: "a/base", b: "a/arm@2", scope: "a", frame: at([100, 0, 0]) },
+      { a: "a/pin", b: "a/base", scope: "a", frame: at([0, 0, 0]) },
+    ],
+  });
+  close(applyPoint(home.get("a/arm@2")!, [10, 0, 0]), [100, 10, 0]);
+  // base and pin follow the arm: the same placement
+  close(applyPoint(home.get("a/base")!, [10, 0, 0]), [100, 10, 0]);
+  close(applyPoint(home.get("a/pin")!, [0, 5, 0]), [95, 0, 0]);
+  const f = frames[0]!;
+  close(f.a.origin, [100, 0, 0]);
+  close(f.b.origin, [100, 0, 0]); // the same point on each, as modeled
+  expect(conflicts).toEqual([]);
+});
+
+test("copies placed apart and joined by a frame keep their places; the frame stays where given", () => {
+  const place = { r: rotation([0, 0, 1], Math.PI / 2), t: [100, 0, 0] as Vec3 };
+  const { home, frames, conflicts } = layout({
+    root: "a",
+    bodies: [
+      { id: "a/base", scope: "a", place: { r: rotation([0, 0, 1], 0), t: [0, 0, 0] } },
+      { id: "a/arm@2", scope: "a", place },
     ],
     joints: [{ a: "a/base", b: "a/arm@2", scope: "a", frame: at([100, 0, 0]) }],
   });
+  close(applyPoint(home.get("a/base")!, [10, 0, 0]), [10, 0, 0]);
   close(applyPoint(home.get("a/arm@2")!, [10, 0, 0]), [100, 10, 0]);
   const f = frames[0]!;
   close(f.a.origin, [100, 0, 0]);
-  close(f.b.origin, [0, 0, 0]); // the same point, in the copy's own coordinates
+  close(f.b.origin, [0, 0, 0]); // the same world point, in the copy's own coordinates
+  expect(conflicts).toEqual([0]);
 });
 
 test("a subassembly is laid out in its own coordinates, then placed as a whole by a mate onto one of its bodies", () => {

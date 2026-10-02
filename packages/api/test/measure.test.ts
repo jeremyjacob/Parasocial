@@ -73,6 +73,13 @@ test("distance, minClearance, overlap", () => {
   near(got.ab as number, 3);
   near(got.abClear as number, 3);
   near((got.closest as { distance: number }).distance, 3);
+  // one shape per function: Closest also carries `value` and compares / prints as its distance
+  const cl = got.closest as { distance: number; value: number; a: number[] };
+  expect(cl.value).toBe(cl.distance);
+  expect(+cl).toBe(cl.distance);
+  expect((cl as unknown as number) > 2.5 && (cl as unknown as number) < 3.5).toBe(true);
+  expect(`${cl}`).toBe(String(cl.distance));
+  expect(Object.keys(cl)).toEqual(["distance", "value", "a", "b"]);
   near(got.facePt as number, 2);
   near(got.ptPt as number, 5);
   near(got.edgeEdge as number, 3);

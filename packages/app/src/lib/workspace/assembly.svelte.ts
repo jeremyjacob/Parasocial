@@ -7,7 +7,7 @@
 // one even at home.
 import { Mechanism, toMatrix, isIdentity, type JointSpec, type Pose, type Vec3 } from '@parasocial/assembly';
 import { sourcePart, type AssemblyInfo, type PartPose } from '@parasocial/runtime/protocol';
-import { resolveAssembly } from '@parasocial/runtime/mechanism';
+import { resolveAssembly, unsatisfied } from '@parasocial/runtime/mechanism';
 import { mutators } from '@parasocial/sync';
 import type { WorkspaceState } from './state.svelte';
 
@@ -99,7 +99,7 @@ export class AssemblyController {
 			// where it was left: saved values, else the current ones of the previous build, else the script's
 			const saved = this.saved(info.id) ?? (prev ? prev.mech.values() : null);
 			const err = saved ? mech.setValues(saved) : mech.settle();
-			if (err > 1e-3) problems.push({ assembly: info.id, message: `the joints of "${info.name}" can't all be satisfied (off by ${err.toFixed(2)}): check that connectors line up where the parts are modeled or placed` });
+			if (err > 1e-3) problems.push({ assembly: info.id, message: `${info.name}: ${unsatisfied(mech, err, (p) => this.nameOf(p))}` });
 			next.set(info.id, { info, mech, key });
 		}
 		this.built = next;

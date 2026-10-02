@@ -7,7 +7,7 @@
 // Also: assembly poses for MCP, solved the way the app solves them (resolveAssembly + Mechanism,
 // starting from the document's saved joint values), and expanding assembly ids to their instances.
 import { Mechanism, JOINT_VARS, applyPoint, applyDir, isIdentity, type Pose, type Vec3 } from "@parasocial/assembly";
-import { resolveAssembly } from "@parasocial/runtime/mechanism";
+import { resolveAssembly, unsatisfied } from "@parasocial/runtime/mechanism";
 import { sourcePart, type AssemblyInfo, type PartPose } from "@parasocial/runtime/protocol";
 
 export type Preview = {
@@ -30,7 +30,7 @@ export function mergeOverrides(base: Record<string, Record<string, string | numb
 }
 
 /** What a part's regeneration says, as far as poses need it. */
-export type PartMeta = { empty?: boolean; connectors?: Record<string, any[]>; bbox?: { min: number[]; max: number[] } };
+export type PartMeta = { name?: string; empty?: boolean; connectors?: Record<string, any[]>; bbox?: { min: number[]; max: number[] } };
 
 export type JointState = { name: string; type: string; a: string; b: string; value: number[]; units: ("deg" | "mm")[]; limits: ({ min?: number; max?: number } | null)[]; from: "session" | "shared" | "home" };
 export type AssemblyState = {
@@ -53,10 +53,15 @@ export function solveAssemblies(infos: AssemblyInfo[], parts: (part: string) => 
   const assemblies: AssemblyState[] = [];
   for (const info of infos) {
     const problems = info.problems.map((p) => p.message);
-    const resolved = resolveAssembly(info, (p) => {
-      const r = parts(p);
-      return !r || r.empty ? null : (r.connectors ?? {});
-    });
+    const nameOf = (p: string) => parts(p)?.name ?? p;
+    const resolved = resolveAssembly(
+      info,
+      (p) => {
+        const r = parts(p);
+        return !r || r.empty ? null : (r.connectors ?? {});
+      },
+      nameOf,
+    );
     problems.push(...resolved.problems.map((p) => p.message));
     const state: AssemblyState = { id: info.id, name: info.name, studio: info.studio, instances: info.instances.map((i) => i.id), joints: [], problems, poses: {} };
     assemblies.push(state);
@@ -77,7 +82,7 @@ export function solveAssemblies(infos: AssemblyInfo[], parts: (part: string) => 
     let err = saved ? mech.setValues(saved) : mech.settle();
     const mine = session[info.id];
     if (mine && Object.keys(mine).length) err = mech.setValues(mine);
-    if (err > 1e-3) problems.push(`the joints can't all be satisfied (off by ${err.toFixed(2)}): check that connectors line up`);
+    if (err > 1e-3) problems.push(unsatisfied(mech, err, nameOf));
     const values = mech.values();
     state.joints = info.joints.filter((j) => JOINT_VARS[j.type].length).map((j) => jointState(j, values[j.name] ?? j.value, mine?.[j.name] ? "session" : saved?.[j.name] ? "shared" : "home"));
     for (const [p, pose] of mech.poses()) if (!isIdentity(pose)) state.poses[p] = poses[p] = { r: [...pose.r], t: [pose.t[0], pose.t[1], pose.t[2]] };
@@ -105,7 +110,12 @@ export function jointValues(info: AssemblyInfo, joints: Record<string, number | 
   const list = () => movable.map((j) => `${j.name} (${j.type}: ${JOINT_VARS[j.type].map((k) => (k === "angle" ? "deg" : "mm")).join(", ")})`).join("; ") || "none";
   for (const [name, v] of Object.entries(joints)) {
     const j = movable.find((x) => x.name === name);
-    if (!j) throw new Error(`No movable joint "${name}" in assembly ${info.id}. Joints: ${list()}`);
+    if (!j) {
+      // a subassembly's joints are named under where it's inserted: "<assembly id>@<insert name>/<joint>"
+      const scoped = movable.filter((x) => x.name.endsWith(`/${name}`) || x.name.split("/").pop() === name.split("/").pop());
+      const hint = scoped.length ? ` Did you mean ${scoped.map((x) => `"${x.name}"`).join(" or ")}? Joints in an inserted assembly are named "<its assembly id>@<insert name>/<joint>".` : "";
+      throw new Error(`No movable joint "${name}" in assembly ${info.id}.${hint} Joints: ${list()}`);
+    }
     const q = Array.isArray(v) ? v : [v];
     const n = JOINT_VARS[j.type].length;
     if (q.length !== n || !q.every(Number.isFinite)) throw new Error(`Joint "${name}" is ${j.type}: give ${n} number${n > 1 ? "s" : ""} (${JOINT_VARS[j.type].map((k) => (k === "angle" ? "deg" : "mm")).join(", ")}).`);

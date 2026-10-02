@@ -55,7 +55,7 @@ export { path3d, helix, Path3d } from "./path3d";
 export type { HelixOpts } from "./path3d";
 export { Solid, box, cylinder, thicken, MATERIALS } from "./solid";
 export { std } from "./std";
-export type { HoleSpec, NutTrapOpts, MetricSize, HeadStandard, InsertSize, BearingSize, CirclipStandard, MgnRailSize, MgnCarriageSize } from "./std";
+export type { HoleSpec, NutTrapOpts, PlaceOpts, MetricSize, HeadStandard, InsertSize, BearingSize, CirclipStandard, MgnRailSize, MgnCarriageSize } from "./std";
 export { measure, check } from "./measure";
 export type { Measurable, BoundingBox, Closest } from "./measure";
 export { EntitySet } from "./selection";

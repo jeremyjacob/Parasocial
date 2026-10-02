@@ -164,18 +164,36 @@ export type ParamOptions = {
   shared?: boolean;
 };
 
+/** What makes two declarations of a param the same one. */
+const SPEC_KEYS = ["default", "unit", "min", "max", "step", "options", "label", "description", "shared"] as const;
+
 /**
  * Declare a parameter. The value in code is the **default**; the UI and agents can override it
  * per configuration. Returns the effective value, in base units (mm / degrees) for numbers.
+ * Declaring the same name again in a part with the same default and options returns the same value
+ * (so a helper that declares its params can run more than once); a conflicting one is an error.
  */
 export function param(name: string, defaultValue: number, opts?: ParamOptions): number;
 export function param<T extends string | number>(name: string, defaultValue: T, opts: ParamOptions & { options: T[] }): T;
 export function param(name: string, defaultValue: number | string, opts: ParamOptions = {}): number | string {
   const c = ctx();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) userError(`param name "${name}" must be an identifier (letters, digits, _), so expressions can refer to it`);
-  if (c.params.some((p) => p.name === name)) userError(`param "${name}" is declared twice in ${c.part}`);
   const site = c.frames()[0];
   const unit = opts.unit;
+  // the same declaration again (a helper called twice) reads the same value; a different one is an error
+  const prev = c.params.find((p) => p.name === name);
+  if (prev) {
+    const vals = (d: Record<string, unknown>) => SPEC_KEYS.map((k) => JSON.stringify(k === "shared" ? !!d[k] : d[k]));
+    const a = vals(prev as unknown as Record<string, unknown>),
+      b = vals({ ...opts, default: defaultValue, unit: unit?.symbol });
+    const diff = SPEC_KEYS.filter((_, i) => a[i] !== b[i]);
+    if (!diff.length) return prev.value;
+    userError(
+      `param "${name}" is declared twice in ${c.part} with a different ${diff.join(", ")}${prev.source ? ` (first at ${shortLoc(prev.source)})` : ""}. ` +
+        `Declaring it again with the same default and options returns the same value, so a helper may declare it on every call; ` +
+        `or declare it once and pass the value to the helpers`,
+    );
+  }
   const factor = unit?.factor ?? 1;
   const decl: ParamDecl = {
     name,
