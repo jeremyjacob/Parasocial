@@ -21,6 +21,16 @@ function engineFor(dir: string) {
 
 const view = <T extends { name: string }>(r: { views: T[] }, name: string) => r.views.find((v) => v.name === name)!;
 
+test("drawings refresh an already regenerated part after script and override changes", () => {
+  const e = engineFor("bracket");
+  drawPart(e, "bracket", { views: ["front"] });
+  e.setOverrides("bracket", { width: 60 });
+  expect(drawPart(e, "bracket", { views: ["front"] }).svg).toContain(">60<");
+  const script = e.getScripts()["studios/bracket.ts"];
+  e.setScript("studios/bracket.ts", script.replace('part("Bracket"', 'part("New bracket"'));
+  expect(drawPart(e, "bracket", { views: ["front"] }).svg).toContain(">New bracket<");
+});
+
 test("bracket: third-angle views, hidden lines, a hatched section A–A, dimensions and a title block", () => {
   const e = engineFor("bracket");
   const r = drawPart(e, "bracket", { sections: [{ plane: "front" }], document: "Bracket", version: "v3", date: "2026-01-02" });

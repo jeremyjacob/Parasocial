@@ -389,6 +389,23 @@ export function posed(r: RenderPart, pose?: { r: number[]; t: number[] }): Rende
 }
 
 // ---------- render ----------
+type Prepared = { id: string; faces: any; faceCount: number; edges: any; edgeCount: number; sel: any; selCount: number; marks: any; markCount: number; color: Vec3; center: Vec3; radius: number };
+const placedParts = new WeakMap<MeshData, { source: RenderPart; pose: string; value: RenderPart }>();
+const geometryByPart = new WeakMap<RenderPart, Map<string, Prepared>>();
+const geometryLRU = new Map<Prepared, { part: RenderPart; key: string; bytes: number }>();
+let geometryBytes = 0;
+
+function trimGeometry() {
+  // Evict after readback: buffers referenced by this frame must survive submission.
+  while (geometryBytes > 64 * 1024 * 1024 || geometryLRU.size > 256) {
+    const [p, entry] = geometryLRU.entries().next().value!;
+    geometryLRU.delete(p);
+    geometryByPart.get(entry.part)?.delete(entry.key);
+    geometryBytes -= entry.bytes;
+    for (const buf of [p.faces, p.edges, p.sel, p.marks]) buf?.destroy();
+  }
+}
+
 /** Render parts to a PNG; returns it base64-encoded. */
 export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions): Promise<string> {
   const { dev, pipes } = await device();
@@ -397,7 +414,17 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
     H = o.height ?? 768;
   const style = o.style ?? "shadedEdges";
   const t = LIGHT;
-  const entries = [...all].filter(([id, r]) => r.mesh && (!o.parts || o.parts.includes(id))).map(([id, r]): [string, RenderPart] => [id, posed(r, o.poses?.[id])]);
+  const selected = o.parts && new Set(o.parts);
+  const entries = [...all].filter(([id, r]) => r.mesh && (!selected || selected.has(id))).map(([id, r]): [string, RenderPart] => {
+    const pose = o.poses?.[id];
+    if (!pose) return [id, r];
+    const key = JSON.stringify(pose);
+    const cached = placedParts.get(r.mesh);
+    if (cached?.source === r && cached.pose === key) return [id, cached.value];
+    const value = posed(r, pose);
+    placedParts.set(r.mesh, { source: r, pose: key, value });
+    return [id, value];
+  });
   const parts = entries.map(([, r]) => r);
   const b = bounds(parts);
   const c = camera(o, b, W / H);
@@ -409,10 +436,10 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
 
   const destroy: any[] = [];
   const U = (globalThis as any).GPUBufferUsage ?? { MAP_READ: 1, COPY_DST: 8, COPY_SRC: 4, VERTEX: 32, UNIFORM: 64 };
-  const buffer = (data: Float32Array, usage: number) => {
+  const buffer = (data: Float32Array, usage: number, persistent = false) => {
     const buf = dev.createBuffer({ size: Math.max(16, Math.ceil(data.byteLength / 16) * 16), usage: usage | U.COPY_DST });
     dev.queue.writeBuffer(buf, 0, data);
-    destroy.push(buf);
+    if (!persistent) destroy.push(buf);
     return buf;
   };
   // every per-draw uniform is padded to the largest Draw struct (the cap's): the pipelines share one layout
@@ -433,13 +460,23 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   // highlight semantics as in Viewer.restyle
   const selFill = linear(t.selectedFill);
   const hiddenFill = linear(t.hiddenLineFill);
-  type Prepared = { id: string; faces: any; faceCount: number; edges: any; edgeCount: number; sel: any; selCount: number; marks: any; markCount: number; color: Vec3; center: Vec3; radius: number };
   const prepared: Prepared[] = [];
   let palette = 0;
   for (const [id, r] of entries) {
     const m = r.mesh;
     const base = linear(r.color?.kind === "rgb" && r.color.hex ? r.color.hex : PALETTE[palette++ % PALETTE.length]);
     const refs = (o.highlight ?? []).filter((h) => h.part === id);
+    // Camera, section and output size affect uniforms. Palette, selection, style,
+    // pose and mesh identity distinguish the geometry uploaded to the device.
+    const cacheKey = JSON.stringify([base, style === "hiddenLine", refs]);
+    const cached = geometryByPart.get(r)?.get(cacheKey);
+    if (cached) {
+      const entry = geometryLRU.get(cached)!;
+      geometryLRU.delete(cached);
+      geometryLRU.set(cached, entry);
+      prepared.push({ ...cached, id });
+      continue;
+    }
     const faceCount = m.faceRanges.length / 2;
     const tinted = new Set<number>();
     const selEdges = new Set<number>();
@@ -463,12 +500,21 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
         n = m.faceRanges[f * 2 + 1];
       for (let i = s; i + 2 < s + n; i += 3) {
         // wind every triangle outward (counter-clockwise seen from its normals' side) for the hull's culling
-        const [a, b2, c2] = [m.indices[i] * 3, m.indices[i + 1] * 3, m.indices[i + 2] * 3];
-        const P = (v: number): Vec3 => [m.positions[v], m.positions[v + 1], m.positions[v + 2]];
-        const N = (v: number): Vec3 => [m.normals[v], m.normals[v + 1], m.normals[v + 2]];
-        const outward = dot(cross(sub(P(b2), P(a)), sub(P(c2), P(a))), add(add(N(a), N(b2)), N(c2))) >= 0;
-        for (const v of outward ? [a, b2, c2] : [a, c2, b2]) {
-          fv.set([...P(v), ...N(v), col[0], col[1], col[2]], k);
+        const a = m.indices[i] * 3, b2 = m.indices[i + 1] * 3, c2 = m.indices[i + 2] * 3;
+        const p = m.positions, normals = m.normals;
+        const ux = p[b2] - p[a], uy = p[b2 + 1] - p[a + 1], uz = p[b2 + 2] - p[a + 2];
+        const vx = p[c2] - p[a], vy = p[c2 + 1] - p[a + 1], vz = p[c2 + 2] - p[a + 2];
+        const nx = normals[a] + normals[b2] + normals[c2];
+        const ny = normals[a + 1] + normals[b2 + 1] + normals[c2 + 1];
+        const nz = normals[a + 2] + normals[b2 + 2] + normals[c2 + 2];
+        const outward = (uy * vz - uz * vy) * nx + (uz * vx - ux * vz) * ny + (ux * vy - uy * vx) * nz >= 0;
+        for (let corner = 0; corner < 3; corner++) {
+          let v = a;
+          if (corner === 1) v = outward ? b2 : c2;
+          if (corner === 2) v = outward ? c2 : b2;
+          fv[k] = p[v]; fv[k + 1] = p[v + 1]; fv[k + 2] = p[v + 2];
+          fv[k + 3] = normals[v]; fv[k + 4] = normals[v + 1]; fv[k + 5] = normals[v + 2];
+          fv[k + 6] = col[0]; fv[k + 7] = col[1]; fv[k + 8] = col[2];
           k += 9;
         }
       }
@@ -488,20 +534,27 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
     const sel = segs(selEdges);
     const markData = new Float32Array(marks.flatMap((p) => [...p, ...p]));
     const pb = bounds([r]);
-    prepared.push({
+    const item: Prepared = {
       id,
-      faces: tris ? buffer(fv, U.VERTEX) : null,
+      faces: tris ? buffer(fv, U.VERTEX, true) : null,
       faceCount: tris,
-      edges: edges.length ? buffer(edges, U.VERTEX) : null,
+      edges: edges.length ? buffer(edges, U.VERTEX, true) : null,
       edgeCount: edges.length / 6,
-      sel: sel.length ? buffer(sel, U.VERTEX) : null,
+      sel: sel.length ? buffer(sel, U.VERTEX, true) : null,
       selCount: sel.length / 6,
-      marks: markData.length ? buffer(markData, U.VERTEX) : null,
+      marks: markData.length ? buffer(markData, U.VERTEX, true) : null,
       markCount: marks.length,
       color: base,
       center: pb.center,
       radius: pb.radius,
-    });
+    };
+    const variants = geometryByPart.get(r) ?? new Map<string, Prepared>();
+    variants.set(cacheKey, item);
+    geometryByPart.set(r, variants);
+    const bytes = [item.faces, item.edges, item.sel, item.marks].reduce((sum, buf) => sum + (buf?.size ?? 0), 0);
+    geometryLRU.set(item, { part: r, key: cacheKey, bytes });
+    geometryBytes += bytes;
+    prepared.push(item);
   }
 
   const TU = (globalThis as any).GPUTextureUsage ?? { COPY_SRC: 1, RENDER_ATTACHMENT: 16 };
@@ -580,6 +633,7 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   const invalid = await dev.popErrorScope();
   if (invalid) {
     for (const d of destroy) d.destroy();
+    trimGeometry();
     throw new Error(`render failed: ${invalid.message}`);
   }
   const MAP_READ = (globalThis as any).GPUMapMode?.READ ?? 1;
@@ -598,6 +652,7 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   }
   read.unmap();
   for (const d of destroy) d.destroy();
+  trimGeometry();
   return base64(png(W, H, raw));
 }
 

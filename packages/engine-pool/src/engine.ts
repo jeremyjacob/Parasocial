@@ -26,6 +26,36 @@ const pending = new Map<number, Pending>();
 let docState: any[] = [];
 const crashes: number[] = [];
 const meshes = new Map<string, any>(); // last regeneration result per part (with mesh), for renders
+// The pool serializes a document's jobs. With the same scripts, units and overrides, a
+// regeneration is deterministic: reuse its metadata and the mesh already held by this host.
+const regenerations = new Map<string, any>();
+let revision = 0;
+const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export"]);
+const POSED_READS = new Set(["measure", "interference", "interferencePairs", "interferences", "export"]);
+const readCache = new Map<string, { value: any; bytes: number }>();
+let readBytes = 0, readRevision = 0, poses = "";
+function clearReads() {
+  readCache.clear();
+  readBytes = 0;
+  readRevision++;
+}
+function rememberRead(key: string, value: any) {
+  const bytes = (key.length + JSON.stringify(value).length) * 2;
+  const budget = 8 * 1024 * 1024;
+  if (bytes > budget) return;
+  const previous = readCache.get(key);
+  if (previous) {
+    readCache.delete(key);
+    readBytes -= previous.bytes;
+  }
+  while (readCache.size && (readBytes + bytes > budget || readCache.size >= 128)) {
+    const [oldKey, old] = readCache.entries().next().value!;
+    readCache.delete(oldKey);
+    readBytes -= old.bytes;
+  }
+  readCache.set(key, { value, bytes });
+  readBytes += bytes;
+}
 
 function spawn() {
   const spawned = new Worker(cfg.worker, { type: "module" });
@@ -77,6 +107,11 @@ function replay(): any[] {
 
 /** Replace the worker. `resend`: send the requests in flight to the replacement instead of failing them. */
 function restart(error: Error, resend: boolean) {
+  revision++;
+  regenerations.clear();
+  meshes.clear();
+  clearReads();
+  poses = "";
   const old = worker;
   worker = null;
   old?.terminate();
@@ -143,15 +178,56 @@ async function call(req: any): Promise<any> {
 /** One engine request. Regeneration results keep their mesh here (for renders); metadata goes back. */
 (globalThis as any).rpc = async (req: any) => {
   try {
+    if (req.op === "setDocument" || req.op === "setScript" || req.op === "setOverrides" || req.op === "adopt") {
+      revision++;
+      regenerations.clear();
+      clearReads();
+    }
+    if (req.op === "setPoses" || (req.op === "interferences" && req.poses !== undefined)) {
+      const next = JSON.stringify(req.poses ?? {});
+      // Descriptions, BOMs, drawings and validity checks use source geometry. Keep
+      // them warm while a mechanism moves; measurements/exports include its pose.
+      if (next !== poses) readRevision++;
+      poses = next;
+    }
+    const cacheKey = req.op === "regenerate" && req.known === undefined ? `${req.part}\0${req.quality ?? "fine"}` : undefined;
+    const cached = cacheKey && regenerations.get(cacheKey);
+    if (cached) {
+      meshes.set(req.part, cached);
+      const { mesh, ...meta } = cached;
+      return { ok: true, value: { ...meta, timings: { total: 0, script: 0, ops: 0, mesh: 0, cacheHits: 0, cacheMisses: 0 } } };
+    }
+    if (req.op === "regenerate") clearReads();
+    // Drawings default to today's date; a long-lived host must refresh the title block.
+    const readKey = READS.has(req.op) ? JSON.stringify(req) + (POSED_READS.has(req.op) ? poses : "") + (req.op === "drawing" && !req.options?.date ? new Date().toISOString().slice(0, 10) : "") : undefined;
+    const readHit = readKey && readCache.get(readKey);
+    if (readHit) {
+      // This read also changes worker state. A previous setPoses may have moved
+      // the mechanism since its overlaps were cached; synchronize before reuse.
+      if (req.op === "interferences" && req.poses !== undefined) await call({ op: "setPoses", poses: req.poses });
+      readCache.delete(readKey!);
+      readCache.set(readKey!, readHit);
+      return { ok: true, value: readHit.value };
+    }
+    const startedRevision = revision;
+    const startedReadRevision = readRevision;
     const v = await call(req);
     if (req.op === "regenerate" && v) {
       if (v.mesh) meshes.set(req.part, v);
       else meshes.delete(req.part);
       const { mesh, ...meta } = v;
+      // Never retain failures (including watchdog/kernel faults), or a result computed
+      // across a worker replacement or a concurrent document change.
+      if (cacheKey && v.ok && mesh && startedRevision === revision) regenerations.set(cacheKey, v);
       return { ok: true, value: meta };
     }
     // overlap volumes only: their meshes are for the viewer
-    if (req.op === "interferences" && Array.isArray(v)) return { ok: true, value: v.map(({ mesh, ...x }: any) => x) };
+    if (req.op === "interferences" && Array.isArray(v)) {
+      const value = v.map(({ mesh, ...x }: any) => x);
+      if (readKey && startedReadRevision === readRevision) rememberRead(readKey, value);
+      return { ok: true, value };
+    }
+    if (readKey && v !== undefined && startedReadRevision === readRevision) rememberRead(readKey, v);
     return { ok: true, value: v };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e), timeout: !!e?.timeout };

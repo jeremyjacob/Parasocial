@@ -109,6 +109,24 @@ test("studio notes persist, filter and resolve without geometry, including after
     expect((await call("list_notes", { studio: "studios/other.ts" })).notes).toEqual([]);
     expect((await call("list_notes", { part: "model:rear" })).notes).toEqual([]);
 
+    // Bulk note loading must keep each thread, markup and document ordinal together.
+    const extraIDs: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const noteID = crypto.randomUUID();
+      extraIDs.push(noteID);
+      await run(db, mutators.note.create({ id: noteID, documentID, text: `Thread ${i}`, anchor }), { userID });
+      await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: `Reply ${i}` }), { userID });
+      await run(db, mutators.markup.add({ id: crypto.randomUUID(), documentID, noteID, part: "model:rear", points: [[i, 0, 0], [i, 1, 0]], color: "#ff0000" }), { userID });
+    }
+    const listed = (await call("list_notes", { studio })).notes;
+    expect(listed).toHaveLength(7);
+    for (const [i, noteID] of extraIDs.entries()) {
+      const n = listed.find((n: any) => n.id === noteID);
+      expect(n.number).toBe(i + 2);
+      expect(n.messages.map((m: any) => m.text)).toEqual([`Thread ${i}`, `Reply ${i}`]);
+      expect(n.markup).toEqual([{ part: "model:rear", color: "#ff0000", points: 2, from: [i, 0, 0], to: [i, 1, 0] }]);
+    }
+
     await run(db, mutators.script.write({ documentID, path: studio, content: "export const replacement = {};", baseVersion: 1 }), { userID });
     expect((await call("get_note", { id })).targets[0]).toMatchObject({ studio, status: "name" });
     await run(db, mutators.script.delete({ documentID, path: studio, baseVersion: 2 }), { userID });

@@ -70,6 +70,7 @@ async function host(kind: "browser" | "pool", search = "") {
   let nextRequest = 1;
   return {
     workers, replies, count,
+    meshes: context.poolMeshes as Map<string, any> | undefined,
     async request(req: any) {
       const id = nextRequest++;
       if (kind === "browser") port.onmessage!({ data: { id, req } });
@@ -92,6 +93,87 @@ async function host(kind: "browser" | "pool", search = "") {
     },
   };
 }
+
+test("pool: cached regeneration retains each quality's mesh and invalidates on every state change", async () => {
+  const h = await host("pool");
+  const w = h.workers[0];
+  const answer = async (_id: number, quality: string) => {
+    w.emit({ type: "result", id: w.sent.at(-1).id, ok: true, value: { part: "a", ok: true, quality, mesh: { quality }, timings: { total: 1 } } });
+    await flush();
+  };
+  await answer(await h.request({ op: "regenerate", part: "a" }), "fine");
+  const sent = w.sent.length;
+  await h.request({ op: "regenerate", part: "a" });
+  expect(w.sent.length).toBe(sent);
+  expect(h.replies.at(-1).value.timings.total).toBe(0);
+  await answer(await h.request({ op: "regenerate", part: "a", quality: "coarse" }), "coarse");
+  expect(h.meshes!.get("a").mesh.quality).toBe("coarse");
+  await h.request({ op: "regenerate", part: "a" });
+  expect(h.meshes!.get("a").mesh.quality).toBe("fine");
+  for (const req of [
+    { op: "setScript", path: "studios/a.ts", content: "new" },
+    { op: "setOverrides", part: "a", overrides: { width: 20 } },
+    { op: "setDocument", doc: { scripts: {} } },
+  ]) {
+    await h.request(req);
+    w.emit({ type: "result", id: w.sent.at(-1).id, ok: true, value: true });
+    await flush();
+    const before = w.sent.length;
+    await answer(await h.request({ op: "regenerate", part: "a" }), "fine");
+    expect(w.sent.length).toBe(before + 1);
+  }
+  w.crash("restart");
+  h.workers[1].emit({ type: "ready", info });
+  await flush();
+  await h.request({ op: "regenerate", part: "a" });
+  expect(h.workers[1].sent.at(-1).req.op).toBe("regenerate");
+  expect(h.meshes!.size).toBe(0);
+});
+
+test("pool: read caches follow poses supplied by both setPoses and interferences", async () => {
+  const h = await host("pool");
+  const w = h.workers[0];
+  const answer = async (req: any, value: any) => {
+    await h.request(req);
+    w.emit({ type: "result", id: w.sent.at(-1).id, ok: true, value });
+    await flush();
+  };
+  const measure = { op: "measure", a: { part: "a", kind: "part" }, b: { part: "b", kind: "part" } };
+  await answer({ op: "setPoses", poses: {} }, true);
+  await answer(measure, { distance: 0 });
+  const before = w.sent.length;
+  await h.request(measure);
+  expect(w.sent.length).toBe(before);
+  await answer({ op: "interferences", parts: ["a", "b"], poses: { a: { r: [], t: [10, 0, 0] } } }, []);
+  const afterPose = w.sent.length;
+  await answer(measure, { distance: 10 });
+  expect(w.sent.length).toBe(afterPose + 1);
+  expect(h.replies.at(-1).value.distance).toBe(10);
+  await answer({ op: "setPoses", poses: {} }, true);
+  const afterReset = w.sent.length;
+  await h.request(measure);
+  expect(w.sent.length).toBe(afterReset);
+  expect(h.replies.at(-1).value.distance).toBe(0);
+  // Cached overlaps still apply their embedded pose in the worker, so a read
+  // whose result has never been cached uses that pose too.
+  await h.request({ op: "interferences", parts: ["a", "b"], poses: { a: { r: [], t: [10, 0, 0] } } });
+  expect(w.sent.at(-1).req).toEqual({ op: "setPoses", poses: { a: { r: [], t: [10, 0, 0] } } });
+  w.emit({ type: "result", id: w.sent.at(-1).id, ok: true, value: true });
+  await flush();
+  await answer({ ...measure, a: { part: "c", kind: "part" } }, { distance: 10 });
+  expect(h.replies.at(-1).value.distance).toBe(10);
+});
+
+test("pool: failed regenerations remain retryable", async () => {
+  const h = await host("pool");
+  const w = h.workers[0];
+  const first = await h.request({ op: "regenerate", part: "a" });
+  w.emit({ type: "result", id: first, ok: true, value: { part: "a", ok: false, mesh: {} } });
+  await flush();
+  const before = w.sent.length;
+  await h.request({ op: "regenerate", part: "a" });
+  expect(w.sent.length).toBe(before + 1);
+});
 
 for (const kind of ["browser", "pool"] as const) {
   test(`${kind}: queued regeneration gets its full budget after earlier parts finish`, async () => {
@@ -212,6 +294,19 @@ describe("browser: parts regenerate on several workers", () => {
     for (const w of h.workers.slice(0, 3)) expect(sentTo(w, "setScript").length).toBe(1);
     for (const w of h.workers.slice(0, 3)) await answer(h, w, w.sent.at(-1).id, []);
     expect(h.replies.map((r: any) => r.id)).toEqual([id]);
+  });
+
+  test("collision batches adopt parts owned by another worker", async () => {
+    const h = await host("browser", "?workers=2");
+    const a = await h.request({ op: "regenerate", part: "a" });
+    const b = await h.request({ op: "regenerate", part: "b" });
+    await answer(h, h.workers[0], a, { part: "a", key: "ka" });
+    await answer(h, h.workers[1], b, { part: "b", key: "kb" });
+    await h.request({ op: "interferencePairs", pairs: [["a", "b"]] });
+    const ask = sentTo(h.workers[1], "shapeOf").at(-1);
+    expect(ask.req.part).toBe("b");
+    await answer(h, h.workers[1], ask.id, { key: "kb", brep: "B" });
+    expect(h.workers[0].sent.slice(-2).map((m: any) => m.req.op)).toEqual(["adopt", "interferencePairs"]);
   });
 
   test("affected: a part is affected only if every worker says so", async () => {

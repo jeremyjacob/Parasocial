@@ -1,0 +1,376 @@
+{
+  "date": "2026-10-01",
+  "methodology": {
+    "fixture": "Largest production project by total script bytes, exported read-only over SSH; source retained under ignored .data/performance.",
+    "fixtureSha256": "c957d48cd53a6121365f46fc08569ed87d3e63ff533c13ce22cbd02e8ac83e3b",
+    "configuration": "Default",
+    "baselineCommit": "5984c01ed5f9aa8799faf6b4915a71a7d135985e",
+    "commonChanges": [
+      "Pre-existing sketch ShapeIndex optimization",
+      "Geometric Solid.boundingBox correctness fix so cold and warm modeling agree"
+    ],
+    "execution": "Real MCP handlers through the SDK transport, HTTP engine pool, Deno worker, OCCT and WebGPU. Both variants ran sequentially on the same machine against isolated local test databases.",
+    "samples": "Three samples per action, one cold description and first full check; medians. Incomplete baseline repeated check retains its sample and failure without inventing a median.",
+    "scriptWrites": "Comment-only source revisions: one file, then all 13. These exercise edit synchronization and unchanged-geometry reuse; actual shape changes still need regeneration.",
+    "notes": "100 synthetic studio note threads, each with one message; production notes excluded.",
+    "limitations": [
+      "Local timings exclude production SSH/HTTP network latency.",
+      "Single client, Default configuration; simultaneous project throughput was not measured."
+    ]
+  },
+  "environment": {
+    "cpu": "Apple M1 Pro",
+    "architecture": "arm64",
+    "platform": "darwin",
+    "ramBytes": 17179869184,
+    "bun": "1.4.2",
+    "deno": "2.9.1"
+  },
+  "project": {
+    "name": "Ohman 3D printed",
+    "parts": 101,
+    "scripts": 13,
+    "scriptBytes": 144566
+  },
+  "samples": 3,
+  "measurements": {
+    "describe_model.cold": {
+      "baselineMs": [
+        20853.43175
+      ],
+      "optimizedMs": [
+        16610.166042
+      ],
+      "baselineMedianMs": 20853.43175,
+      "optimizedMedianMs": 16610.166042,
+      "speedup": 1.2554619681266639
+    },
+    "list_scripts": {
+      "baselineMs": [
+        8.83179200000086,
+        2.799957999999606,
+        2.27758299999914
+      ],
+      "optimizedMs": [
+        14.432791999999608,
+        4.2667919999985315,
+        1.8514159999976982
+      ],
+      "baselineMedianMs": 2.799957999999606,
+      "optimizedMedianMs": 4.2667919999985315,
+      "speedup": 0.6562208797617904
+    },
+    "read_script": {
+      "baselineMs": [
+        2.467416999999841,
+        2.148624999997992,
+        5.544333000001643
+      ],
+      "optimizedMs": [
+        2.5147499999984575,
+        2.0229999999974098,
+        1.7676250000004075
+      ],
+      "baselineMedianMs": 2.467416999999841,
+      "optimizedMedianMs": 2.0229999999974098,
+      "speedup": 1.2196821552165105
+    },
+    "list_notes": {
+      "baselineMs": [
+        3.9710830000003625,
+        2.84662500000195,
+        2.043915999998717
+      ],
+      "optimizedMs": [
+        2.061250000002474,
+        1.6445000000021537,
+        1.400792000000365
+      ],
+      "baselineMedianMs": 2.84662500000195,
+      "optimizedMedianMs": 1.6445000000021537,
+      "speedup": 1.730997263604878
+    },
+    "get_params": {
+      "baselineMs": [
+        4894.305208000002,
+        4920.781417000002,
+        5076.134458
+      ],
+      "optimizedMs": [
+        60.380999999997584,
+        62.78254200000083,
+        55.46445799999856
+      ],
+      "baselineMedianMs": 4920.781417000002,
+      "optimizedMedianMs": 60.380999999997584,
+      "speedup": 81.4955270200924
+    },
+    "describe_model": {
+      "baselineMs": [
+        8625.387125000001,
+        8631.233333000004,
+        8917.542624999995
+      ],
+      "optimizedMs": [
+        114.87604199999987,
+        105.30633299999681,
+        103.62041600000157
+      ],
+      "baselineMedianMs": 8631.233333000004,
+      "optimizedMedianMs": 105.30633299999681,
+      "speedup": 81.96309839219514
+    },
+    "describe_model.part": {
+      "baselineMs": [
+        3907.779915999992,
+        3875.144625000001,
+        3855.4835420000018
+      ],
+      "optimizedMs": [
+        13.645166000002064,
+        15.32300000000032,
+        12.30962499999805
+      ],
+      "baselineMedianMs": 3875.144625000001,
+      "optimizedMedianMs": 13.645166000002064,
+      "speedup": 283.99395251031865
+    },
+    "query": {
+      "baselineMs": [
+        70.99112500000047,
+        68.57566600000428,
+        67.87120799999684
+      ],
+      "optimizedMs": [
+        7.952042000000802,
+        8.782583000000159,
+        7.377250000001368
+      ],
+      "baselineMedianMs": 68.57566600000428,
+      "optimizedMedianMs": 7.952042000000802,
+      "speedup": 8.623654905242875
+    },
+    "measure": {
+      "baselineMs": [
+        383.40350000000035,
+        401.1260420000035,
+        386.0093749999942
+      ],
+      "optimizedMs": [
+        317.5838330000006,
+        6.468124999999418,
+        6.715167000002111
+      ],
+      "baselineMedianMs": 386.0093749999942,
+      "optimizedMedianMs": 6.715167000002111,
+      "speedup": 57.48321300123628
+    },
+    "list_problems": {
+      "baselineMs": [
+        4887.420874999996,
+        4831.786874999991,
+        4840.390499999994
+      ],
+      "optimizedMs": [
+        56.18095800000083,
+        59.07866700000159,
+        55.951499999999214
+      ],
+      "baselineMedianMs": 4840.390499999994,
+      "optimizedMedianMs": 56.18095800000083,
+      "speedup": 86.15713708548584
+    },
+    "render.full": {
+      "baselineMs": [
+        9076.177959000008,
+        8974.683707999997,
+        9228.735124999992
+      ],
+      "optimizedMs": [
+        277.95587499999965,
+        153.5275419999998,
+        127.44283300000097
+      ],
+      "baselineMedianMs": 9076.177959000008,
+      "optimizedMedianMs": 153.5275419999998,
+      "speedup": 59.11758789833305
+    },
+    "render.part": {
+      "baselineMs": [
+        3988.431125000003,
+        4332.629707999993,
+        4003.6726250000065
+      ],
+      "optimizedMs": [
+        55.09700000000157,
+        59.595416000000114,
+        43.41595800000141
+      ],
+      "baselineMedianMs": 4003.6726250000065,
+      "optimizedMedianMs": 55.09700000000157,
+      "speedup": 72.66589151859253
+    },
+    "render.changed_view": {
+      "baselineMs": [
+        9062.907209000012,
+        9105.432292000012,
+        9229.902791
+      ],
+      "optimizedMs": [
+        102.48345899999913,
+        103.2646249999998,
+        99.99308299999757
+      ],
+      "baselineMedianMs": 9105.432292000012,
+      "optimizedMedianMs": 102.48345899999913,
+      "speedup": 88.84782364732722
+    },
+    "bom": {
+      "baselineMs": [
+        5234.701167000021,
+        5108.818249999982,
+        5086.814875000011
+      ],
+      "optimizedMs": [
+        1234.2561249999999,
+        7.198082999999315,
+        3.8266660000008414
+      ],
+      "baselineMedianMs": 5108.818249999982,
+      "optimizedMedianMs": 7.198082999999315,
+      "speedup": 709.747060432683
+    },
+    "drawing": {
+      "baselineMs": [
+        124.3511250000156,
+        70.0415830000129,
+        63.19170799999847
+      ],
+      "optimizedMs": [
+        157.08741599999848,
+        6.088207999997394,
+        5.248332999999548
+      ],
+      "baselineMedianMs": 70.0415830000129,
+      "optimizedMedianMs": 6.088207999997394,
+      "speedup": 11.504466174618686
+    },
+    "export": {
+      "baselineMs": [
+        142.9127499999886,
+        136.92949999999837,
+        132.13879200001247
+      ],
+      "optimizedMs": [
+        32.9251669999976,
+        8.00579099999959,
+        6.854083999998693
+      ],
+      "baselineMedianMs": 136.92949999999837,
+      "optimizedMedianMs": 8.00579099999959,
+      "speedup": 17.103806482083456
+    },
+    "write_script": {
+      "baselineMs": [
+        4885.340040999989,
+        4884.373124999984,
+        4899.42958299999
+      ],
+      "optimizedMs": [
+        389.4958340000012,
+        384.7824580000015,
+        412.8298340000001
+      ],
+      "baselineMedianMs": 4885.340040999989,
+      "optimizedMedianMs": 389.4958340000012,
+      "speedup": 12.542727327347931
+    },
+    "write_scripts": {
+      "baselineMs": [
+        4973.561792000022,
+        4980.241791999986,
+        4885.042249999999
+      ],
+      "optimizedMs": [
+        431.9479170000013,
+        470.47512500000084,
+        440.5777079999971
+      ],
+      "baselineMedianMs": 4973.561792000022,
+      "optimizedMedianMs": 440.5777079999971,
+      "speedup": 11.288727735630363
+    },
+    "check": {
+      "baselineMs": [
+        46177.36941699998
+      ],
+      "optimizedMs": [
+        23467.82525
+      ],
+      "baselineMedianMs": 46177.36941699998,
+      "optimizedMedianMs": 23467.82525,
+      "speedup": 1.967688480934124
+    },
+    "check.warm": {
+      "baselineMs": [
+        44694.543166999996
+      ],
+      "optimizedMs": [
+        161.114333000005,
+        123.40233299999818,
+        121.69787499999802
+      ],
+      "optimizedMedianMs": 123.40233299999818,
+      "baselineError": "Error: part \"levelwind:screwPulley\" has no geometry (it has never regenerated successfully)\n{\"op\":\"interference\"}"
+    },
+    "list_notes.100": {
+      "baselineMs": [
+        50.28033300000243,
+        48.62616700003855,
+        53.95858400000725
+      ],
+      "optimizedMs": [
+        5.443958000003477,
+        4.490666999998211,
+        5.68787500000326
+      ],
+      "baselineMedianMs": 50.28033300000243,
+      "optimizedMedianMs": 5.443958000003477,
+      "speedup": 9.235988411367304
+    }
+  },
+  "verification": {
+    "describe_model.cold": true,
+    "describe_model": true,
+    "describe_model.part": true,
+    "get_params": true,
+    "query": true,
+    "measure": true,
+    "list_problems": true,
+    "bom": true,
+    "check": true,
+    "render.full.pixels": true,
+    "render.part.pixels": true,
+    "render.changed_view.pixels": true,
+    "drawing.contentHash": true,
+    "export.contentHash": true,
+    "baseline.notes": true,
+    "optimized.notes": true
+  },
+  "validation": {
+    "typecheck": "passed",
+    "coreTests": {
+      "passed": 253,
+      "failed": 0
+    },
+    "mcpTests": {
+      "passed": 29,
+      "failed": 0
+    },
+    "productionAppBuild": "passed",
+    "denoWebGPUCacheRegression": "passed: selection, section, style, pose, quality, param and script changes",
+    "independentReview": "Required findings resolved; no remaining required issues",
+    "productionMutations": false,
+    "deployed": false
+  }
+}

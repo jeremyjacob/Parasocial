@@ -94,10 +94,9 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * fetch for the MCP transport that serializes refresh-token rotation across bridge processes
- * sharing ~/.parasocial. The server revokes a whole token family when a rotated refresh token
- * is reused, so two sessions refreshing the same token at once would sign both out. Under the
- * lock, a refresh whose token another process already rotated gets that process's tokens.
+ * fetch for the MCP transport that serializes refreshes across bridge processes sharing
+ * ~/.parasocial. The server no longer rotates refresh tokens, but if one ever changes, a refresh
+ * whose token another process already replaced gets that process's tokens.
  */
 export function refreshSafeFetch(origin: string): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {

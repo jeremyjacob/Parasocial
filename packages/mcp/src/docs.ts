@@ -21,16 +21,24 @@ export async function requireMember(db: Db, userID: string, documentID: string, 
 
 export async function loadDoc(db: Db, userID: string, documentID: string): Promise<DocState> {
   await requireMember(db, userID, documentID);
-  const [d] = await db.sql`SELECT id, name, units FROM documents WHERE id = ${documentID}`;
-  const scripts = await db.sql`SELECT path, content, version, content_hash FROM scripts WHERE document_id = ${documentID} ORDER BY path`;
-  const cfgs = await db.sql`SELECT id, name FROM configurations WHERE document_id = ${documentID} ORDER BY created_at`;
-  const ovs = await db.sql`SELECT configuration_id, part, name, expression, value FROM param_overrides WHERE document_id = ${documentID}`;
+  const [[d], scripts, cfgs, ovs] = await Promise.all([
+    db.sql`SELECT id, name, units FROM documents WHERE id = ${documentID}`,
+    db.sql`SELECT path, content, version, content_hash FROM scripts WHERE document_id = ${documentID} ORDER BY path`,
+    db.sql`SELECT id, name FROM configurations WHERE document_id = ${documentID} ORDER BY created_at`,
+    db.sql`SELECT configuration_id, part, name, expression, value FROM param_overrides WHERE document_id = ${documentID}`,
+  ]);
+  const byConfig = new Map<string, any[]>();
+  for (const o of ovs) {
+    const list = byConfig.get(o.configuration_id) ?? [];
+    list.push({ part: o.part, name: o.name, expression: o.expression, value: o.value });
+    byConfig.set(o.configuration_id, list);
+  }
   return {
     id: d.id,
     name: d.name,
     units: d.units,
     scripts: scripts.map((s: any) => ({ path: s.path, content: s.content, version: Number(s.version), contentHash: s.content_hash })),
-    configurations: cfgs.map((c: any) => ({ id: c.id, name: c.name, overrides: ovs.filter((o: any) => o.configuration_id === c.id).map((o: any) => ({ part: o.part, name: o.name, expression: o.expression, value: o.value })) })),
+    configurations: cfgs.map((c: any) => ({ id: c.id, name: c.name, overrides: byConfig.get(c.id) ?? [] })),
   };
 }
 

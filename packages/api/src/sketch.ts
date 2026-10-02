@@ -1,7 +1,7 @@
 // Sketches: explicit 2D geometry on a plane -> profile faces -> extrude / revolve (PLAN §5).
 // Each segment gets a stable name (`outline/right`, `bore`, `sketch1/line3`) that flows into
 // the names of the faces generated from it.
-import { lineEdge, arcEdge3, circleEdge, splineEdge, bsplineEdge, bsplineKnots, sampleEdge, edgeTangent, vertexPoint, KernelError, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, type Vec3, type Built, type SweepMode } from "@parasocial/kernel";
+import { lineEdge, arcEdge3, circleEdge, splineEdge, bsplineEdge, bsplineKnots, sampleEdge, edgeTangent, vertexPoint, KernelError, wireFromEdges, faceFromWires, compound, prism, revol, sweep, loft as kLoft, offsetFace, edgeInfo, ShapeIndex, type Vec3, type Built, type SweepMode } from "@parasocial/kernel";
 import { entityShape, faceOf, type OpRecord } from "@parasocial/naming";
 import { EntitySet } from "./selection";
 import { ctx } from "./context";
@@ -886,23 +886,28 @@ function centroid(p: P2[]): P2 {
 export function namer(segEdges: { seg: { name?: string }; edge: any }[]) {
   return {
     roles: ({ topo }: { topo: any }) => {
+      // indexed once: a per-edge scan is quadratic in WASM calls (a 32-tooth gear outline took seconds)
+      const index = new ShapeIndex();
+      const segAt: number[] = [];
+      segEdges.forEach((s, i) => (segAt[index.add(s.edge)] ??= i));
+      let mids: Vec3[] | undefined;
       const edge: (string | undefined)[] = topo.edges.items.map((e: any) => {
-        const hit = segEdges.find((s) => s.edge.IsSame(e));
-        if (hit) return hit.seg.name;
+        const i = index.indexOf(e);
+        if (i >= 0) return segEdges[segAt[i]].seg.name;
+        mids ??= segEdges.map((s) => edgeInfo(s.edge).mid);
         const mid = edgeInfo(e).mid;
         let best: { name?: string } | undefined,
           bd = Infinity;
-        for (const s of segEdges) {
-          const d = Math.hypot(...(edgeInfo(s.edge).mid.map((c, k) => c - mid[k]) as Vec3));
+        segEdges.forEach((s, k) => {
+          const d = Math.hypot(...(mids![k].map((c, j) => c - mid[j]) as Vec3));
           if (d < bd) (bd = d), (best = s.seg);
-        }
+        });
         return bd < 1e-6 ? best?.name : undefined;
       });
       return { edge };
     },
   };
 }
-
 
 /**
  * Start a sketch on a plane. Sketch coordinates `[u, v]`: `plane.XY` → [x, y] (normal +Z),

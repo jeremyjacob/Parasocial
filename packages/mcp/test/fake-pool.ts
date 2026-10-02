@@ -45,6 +45,8 @@ export class FakePool {
         return e.interferences(op.parts, op.ignore).map(({ mesh, ...x }) => x);
       case "interference":
         return e.interference(op.a, op.b);
+      case "interferencePairs":
+        return op.pairs.map(([a, b]: [string, string]) => e.interference(a, b));
       case "measure":
         return e.measure(op.a, op.b);
       case "check":

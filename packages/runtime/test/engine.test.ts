@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { loadKernel } from "@parasocial/kernel";
+import { loadKernel, meshTransferables } from "@parasocial/kernel";
 import { Engine, LatestWins } from "../src";
 import { Glob } from "bun";
 import { join } from "node:path";
@@ -7,6 +7,72 @@ import { readFileSync } from "node:fs";
 import { unzipSync, strFromU8 } from "fflate";
 
 beforeAll(async () => { await loadKernel(); });
+
+test("modeling from a washer's bounds gives identical cold and warm geometry", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: { "studios/a.ts": `import { part, std } from "parasocial";
+export default part("Clamp", () => {
+  const washer = std.washer("M3");
+  return std.screw("M3", 5, { standard: "ISO7380" })
+    .translate([0, 0, washer.boundingBox().size[2]])
+    .union(washer, std.insert("M3x4"));
+});` } });
+  const cold = e.regenerate("a");
+  const warm = e.regenerate("a");
+  expect(cold.ok).toBe(true);
+  expect(warm.ok).toBe(true);
+  expect(warm.key).toBe(cold.key);
+  expect(warm.bbox).toEqual(cold.bbox);
+  expect(warm.mass).toEqual(cold.mass);
+});
+
+test("cached derived geometry survives transfer, quality changes and fresh overrides/materials", () => {
+  const e = new Engine();
+  const script = `import { part, box, param, mm } from "parasocial";
+export default part("Box", () => box(param("width", 10, { unit: mm }), 20, 30), { material: { name: "A", density: 1 } });`;
+  e.setDocument({ scripts: { "studios/a.ts": script } });
+  const fine = e.regenerate("a");
+  const positions = [...fine.mesh!.positions];
+  structuredClone(fine, { transfer: meshTransferables(fine.mesh!) });
+  expect(fine.mesh!.positions.byteLength).toBe(0);
+  const coarse = e.regenerate("a", "coarse");
+  expect(coarse.mass).toBeUndefined();
+  const again = e.regenerate("a");
+  expect([...again.mesh!.positions]).toEqual(positions);
+  expect(again.mass!.volume).toBeCloseTo(6000, 4);
+  again.bbox!.max[0] = 999;
+  again.faceEdges[0].length = 0;
+  const unmodified = e.regenerate("a");
+  expect(unmodified.bbox!.max[0]).toBeLessThan(11);
+  expect(unmodified.faceEdges[0].length).toBeGreaterThan(0);
+  e.setOverrides("a", { width: 15 });
+  const wider = e.regenerate("a");
+  expect(wider.mass!.volume).toBeCloseTo(9000, 4);
+  e.setScript("studios/a.ts", script.replace('density: 1', 'density: 2'));
+  const heavier = e.regenerate("a");
+  expect(heavier.key).toBe(wider.key);
+  expect(heavier.mass!.mass).toBeCloseTo(wider.mass!.mass * 2, 4);
+});
+
+test("collision bounds and cached volumes follow poses and changed geometry", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: { "studios/a.ts": `import { part, box, param, mm } from "parasocial";
+export default part("A", () => box(param("width", 10, { unit: mm }), 10, 10));
+export const b = part("B", () => box(10, 10, 10));` } });
+  e.regenerate("a"); e.regenerate("a:b");
+  const r = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const pose = (x: number) => ({ r, t: [x, 0, 0] as [number, number, number] });
+  e.setPoses({ "a:b": pose(5) });
+  expect(e.interference("a", "a:b")).toBeCloseTo(500, 4);
+  expect(e.interference("a", "a:b")).toBeCloseTo(500, 4);
+  e.setPoses({ "a:b": pose(5.0001) });
+  expect(e.interference("a", "a:b")).toBeCloseTo(499.99, 4);
+  e.setPoses({ "a:b": pose(1000) });
+  expect(e.interference("a", "a:b")).toBe(0);
+  e.setPoses({ "a:b": pose(5) });
+  e.setOverrides("a", { width: 20 }); e.regenerate("a");
+  expect(e.interference("a", "a:b")).toBeCloseTo(1000, 4);
+});
 
 function docFrom(dir: string) {
   const root = join(import.meta.dir, "../../../examples", dir);

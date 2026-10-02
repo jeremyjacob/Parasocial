@@ -32,6 +32,8 @@ export type EngineRequest =
   | { op: "loopOf"; part: string; edge: number; face?: number }
   | { op: "opsAtLine"; part: string; file: string; line: number }
   | { op: "interference"; a: string; b: string }
+  /** Volume-only collision batch; one worker round trip for a document's part pairs. */
+  | { op: "interferencePairs"; pairs: [string, string][] }
   /** The assemblies the studios export (joints resolved to part ids). */
   | { op: "assemblies" }
   /** Dragged assembly positions (part -> transform from its modeled pose); measure, interference and export use them. */

@@ -172,12 +172,12 @@ function gridOf(views: View[]) {
   return { colIds, rowIds, colW, rowH, sumW, sumH, fit };
 }
 
-/** Draw a part. Regenerates it if the engine hasn't yet. */
+/** Draw a part from the current scripts and overrides. */
 export function drawPart(engine: Engine, part: string, opts: DrawingOptions = {}): DrawingResult {
   const src = sourcePart(part);
   const ids = engine.parts();
   if (!ids.includes(src)) throw new Error(`no part "${part}"; parts: ${ids.join(", ") || "none"}`);
-  if (!engine.run(src)) engine.regenerate(src, "coarse");
+  engine.regenerate(src, "coarse");
   const run = engine.run(src);
   const rec = engine.shown(src);
   if (!rec) throw new Error(`part "${part}" has no geometry to draw (it has never regenerated successfully)`);

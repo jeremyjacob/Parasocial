@@ -137,7 +137,10 @@ export function opOrder(r: OpRecord): Map<string, number> {
 }
 
 /** All ops feeding `r`, including itself, in topological order. */
+const lineageCache = new WeakMap<OpRecord, OpRecord[]>();
 export function lineage(r: OpRecord): OpRecord[] {
+  const cached = lineageCache.get(r);
+  if (cached) return cached;
   const seen = new Set<OpRecord>();
   const out: OpRecord[] = [];
   const visit = (x: OpRecord) => {
@@ -147,6 +150,7 @@ export function lineage(r: OpRecord): OpRecord[] {
     out.push(x);
   };
   visit(r);
+  lineageCache.set(r, out);
   return out;
 }
 

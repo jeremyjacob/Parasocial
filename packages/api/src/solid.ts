@@ -417,7 +417,8 @@ export class Solid {
   }
   /** Axis-aligned bounds `{ min, max, size }` (world mm). Handy for placing things relative to a solid. */
   boundingBox(): BBox & { size: Vec3 } {
-    const b = kBBox(this.record.shape);
+    // Modeling dimensions must not change when display tessellation is attached.
+    const b = kBBox(this.record.shape, { geometric: true });
     return { ...b, size: [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]] };
   }
   /** Mass in grams, from the material density (g/cm³; default 1). */

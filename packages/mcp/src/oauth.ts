@@ -1,6 +1,8 @@
 // OAuth 2.1 authorization server for MCP (§3 Accounts and auth, MCP authorization spec):
 // protected-resource + AS metadata, dynamic client registration (RFC 7591), authorization code
-// with mandatory PKCE S256, refresh-token rotation, revocation. Public clients only.
+// with mandatory PKCE S256, long-lived (non-rotating, sliding) refresh tokens, revocation.
+// Public clients only. Refresh tokens don't rotate: clients like Codex run several processes off
+// one stored credential, and rotation + reuse detection kept signing them all out.
 // Users sign in with their passkey and approve on the consent screen (a SvelteKit page).
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "@parasocial/sync/server";
@@ -152,16 +154,15 @@ export function createOAuth(deps: { db: Db; config: OAuthConfig }) {
     if (grant === "refresh_token") {
       const rt = form.get("refresh_token") ?? "";
       const [row] = await sql`SELECT * FROM oauth_tokens WHERE token_hash = ${sha256(rt)} AND kind = 'refresh'`;
-      if (!row) return oauthError("invalid_grant", "unknown refresh token");
-      if (row.revoked_at) {
-        // reuse of a rotated refresh token: revoke the whole family
-        await sql`UPDATE oauth_tokens SET revoked_at = now() WHERE family = ${row.family} AND revoked_at IS NULL`;
-        return oauthError("invalid_grant", "refresh token was already used");
-      }
+      if (!row || row.revoked_at) return oauthError("invalid_grant", "refresh token is invalid or revoked");
       if (new Date(row.expires_at) < new Date()) return oauthError("invalid_grant", "refresh token expired");
       if (clientID && row.client_id !== clientID) return oauthError("invalid_grant", "refresh token was issued to another client");
-      await sql`UPDATE oauth_tokens SET revoked_at = now() WHERE id = ${row.id}`;
-      return issue(row.client_id, row.user_id, row.resource, row.family ?? token(12));
+      // no rotation: hand back the same refresh token and slide its expiry
+      await sql`UPDATE oauth_tokens SET expires_at = ${new Date(Date.now() + REFRESH_TTL)} WHERE id = ${row.id}`;
+      const access = token();
+      await sql`INSERT INTO oauth_tokens (id, client_id, user_id, kind, token_hash, resource, family, expires_at)
+                VALUES (${token(12)}, ${row.client_id}, ${row.user_id}, 'access', ${sha256(access)}, ${row.resource}, ${row.family}, ${new Date(Date.now() + ACCESS_TTL)})`;
+      return jsonRes({ access_token: access, token_type: "Bearer", expires_in: ACCESS_TTL / 1000, refresh_token: rt, scope: "mcp" });
     }
     return oauthError("unsupported_grant_type", "use authorization_code or refresh_token");
   }
@@ -193,9 +194,11 @@ export function createOAuth(deps: { db: Db; config: OAuthConfig }) {
 
   /** Connected agents for settings: clients with live tokens for this user. */
   async function connections(userID: string) {
+    // refresh tokens don't rotate, so the latest access token is what marks "last used"
     return sql`SELECT c.id, c.client_name, min(t.created_at) AS connected_at, max(t.created_at) AS last_used
                FROM oauth_tokens t JOIN oauth_clients c ON c.id = t.client_id
-               WHERE t.user_id = ${userID} AND t.kind = 'refresh' AND t.revoked_at IS NULL AND t.expires_at > now()
+               WHERE t.user_id = ${userID} AND t.kind IN ('access', 'refresh')
+                 AND EXISTS (SELECT 1 FROM oauth_tokens r WHERE r.client_id = c.id AND r.user_id = ${userID} AND r.kind = 'refresh' AND r.revoked_at IS NULL AND r.expires_at > now())
                GROUP BY c.id, c.client_name ORDER BY last_used DESC`;
   }
 

@@ -202,6 +202,12 @@ export class Engine {
   private interferenceCache = new Map<string, { volume: number; mesh?: MeshData }>();
   /** Parts another engine regenerates (multi-worker engine page): their shapes, for measure, interference and export. */
   private foreign = new Map<string, ForeignShape>();
+  /** Shape-derived data survives script reruns; material and provenance remain fresh. */
+  private geometry = new WeakMap<OpRecord, { bbox: NonNullable<PartResult["bbox"]>; faces: FaceMeta[]; edges: EdgeMeta[]; vertices: Vec3[]; faceEdges: number[][]; mass?: ReturnType<typeof massProps> }>();
+  private meshCache = new Map<string, { rec: OpRecord; mesh: MeshData; bytes: number }>();
+  private meshBytes = 0;
+  private boxes = new WeakMap<object, Box>();
+  private volumes = new Map<string, number>();
 
   setDocument(doc: DocumentState) {
     this.scripts = new Map(Object.entries(doc.scripts));
@@ -634,32 +640,68 @@ export class Engine {
 
   /** Bounding box, mesh, entity summaries and mass of a regenerated record (throws if it can't be meshed). */
   private describeResult(result: PartResult, rec: OpRecord, quality: MeshQuality, run?: PartRun) {
-    {
+    let geometry = this.geometry.get(rec);
+    if (!geometry) {
+      const bb = scoped(() => boundingBox(rec.shape, { geometric: true }));
+      if (![...bb.min, ...bb.max].every(Number.isFinite)) throw new Error("its geometry has invalid (NaN or infinite) coordinates");
+      geometry = {
+        bbox: bb,
+        faces: rec.topo.faces.items.map((_, i) => {
+          const f = faceOf(rec, i);
+          return { surface: f.surface, area: f.area, center: f.center, normal: f.normal, radius: f.radius, axis: f.axis, origin: f.origin };
+        }),
+        edges: rec.topo.edges.items.map((_, i) => {
+          const e = edgeOf(rec, i);
+          return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, axis: e.axis, seam: isSeamEdge(rec, i) || undefined, smooth: smoothEdge(rec, i) || undefined };
+        }),
+        vertices: rec.topo.vertices.items.map((_, i) => vertexOf(rec, i)),
+        faceEdges: rec.topo.faceEdges.map((l) => [...l]),
+      };
+      this.geometry.set(rec, geometry);
+    }
+    result.bbox = { min: [...geometry.bbox.min], max: [...geometry.bbox.max] };
+    result.faces = geometry.faces.map((f) => ({ ...f }));
+    result.edges = geometry.edges.map((e) => ({ ...e }));
+    result.vertices = geometry.vertices.map((v) => [...v] as Vec3);
+    result.faceEdges = geometry.faceEdges.map((edges) => [...edges]);
+    const meshKey = `${result.part}\0${quality}`;
+    const cached = this.meshCache.get(meshKey);
+    if (cached?.rec === rec) {
+      this.meshCache.delete(meshKey);
+      this.meshCache.set(meshKey, cached);
+      // Results cross a transferable-buffer boundary. Never detach the cached mesh.
+      result.mesh = cloneMesh(cached.mesh);
+    } else {
       const tm = performance.now();
-      scoped(() => {
-        const bb = boundingBox(rec!.shape, { geometric: true });
-        // OCCT takes NaN coordinates without complaint and builds a shape nothing can mesh
-        if (![...bb.min, ...bb.max].every(Number.isFinite)) throw new Error("its geometry has invalid (NaN or infinite) coordinates");
-        result.bbox = bb;
+      const mesh = scoped(() => {
+        const bb = geometry!.bbox;
         const diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]);
         const tol = meshTolerances(diag, quality);
-        result.mesh = tessellate(rec!.shape, rec!.topo.faces, rec!.topo.edges, tol.tolerance, tol.angular);
+        return tessellate(rec.shape, rec.topo.faces, rec.topo.edges, tol.tolerance, tol.angular);
       });
       result.timings.mesh = performance.now() - tm;
-      result.faces = rec.topo.faces.items.map((_, i) => {
-        const f = faceOf(rec!, i);
-        return { surface: f.surface, area: f.area, center: f.center, normal: f.normal, radius: f.radius, axis: f.axis, origin: f.origin };
-      });
-      result.edges = rec.topo.edges.items.map((_, i) => {
-        const e = edgeOf(rec!, i);
-        return { curve: e.curve, length: e.length, mid: e.mid, radius: e.radius, direction: e.direction, center: e.center, axis: e.axis, seam: isSeamEdge(rec!, i) || undefined, smooth: smoothEdge(rec!, i) || undefined };
-      });
-      result.vertices = rec.topo.vertices.items.map((_, i) => vertexOf(rec!, i));
-      result.faceEdges = rec.topo.faceEdges.map((l) => [...l]);
-      if (quality === "fine") {
-        const m = massProps(rec.shape);
-        result.mass = { volume: m.volume, area: m.area, centroid: m.centroid, mass: (m.volume / 1000) * (run?.material?.density ?? 1) };
+      if (cached) {
+        this.meshBytes -= cached.bytes;
+        this.meshCache.delete(meshKey);
       }
+      const bytes = Object.values(mesh).reduce((sum, a) => sum + a.byteLength, 0);
+      const budget = 64 * 1024 * 1024;
+      if (bytes <= budget) {
+        while (this.meshBytes + bytes > budget && this.meshCache.size) {
+          const [key, oldest] = this.meshCache.entries().next().value!;
+          this.meshCache.delete(key);
+          this.meshBytes -= oldest.bytes;
+        }
+        this.meshCache.set(meshKey, { rec, mesh, bytes });
+        this.meshBytes += bytes;
+        result.mesh = cloneMesh(mesh);
+      } else {
+        result.mesh = mesh;
+      }
+    }
+    if (quality === "fine") {
+      const m = geometry.mass ??= scoped(() => massProps(rec.shape));
+      result.mass = { volume: m.volume, area: m.area, centroid: [...m.centroid], mass: (m.volume / 1000) * (run?.material?.density ?? 1) };
     }
   }
 
@@ -821,10 +863,24 @@ export class Engine {
     const A = this.body(a),
       B = this.body(b);
     try {
+      const box = (rec: typeof A) => {
+        let bb = this.boxes.get(rec);
+        if (!bb) this.boxes.set(rec, bb = scoped(() => boundingBox(rec.shape)));
+        return bb;
+      };
+      const pa = this.poses.get(a) ?? IDENTITY, pb = this.poses.get(b) ?? IDENTITY;
+      const ab = worldBox(box(A), pa), bb = worldBox(box(B), pb);
+      if ([0, 1, 2].some((k) => ab.min[k] > bb.max[k] || bb.min[k] > ab.max[k])) return 0;
+      const rel = composePose(invertPose(pa), pb);
+      const key = `${A.key}|${B.key}|${[...rel.r, ...rel.t].join(",")}`;
+      const cached = this.volumes.get(key);
+      if (cached !== undefined) return cached;
       const r = kBoolean("intersect", this.posedShape(a, A.shape), this.posedShape(b, B.shape));
       r.maker?.delete?.();
       const v = massProps(r.shape).volume;
       r.shape.delete?.();
+      if (this.volumes.size >= 512) this.volumes.delete(this.volumes.keys().next().value!);
+      this.volumes.set(key, v);
       return v;
     } catch {
       return 0;

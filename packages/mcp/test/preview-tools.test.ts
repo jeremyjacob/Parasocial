@@ -93,6 +93,12 @@ test("previews are per session; shared scope writes the document", async () => {
     expect(r.parts).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
     expect(Object.keys(r.poses)).toEqual(["mechanism/box:lid"]);
     expect(r.up).toBe("z");
+    const beforeNamedRender = pool.renders.length;
+    await A.call("render", { parts: ["Hinged box"] }).catch(() => {});
+    expect(pool.renders.length).toBe(beforeNamedRender + 1);
+    r = pool.renders.at(-1);
+    expect(r.parts).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
+    expect(Object.keys(r.poses)).toEqual(["mechanism/box:lid"]);
     await B.call("render", { parts: ["mechanism/box:lid"], up: "y", camera: { position: [100, 100, 100], target: [0, 0, 0] } }).catch(() => {});
     r = pool.renders.at(-1);
     expect(r.parts).toEqual(["mechanism/box:lid"]);

@@ -201,12 +201,14 @@ export function createPool(o: PoolOptions) {
       slot.units = units;
       return;
     }
-    for (const [p, c] of Object.entries(job.scripts)) if (slot.scripts.get(p) !== c) (await rpc({ op: "setScript", path: p, content: c }, `loading ${p}`), slot.scripts.set(p, c));
-    for (const p of [...slot.scripts.keys()]) if (!(p in job.scripts)) (await rpc({ op: "setScript", path: p, content: null }, `removing ${p}`), slot.scripts.delete(p));
+    // Discover once after the complete edit, instead of evaluating every studio after
+    // each file in a multi-file write (including half-applied imports).
+    for (const [p, c] of Object.entries(job.scripts)) if (slot.scripts.get(p) !== c) (await rpc({ op: "setScript", path: p, content: c, quiet: true }, `loading ${p}`), slot.scripts.set(p, c));
+    for (const p of [...slot.scripts.keys()]) if (!(p in job.scripts)) (await rpc({ op: "setScript", path: p, content: null, quiet: true }, `removing ${p}`), slot.scripts.delete(p));
     if (slot.overrides !== overrides) {
       const ov = job.overrides ?? {};
       const prev = JSON.parse(slot.overrides || "{}");
-      for (const part of new Set([...Object.keys(ov), ...Object.keys(prev)])) await rpc({ op: "setOverrides", part, overrides: ov[part] ?? {} }, "setting params");
+      for (const part of new Set([...Object.keys(ov), ...Object.keys(prev)])) if (JSON.stringify(ov[part] ?? {}) !== JSON.stringify(prev[part] ?? {})) await rpc({ op: "setOverrides", part, overrides: ov[part] ?? {} }, "setting params");
       slot.overrides = overrides;
     }
   }

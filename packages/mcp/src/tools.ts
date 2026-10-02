@@ -135,6 +135,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   /** Run engine ops against the document's current state (active configuration of this session, plus its preview overrides). */
   async function engine(d: DocState, ops: { op: string; [k: string]: unknown }[]) {
+    if (!ops.length) return [];
     const res = await pool.run({ document: `${d.id}:${configOf(d) ?? "default"}`, scripts: scriptMap(d), overrides: mergeOverrides(overridesFor(d, configOf(d)), s.preview?.get(d.id)), units: d.units, ops });
     return res.map((r: any, i: number) => {
       if (!r.ok) throw new ToolError(r.error, { op: ops[i].op });
@@ -155,16 +156,18 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
    * Assemblies and where their instances are for this session: the document's saved joint values
    * (what people see), then this session's set_pose values on top. Regenerates the parts they use.
    */
-  async function assemblyState(d: DocState) {
+  async function assemblyState(d: DocState, targets?: string[]) {
     const [infos] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
-    if (!infos.length) return { infos, poses: {} as Record<string, PartPose>, assemblies: [] as ReturnType<typeof solveAssemblies>["assemblies"] };
-    const sources = [...new Set(infos.flatMap((a) => a.instances.map((i) => i.part)))];
+    const wanted = targets && new Set(targets.map((id) => findAssembly(infos, id)?.id ?? id));
+    const needed = wanted ? infos.filter((a) => wanted.has(a.id) || a.instances.some((i) => wanted.has(i.id))) : infos;
+    if (!needed.length) return { infos, poses: {} as Record<string, PartPose>, assemblies: [] as ReturnType<typeof solveAssemblies>["assemblies"] };
+    const sources = [...new Set(needed.flatMap((a) => a.instances.map((i) => i.part)))];
     // not engine(): a part that fails to regenerate leaves its assembly unposed instead of failing the call
     const results = await pool.run({ document: `${d.id}:${configOf(d) ?? "default"}`, scripts: scriptMap(d), overrides: mergeOverrides(overridesFor(d, configOf(d)), s.preview?.get(d.id)), units: d.units, ops: sources.map((part) => ({ op: "regenerate", part })) });
     const meta = new Map(sources.map((p, i) => [p, results[i]?.ok ? (results[i] as any).value : undefined]));
     const [row] = await db.sql`SELECT settings FROM documents WHERE id = ${d.id}`;
     const shared = (row?.settings as any)?.poses;
-    return { infos, ...solveAssemblies(infos, (p) => meta.get(p), shared && typeof shared === "object" ? shared : {}, s.preview?.get(d.id)?.poses) };
+    return { infos, ...solveAssemblies(needed, (p) => meta.get(p), shared && typeof shared === "object" ? shared : {}, s.preview?.get(d.id)?.poses) };
   }
 
   /**
@@ -292,14 +295,26 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
    * are false flags; the activity log (what agents did while holding it) is cut to its last lines;
    * the snapshot link comes with `full` (get_note).
    */
-  async function noteView(documentID: string, n: any, d: DocState, full = false) {
-    const messages = await db.sql`SELECT m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ${n.id} ORDER BY m.created_at`;
-    const strokes = await db.sql`SELECT part, points, color FROM markup_strokes WHERE note_id = ${n.id}`;
-    const numberRows = await db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`;
+  type NoteData = { messages: any[]; strokes: any[]; number: number };
+  async function noteData(documentID: string, ids: string[]): Promise<Map<string, NoteData>> {
+    if (!ids.length) return new Map();
+    const [messages, strokes, numbers] = await Promise.all([
+      db.sql`SELECT m.note_id, m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ANY(${ids}) ORDER BY m.created_at`,
+      db.sql`SELECT note_id, part, points, color FROM markup_strokes WHERE note_id = ANY(${ids})`,
+      db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`,
+    ]);
+    const ordinals = new Map(numbers.map((n: any, i: number) => [n.id, i + 1]));
+    const out = new Map(ids.map((id) => [id, { messages: [], strokes: [], number: ordinals.get(id) ?? 0 } as NoteData]));
+    for (const m of messages) out.get(m.note_id)?.messages.push(m);
+    for (const st of strokes) out.get(st.note_id)?.strokes.push(st);
+    return out;
+  }
+  async function noteView(documentID: string, n: any, d: DocState, full = false, data?: Map<string, NoteData>) {
+    const { messages, strokes, number } = (data ?? await noteData(documentID, [n.id])).get(n.id)!;
     const activity = messages.filter((m: any) => m.kind === "activity").map((m: any) => m.text as string);
     return lean({
       id: n.id,
-      number: numberRows.findIndex((r: any) => r.id === n.id) + 1,
+      number,
       status: n.status,
       orphaned: n.orphaned || undefined,
       removed: n.removed_at ? true : undefined,
@@ -450,8 +465,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const d = await loadDoc(db, s.userID, documentID);
       const rows = await db.sql`SELECT * FROM notes WHERE document_id = ${documentID} AND removed_at IS NULL ORDER BY created_at`;
       const want = rows.filter((n: any) => (!status || status === "all" ? n.status !== "Resolved" : n.status === status) && (!part || n.anchor.targets.some((t: NoteTarget) => t.part === part)) && (!studio || n.anchor.targets.some((t: NoteTarget) => t.kind === "studio" && t.studio === studio)));
+      const data = await noteData(documentID, want.map((n: any) => n.id));
       const out = [];
-      for (const n of want) out.push(await noteView(documentID, n, d));
+      for (const n of want) out.push(await noteView(documentID, n, d, false, data));
       return text({ notes: out });
     },
     { readOnlyHint: true },
@@ -726,7 +742,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     async ({ document: dd, view, up, camera, section, highlight, parts, style, width, height }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const asm = await assemblyState(d);
+      const asm = await assemblyState(d, parts ?? []);
       const all = await partsOf(d);
       let ids = all;
       if (parts) {
@@ -766,7 +782,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     async ({ document: dd, part, entities, neighbors }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const asm = await assemblyState(d);
+      const asm = await assemblyState(d, part ? [part] : undefined);
       let parts = await partsOf(d);
       if (part) {
         const t = expandTargets([part], parts, asm.infos);
@@ -774,6 +790,9 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         parts = t.ids;
       }
       const results = await regenerateParts(d, parts);
+      const entityParts = (entities ?? !!part) ? results.filter((r: any) => !r.empty).map((r: any) => r.part) : [];
+      const descriptions = await engine(d, entityParts.map((part) => ({ op: "describeAll", part })));
+      const entitiesOf = new Map(entityParts.map((part: string, i: number) => [part, descriptions[i]]));
       const out: any[] = [];
       for (const r of results as any[]) {
         // instances: part coordinates -> where this session poses them
@@ -795,7 +814,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           params: r.params.length ? Object.fromEntries(r.params.map((p: any) => [p.name, `${typeof p.value === "number" ? round(p.value, 4) : p.value}${p.unit && typeof p.value === "number" ? ` ${p.unit}` : ""}${p.overridden ? " (override)" : ""}${preview?.[sourcePart(r.part)]?.[p.name] !== undefined || preview?.["*"]?.[p.name] !== undefined ? " (preview)" : ""}`])) : undefined,
         });
         if ((entities ?? !!part) && !r.empty) {
-          const [all] = await engine(d, [{ op: "describeAll", part: r.part }]);
+          const all = entitiesOf.get(r.part);
           const opts = { neighbors: neighbors ? 1000 : 0 };
           entry.faces = (all as any).faces.map((e: any) => describeEntity(place(e), opts));
           entry.edges = (all as any).edges.map((e: any) => describeEntity(place(e), opts));
@@ -840,7 +859,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     // the engine is shared with other sessions: always set this session's poses (none unless an instance is involved)
-    const poses = a.part.includes("/") || b.part.includes("/") ? (await assemblyState(d)).poses : {};
+    const poses = a.part.includes("/") || b.part.includes("/") ? (await assemblyState(d, [a.part, b.part])).poses : {};
     await regen(d, [...new Set([a.part, b.part])]);
     const toRef = async (x: { part: string; name?: string }) => {
       if (!x.name) return { part: x.part, kind: "part" as const };
@@ -1001,7 +1020,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       if (scope === "shared") await requireMember(db, s.userID, documentID, "editor");
-      let state = await assemblyState(d);
+      let state = await assemblyState(d, [assembly]);
       const info = findAssembly(state.infos, assembly);
       if (!info) throw new ToolError(`No assembly "${assembly}". Assemblies: ${state.infos.map((a) => `${a.id} (${a.name})`).join(", ") || "none"}`);
       let values: Record<string, number[]>;
@@ -1016,7 +1035,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (reset) await mutate(mutators.document.setPose({ id: documentID, assembly: info.id, joints: null }));
         // solve from the shared positions (plus any preview kept) with the new values on top, then save the whole pose
         prev.poses[info.id] = { ...mine, ...values };
-        state = await assemblyState(await loadDoc(db, s.userID, documentID));
+        state = await assemblyState(await loadDoc(db, s.userID, documentID), [info.id]);
         const solved = state.assemblies.find((a) => a.id === info.id)!;
         if (Object.keys(values).length || !reset) await mutate(mutators.document.setPose({ id: documentID, assembly: info.id, joints: Object.fromEntries(solved.joints.map((j) => [j.name, j.value])) }));
         delete prev.poses[info.id];
@@ -1024,7 +1043,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         prev.poses[info.id] = { ...mine, ...values };
         if (!Object.keys(prev.poses[info.id]).length) delete prev.poses[info.id];
       }
-      state = await assemblyState(await loadDoc(db, s.userID, documentID));
+      state = await assemblyState(await loadDoc(db, s.userID, documentID), [info.id]);
       // instances are in describe_model; the joints are what changed
       const { poses: _, instances: __, ...out } = state.assemblies.find((a) => a.id === info.id)! as any;
       if (scope === "shared") await activity(documentID, `set pose ${info.name}`);
@@ -1075,7 +1094,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const all = await partsOf(d);
     const pairs: any[] = [];
     for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
-    const [, ...vols] = await engine(d, [{ op: "setPoses", poses: {} }, ...pairs.map(([a, b]) => ({ op: "interference", a, b }))]);
+    const [, vols] = await engine(d, [{ op: "setPoses", poses: {} }, { op: "interferencePairs", pairs }]);
     out.interference = pairs.map(([a, b], i) => ({ a, b, volume: round(vols[i] as number, 3) })).filter((x) => x.volume > 1e-6);
     const asm = await assemblyState(d);
     if (asm.infos.length) {
@@ -1128,7 +1147,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   tool("export", "Export a part as STEP, STL or 3MF; returns a signed download URL (valid 1 hour).", { document, part: z.string(), format: z.enum(["step", "stl", "3mf"]) }, async ({ document: dd, part, format }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    const poses = part.includes("/") ? (await assemblyState(d)).poses : {};
+    const poses = part.includes("/") ? (await assemblyState(d, [part])).poses : {};
     await regen(d, [part]);
     const [, f] = await engine(d, [{ op: "setPoses", poses }, { op: "export", part, format }]);
     const bytes = Buffer.from((f as any).base64, "base64");

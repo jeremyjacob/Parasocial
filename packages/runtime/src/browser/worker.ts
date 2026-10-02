@@ -114,6 +114,8 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       return { value: engine.describeAll(req.part) };
     case "interference":
       return { value: engine.interference(req.a, req.b) };
+    case "interferencePairs":
+      return { value: req.pairs.map(([a, b]) => engine.interference(a, b)) };
     case "export": {
       const bytes = engine.exportParts(req.parts ?? (req.part ? [req.part] : []), req.format);
       // base64 so it survives JSON (pool) and structured clone alike
