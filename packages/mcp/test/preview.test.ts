@@ -105,3 +105,55 @@ test("instance meshes move with their pose for renders", () => {
   expect(moved.mesh.edgePositions.length).toBe(r.mesh.edgePositions.length);
   expect(Math.max(...moved.mesh.edgePositions.filter((_, i) => i % 3 === 2))).toBeCloseTo(z(moved), 3);
 });
+
+// a winch lying down, stood up by placing its frame: a motor fastened on top, a drive subassembly
+const WINCH = {
+  "studios/parts.ts": `import { part, box, cylinder } from "parasocial";
+export const frame = part("Frame", () => box(100, 60, 10, { center: "xy" }));
+export const motor = part("Motor", () => box(20, 20, 20, { center: "xy" }).translate([30, 0, 10]));
+export const gearbox = part("Gearbox", () => box(20, 20, 20, { center: "xy" }).translate([-40, 0, 10]).connector("out", { origin: [-40, 0, 40], axis: "Z" }));
+export const shaft = part("Shaft", () => cylinder(3, 20, { at: [-40, 0, 30] }));
+`,
+  "studios/winch_assembly.ts": `import { assembly } from "parasocial";
+import { gearbox, shaft } from "./parts";
+export const drive = assembly("Drive", ({ fix, revolute }) => {
+  fix(gearbox);
+  revolute(gearbox, shaft, gearbox.at("out"), { name: "Drum rotation" });
+});
+`,
+  "studios/winch.ts": `import { assembly } from "parasocial";
+import { frame, motor, gearbox } from "./parts";
+import { drive } from "./winch_assembly";
+export default assembly("Winch", ({ insert, fastened }) => {
+  insert(frame, { place: { rotate: { axis: "X", angle: 90 } } });
+  fastened(frame, motor);
+  fastened(frame, insert(drive, { name: "upright" }).part(gearbox));
+});
+`,
+};
+
+test("a placed root carries its assembly for MCP too; scoped joint names are hinted", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: WINCH });
+  const results = Object.fromEntries(e.parts().map((p) => [p, e.regenerate(p)]));
+  const infos = e.assemblies();
+  const a = findAssembly(infos, "Winch")!;
+  const { poses, assemblies } = solveAssemblies(infos, (p) => results[p], {}, { winch: { "winch_assembly:drive@upright/Drum rotation": [90] } });
+  expect(assemblies.find((x) => x.id === "winch")!.problems).toEqual([]);
+  // a quarter turn about X: (x, y, z) -> (x, -z, y)
+  const up = (p: number[]) => [p[0], -p[2], p[1]];
+  const at = (id: string, p: number[]) => {
+    const { r, t } = poses[id];
+    return [0, 1, 2].map((i) => r[i * 3] * p[0] + r[i * 3 + 1] * p[1] + r[i * 3 + 2] * p[2] + t[i]);
+  };
+  const close = (p: number[], q: number[]) => p.forEach((v, i) => expect(v).toBeCloseTo(q[i], 6));
+  close(at("winch/parts:motor", [30, 0, 20]), up([30, 0, 20]));
+  close(at("winch/winch_assembly:drive@upright/parts:gearbox", [-40, 0, 20]), up([-40, 0, 20]));
+  // the shaft turned a quarter about its (carried) axis
+  close(at("winch/winch_assembly:drive@upright/parts:shaft", [-40, 0, 40]), up([-40, 0, 40]));
+  close(at("winch/winch_assembly:drive@upright/parts:shaft", [-37, 0, 40]), up([-40, 3, 40]));
+  expect(() => jointValues(a, { "Drum rotation": 10 })).toThrow(/No movable joint "Drum rotation" in assembly winch\. Did you mean "winch_assembly:drive@upright\/Drum rotation"\? Joints in an inserted assembly are named "<its assembly id>@<insert name>\/<joint>"/);
+  // render targets: the assembly, and an instance inside its subassembly
+  expect(expandTargets(["winch"], e.parts(), infos).ids).toHaveLength(4);
+  expect(expandTargets(["winch/winch_assembly:drive@upright/parts:shaft"], e.parts(), infos)).toEqual({ ids: ["winch/winch_assembly:drive@upright/parts:shaft"], unknown: [] });
+});

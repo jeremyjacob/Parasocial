@@ -1,11 +1,15 @@
 // Where an assembly's bodies sit at home (every joint at 0), and each joint's frame on each body.
 //
-// A body is a copy of a part. It sits where its script placed it, else where a connector-to-connector
-// joint (a mate) puts it against a body already laid out, else where the part is modeled. An
-// inserted subassembly is a scope: its bodies are laid out in its own coordinates first, then the
-// whole scope is placed the same way (by its placement, or by a mate onto one of its bodies), so
-// its bodies keep their places relative to each other. Frames given in a scope's coordinates (a
-// joint `at` a point, or at a connector of a third part) become a frame on each body.
+// A body is a copy of a part. It sits where its script placed it, else where a joint carries it from
+// a body already laid out, else where the part is modeled. Joints carry placement: a connector-to-
+// connector joint (a mate) puts the other body's connector on this one's; any other joint (fastened,
+// or at a frame in the scope's coordinates) keeps the two as modeled relative to each other, so
+// placing a body moves everything joined to it. An inserted subassembly is a scope: its bodies are
+// laid out in its own coordinates first, then the whole scope is placed the same way (by its
+// placement, or carried by a joint onto one of its bodies), so its bodies keep their places relative
+// to each other. Frames given in a scope's coordinates (a joint `at` a point, or at a connector of a
+// third part) become a frame on each body. Two bodies placed apart (each by its own placement) and
+// joined by such a frame stay where placed, the frame where given: `conflicts` lists those joints.
 import { compose, framePose, identity, inverse, type Frame, type Pose } from "./pose";
 
 export type LayoutBody = {
@@ -44,6 +48,8 @@ export type Layout = {
   home: Map<string, Pose>;
   /** Per joint (same order), the frame on each body; missing when a body isn't in the joint's scope. */
   frames: ({ a: Frame; b: Frame } | undefined)[];
+  /** Joints (by index) between bodies placed apart: they hold them where placed, not as modeled. */
+  conflicts: number[];
 };
 
 type Item = { place?: Pose; members: Map<string, Pose> };
@@ -52,6 +58,7 @@ export function layout(spec: LayoutSpec): Layout {
   const scopes = spec.scopes ?? [];
   const fixed = new Set(spec.fixed ?? []);
   const frames: Layout["frames"] = spec.joints.map(() => undefined);
+  const conflicts: number[] = [];
 
   /** Homes of every body under `scope`, in its coordinates. */
   const solve = (scope: string): Map<string, Pose> => {
@@ -76,28 +83,33 @@ export function layout(spec: LayoutSpec): Layout {
       const x = it && X.get(it);
       return x && compose(x, it.members.get(id)!);
     };
-    // mates carry placement outward from what's already laid out
+    // joints carry placement outward from what's already laid out: a mate puts q's connector on
+    // p's; any other joint moves q as p moved (they keep their modeled places relative to each other)
+    const carry = (j: LayoutJoint, from: Item, to: Item, forward: boolean): Pose => {
+      if (!("mate" in j)) return X.get(from)!;
+      const [Fp, Fq, p, q] = forward ? [j.mate.a, j.mate.b, j.a, j.b] : [j.mate.b, j.mate.a, j.b, j.a];
+      const Tq = compose(home(p)!, compose(framePose(Fp), inverse(framePose(Fq))));
+      return compose(Tq, inverse(to.members.get(q)!));
+    };
     const spread = (start: Item) => {
       const queue = [start];
       while (queue.length) {
         const it = queue.shift()!;
-        for (const [j] of joints) {
-          if (!("mate" in j)) continue;
-          const ia = itemOf.get(j.a),
-            ib = itemOf.get(j.b);
-          if (!ia || !ib || ia === ib) continue;
-          const Fa = framePose(j.mate.a),
-            Fb = framePose(j.mate.b);
-          if (ia === it && !X.has(ib) && !ib.place) {
-            const Tb = compose(home(j.a)!, compose(Fa, inverse(Fb)));
-            X.set(ib, compose(Tb, inverse(ib.members.get(j.b)!)));
-            queue.push(ib);
-          } else if (ib === it && !X.has(ia) && !ia.place) {
-            const Ta = compose(home(j.b)!, compose(Fb, inverse(Fa)));
-            X.set(ia, compose(Ta, inverse(ia.members.get(j.a)!)));
-            queue.push(ia);
+        // mates first: they say where
+        for (const mates of [true, false])
+          for (const [j] of joints) {
+            if ("mate" in j !== mates) continue;
+            const ia = itemOf.get(j.a),
+              ib = itemOf.get(j.b);
+            if (!ia || !ib || ia === ib) continue;
+            if (ia === it && !X.has(ib) && !ib.place) {
+              X.set(ib, carry(j, ia, ib, true));
+              queue.push(ib);
+            } else if (ib === it && !X.has(ia) && !ia.place) {
+              X.set(ia, carry(j, ib, ia, false));
+              queue.push(ia);
+            }
           }
-        }
       }
     };
     const seeds = [...items.filter((i) => i.place), ...items.filter((i) => [...i.members.keys()].some((id) => fixed.has(id))), ...items];
@@ -114,9 +126,13 @@ export function layout(spec: LayoutSpec): Layout {
         frames[i] = { a: j.mate.a, b: j.mate.b };
         continue;
       }
+      // a frame in scope coordinates moves with the bodies; placed apart, it stays where given
+      const Xa = X.get(itemOf.get(j.a)!)!;
+      const apart = !samePose(Xa, X.get(itemOf.get(j.b)!)!);
+      if (apart) conflicts.push(i);
       const at = framePose(j.frame);
       const owner = j.owner !== undefined ? home(j.owner) : undefined;
-      const F = owner ? compose(owner, at) : at;
+      const F = owner ? compose(owner, at) : apart ? at : compose(Xa, at);
       frames[i] = { a: poseFrame(compose(inverse(Ha), F)), b: poseFrame(compose(inverse(Hb), F)) };
     }
     const out = new Map<string, Pose>();
@@ -124,8 +140,10 @@ export function layout(spec: LayoutSpec): Layout {
     return out;
   };
 
-  return { home: solve(spec.root), frames };
+  return { home: solve(spec.root), frames, conflicts };
 }
+
+const samePose = (a: Pose, b: Pose, eps = 1e-9) => a.r.every((v, k) => Math.abs(v - b.r[k]) < eps) && a.t.every((v, k) => Math.abs(v - b.t[k]) < eps * Math.max(1, Math.abs(v)));
 
 /** A pose as a frame: its origin and x, z axes. */
 export function poseFrame(p: Pose): Frame {

@@ -223,6 +223,33 @@ export class Mechanism {
     return r.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
   }
 
+  /**
+   * The loop joint that's furthest from closing, and the fixed parts its two sides hang from: two
+   * different ones mean fixed parts hold it open (nothing between them can move enough).
+   */
+  worst(x: ArrayLike<number> = this.x): { joint: string; error: number; fixed?: [string, string] } | null {
+    const poses = this.poses(x);
+    let best: { joint: Joint; error: number } | null = null;
+    for (const j of this.loops) {
+      const r: number[] = [];
+      const E = compose(j.FaInv, compose(inverse(poses.get(j.a)!), compose(poses.get(j.b)!, j.Fb)));
+      const D = compose(inverse(motion(j.type, x, j.off)), E);
+      const w = logRot(D.r);
+      r.push(w[0] * this.L, w[1] * this.L, w[2] * this.L, ...D.t);
+      const error = Math.max(...r.map(Math.abs));
+      if (!best || error > best.error) best = { joint: j, error };
+    }
+    if (!best) return null;
+    const parent = new Map(this.links.map((l) => [l.body, l.parent]));
+    const root = (b: string) => {
+      while (parent.has(b)) b = parent.get(b)!;
+      return b;
+    };
+    const ra = root(best.joint.a),
+      rb = root(best.joint.b);
+    return { joint: best.joint.name, error: best.error, ...(ra !== rb && { fixed: [ra, rb] as [string, string] }) };
+  }
+
   private clampInto(x: Float64Array) {
     for (const j of this.joints) for (let i = 0; i < j.n; i++) x[j.off + i] = clamp(x[j.off + i], j.lo[i], j.hi[i]);
   }

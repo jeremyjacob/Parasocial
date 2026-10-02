@@ -307,13 +307,18 @@ export class Engine {
         a.problems.push({ severity: "error", kind: "runtime", message: `a studio exports parts or assemblies, not both: move ${own.map((p) => `"${p.name}"`).join(", ")} to another studio and import ${own.length > 1 ? "them" : "it"} here`, part: info.id, source: { file: info.file, line: 1 } });
         continue;
       }
-      this.flatten(a, def, info.id, [def]);
+      this.flatten(a, def, info.id, [def], new Map());
     }
     return (this.assemblyCache = out);
   }
 
-  /** Add an assembly's copies and joints to `a`, in `scope` (the assembly itself, or where it's inserted). */
-  private flatten(a: AssemblyInfo, def: AssemblyDef, scope: string, stack: AssemblyDef[]) {
+  /**
+   * Add an assembly's copies and joints to `a`, in `scope` (the assembly itself, or where it's
+   * inserted). Returns its root: the copy that holds it in place (its first fixed part, else the
+   * first part of its first joint, the one the solver keeps still), which `fix(sub)` fixes;
+   * `anchors` collects them per inserted assembly.
+   */
+  private flatten(a: AssemblyInfo, def: AssemblyDef, scope: string, stack: AssemblyDef[], anchors: Map<string, string>): string | undefined {
     const problem = (message: string, source?: SourceRef) =>
       a.problems.push({ severity: "error", kind: "runtime", message: source ? `${message} (${source.file.split("/").pop()}:${source.line})` : message, part: a.id, source: source ?? { file: a.file, line: 1 } });
     let decl;
@@ -324,6 +329,7 @@ export class Engine {
       problem(err.message, sourceOf(err.stack ?? ""));
       return;
     }
+    const firstJoint = a.joints.length;
     const partId = (p: PartDef, source?: SourceRef) => {
       const id = this.partIdOf.get(p);
       if (!id) problem(`the part "${p.name}" isn't exported by a studio, so it can't be in an assembly`, source);
@@ -383,14 +389,18 @@ export class Engine {
       if (!key) continue;
       const sub = `${scope}/${key}`;
       a.subs.push({ id: sub, parent: scope, assembly: this.assemblyIdOf.get(h.of)!, ...(h.name !== undefined && { name: h.name }), ...(ins.place && { place: ins.place }) });
-      this.flatten(a, h.of, sub, [...stack, h.of]);
+      const root = this.flatten(a, h.of, sub, [...stack, h.of], anchors);
+      if (root) anchors.set(sub, root);
     }
 
     const fixed: string[] = [];
     for (const f of decl.fixed) {
+      // a subassembly: its root, so it stays put and its own joints still move
       if ("__subassembly" in f) {
         const key = keyOf(f);
-        if (key) fixed.push(...a.instances.filter((i) => i.id.startsWith(`${scope}/${key}/`)).map((i) => i.id));
+        const root = key && anchors.get(`${scope}/${key}`);
+        if (root && !fixed.includes(root)) fixed.push(root);
+        else if (key && !root) problem(`fix: "${f.of.name}"${f.name === undefined ? "" : ` "${f.name}"`} isn't inserted here, or has no parts`);
         continue;
       }
       const id = inst(f);
@@ -440,6 +450,7 @@ export class Engine {
         nb = names.get(r.b);
       if (na && nb) a.relations.push({ kind: r.kind, a: na, ia: r.ia, b: nb, ib: r.ib, ratio: r.ratio, offset: r.offset, scope, source: sourceOf(r.stack) });
     }
+    return fixed[0] ?? a.joints[firstJoint]?.a ?? a.instances.find((i) => i.id.startsWith(`${scope}/`))?.id;
   }
 
   /** Dragged positions of instances (transforms from the modeled pose); those not listed sit where they're modeled. */
