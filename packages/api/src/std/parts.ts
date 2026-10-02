@@ -2,17 +2,26 @@
 // rings and MGN linear guides. Simplified (no threads, balls or knurls) but dimensionally true
 // where it matters for fit: diameters, heights, hole positions. Each item is built along +Z with
 // connectors whose z axis is +Z, so `revolute(a.at("x"), item.at("bore"))` mates it (pass
-// `{ flip: true }` to face the other way).
+// `{ flip: true }` to face the other way). Screws and inserts take their hole's `at` / `direction`
+// (PlaceOpts) to land in it without a hand-worked rotation.
 import type { Vec3 } from "@parasocial/kernel";
 import { userError } from "../op";
-import { Plane, axisVec, type AxisLike } from "../plane";
+import { Plane, axisVec, vec, type AxisLike } from "../plane";
 import { plane } from "../plane";
+import { num, vec3 } from "../check";
 import { sketch } from "../sketch";
 import { box, type Solid } from "../solid";
 import { freeTag } from "./holes";
 import { BEARINGS, DIN471, DIN472, HEADS, INSERTS, METRIC, MGN_CARRIAGES, MGN_RAILS, NUTS, WASHERS, type BearingSize, type CirclipStandard, type HeadStandard, type InsertSize, type MetricSize, type MgnCarriageSize, type MgnRailSize } from "./tables";
 
 type TagOpt = { tag?: string };
+/**
+ * Where a screw or insert goes, with the same arguments as its `.hole(points, spec)`: `at` the
+ * hole's point on the surface, `direction` into the material (default −Z, as for `.hole`), `inset`
+ * how far below the surface it seats (default 0; in a counterbore, the head height plus `headDepth`,
+ * e.g. `std.tables.heads.ISO4762.M3.k`). The spin about the axis is arbitrary.
+ */
+export type PlaceOpts = { at?: Vec3; direction?: AxisLike; inset?: number };
 
 const STEEL = { color: "#a9afb6", metalness: 0.85, roughness: 0.35 };
 const BLACK_OXIDE = { color: "#3b3e43", metalness: 0.6, roughness: 0.45 };
@@ -31,6 +40,17 @@ function lookup<T>(table: Readonly<Record<string, T>>, key: string | number, wha
   if (!v) userError(`${what}: unknown size "${key}"; use one of ${Object.keys(table).join(", ")}`);
   return v;
 }
+/** Turn an item built down −Z from the origin so −Z runs along `direction`, from `at` (+ `inset`). */
+function place(s: Solid, o: PlaceOpts, what: string): Solid {
+  if (o.at === undefined && o.direction === undefined && o.inset === undefined) return s;
+  const d = axisVec(o.direction ?? ([0, 0, -1] as Vec3), `${what} direction`);
+  const at = vec.add(o.at === undefined ? [0, 0, 0] : vec3(o.at, `${what} at`), vec.scale(d, o.inset === undefined ? 0 : num(o.inset, `${what} inset`)));
+  // −Z onto d: about −Z × d (about X when d is +Z)
+  const c = -d[2];
+  if (c < 1 - 1e-12) s = s.rotate((Math.acos(Math.max(-1, c)) * 180) / Math.PI, { axis: c > -1 + 1e-12 ? vec.cross([0, 0, -1], d) : "X" });
+  return at.some((v) => v !== 0) ? s.translate(at) : s;
+}
+
 function positive(v: number, what: string) {
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) userError(`${what} must be a positive number (got ${v})`);
 }
@@ -40,9 +60,11 @@ function positive(v: number, what: string) {
  * bearing face under the head (top of the head for ISO 10642, which sits flush) is at z = 0 and the
  * shank runs down to z = −length. `standard`: "ISO4762" socket head cap (default), "ISO7380" button
  * head, "ISO10642" countersunk. Connectors: `head` (the seat, z = 0; mates with a hole's
- * `connector`), `top` (top of the head), `tip`.
+ * `connector`), `top` (top of the head), `tip`. Give it its hole's point and direction (`at`,
+ * `direction`, `inset`: see `PlaceOpts`) and it sits in the hole: seat on `at`, shank along `direction`.
+ * @example std.screw("M3", 10, { at: [20, 0, 5], direction: [-1, 0, 0] }) // for body.hole([20, 0, 5], { screw: "M3", direction: [-1, 0, 0] })
  */
-export function screw(size: MetricSize, length: number, opts: TagOpt & { standard?: HeadStandard } = {}): Solid {
+export function screw(size: MetricSize, length: number, opts: TagOpt & PlaceOpts & { standard?: HeadStandard } = {}): Solid {
   const std = opts.standard ?? "ISO4762";
   const m = metric(size, "screw");
   positive(length, "screw length");
@@ -71,10 +93,11 @@ export function screw(size: MetricSize, length: number, opts: TagOpt & { standar
   }
   const body = sk.close().revolve(360, { tag: T });
   const socket = sketch(new Plane([0, 0, top], [0, 0, -1]), { tag: `${T}-socket` }).polygon([0, 0], hexR(h.s), 6).extrude(h.t, { tag: `${T}-socket` });
-  return finish(body.subtract(socket), std === "ISO4762" ? BLACK_OXIDE : STEEL, "steel")
+  const s = finish(body.subtract(socket), std === "ISO4762" ? BLACK_OXIDE : STEEL, "steel")
     .connector("head", { origin: [0, 0, 0] })
     .connector("top", { origin: [0, 0, top] })
     .connector("tip", { origin: [0, 0, -length] });
+  return place(s, opts, "screw");
 }
 
 /** An ISO 4032 hex nut from z = 0 to its height m, flats parallel to X. Connectors: `bottom`, `top`. */
@@ -97,14 +120,18 @@ export function washer(size: MetricSize, opts: TagOpt = {}): Solid {
 
 /**
  * A heat-set insert ("M3x5.7", Ruthex / CNC Kitchen sizes), top at z = 0, body down to −length,
- * with a plain bore of the thread size. Make its hole with `.hole(pts, { insert: "M3x5.7" })`.
- * Connectors: `top`, `bottom`.
+ * with a plain bore of the thread size. Modeled as installed: the body is the recommended hole
+ * diameter (the knurl, `std.tables.inserts[size].od`, melts into the plastic), so an insert in its
+ * own `.hole(pts, { insert })` isn't interference, while one in a smaller hole or a wall still is.
+ * Give it its hole's point and direction (`at`, `direction`: see `PlaceOpts`) and it sits in the
+ * hole, flush. Connectors: `top`, `bottom`.
+ * @example std.insert("M3x5.7", { at: [10, 0, 10] }) // for body.hole([10, 0, 10], { insert: "M3x5.7" })
  */
-export function insert(size: InsertSize, opts: TagOpt = {}): Solid {
+export function insert(size: InsertSize, opts: TagOpt & PlaceOpts = {}): Solid {
   const i = lookup(INSERTS, size, "insert");
   const T = opts.tag ?? freeTag(`insert-${size}`);
-  const s = sketch(new Plane([0, 0, 0], [0, 0, -1])).circle([0, 0], i.od / 2).circle([0, 0], i.d / 2).extrude(i.l, { tag: T });
-  return finish(s, BRASS, "brass").connector("top", { origin: [0, 0, 0] }).connector("bottom", { origin: [0, 0, -i.l] });
+  const s = sketch(new Plane([0, 0, 0], [0, 0, -1])).circle([0, 0], i.hole / 2).circle([0, 0], i.d / 2).extrude(i.l, { tag: T });
+  return place(finish(s, BRASS, "brass").connector("top", { origin: [0, 0, 0] }).connector("bottom", { origin: [0, 0, -i.l] }), opts, "insert");
 }
 
 /**
@@ -192,17 +219,17 @@ export function mgnRail(size: MgnRailSize, length: number, opts: TagOpt & { hole
   positive(length, "rail length");
   const T = opts.tag ?? freeTag(`${size}-rail-${length}`, ["-bolt", "-bolt-cut", "-bolt1"]);
   let s = box(length, r.wr, r.hr, { center: "xy", tag: T });
-  const pts = opts.holes === false ? [] : railHoles(size, length).map((x): Vec3 => [x, 0, r.hr]);
+  const pts = opts.holes === false ? [] : mgnRailHoles(size, length).map((x): Vec3 => [x, 0, r.hr]);
   if (pts.length) s = s.hole(pts, r.d, { counterbore: { diameter: r.D, depth: r.h }, tag: `${T}-bolt` });
   s = finish(s, STEEL, "steel").connector("carriage", { origin: [0, 0, 0], axis: "X" }).connector("bottom", { origin: [0, 0, 0] });
   return pts.length ? s.connector("bolt", pts.map((p) => ({ origin: [p[0], 0, r.hr - r.h] as Vec3 }))) : s;
 }
 
 /**
- * X positions of `std.mgnRail(size, length)`'s bolt holes (rail centered on the origin): as many as
+ * `std.mgnRailHoles(size, length)`: x positions of `std.mgnRail(size, length)`'s bolt holes (rail centered on the origin): as many as
  * fit at the pitch, centered, ends at least D/2 + 1. Use it to drill the matching holes in a base.
  */
-export function railHoles(size: MgnRailSize, length: number): number[] {
+export function mgnRailHoles(size: MgnRailSize, length: number): number[] {
   const r = lookup(MGN_RAILS, size, "mgnRailHoles");
   const emin = r.D / 2 + 1;
   if (length < 2 * emin) return [];

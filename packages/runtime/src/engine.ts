@@ -816,7 +816,7 @@ export class Engine {
     };
   }
 
-  /** Volume shared by two parts (0 when they don't interfere). */
+  /** Volume shared by two parts (0 when they don't interfere; contact slivers count as 0, as in `interferences`). */
   interference(a: string, b: string): number {
     const A = this.body(a),
       B = this.body(b);
@@ -825,7 +825,7 @@ export class Engine {
       r.maker?.delete?.();
       const v = massProps(r.shape).volume;
       r.shape.delete?.();
-      return v;
+      return v > 1e-3 ? v : 0;
     } catch {
       return 0;
     }

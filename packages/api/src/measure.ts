@@ -18,7 +18,23 @@ import { EntitySet } from "./selection";
 export type Measurable = Solid | EntitySet | Vec3;
 
 export type BoundingBox = { min: Vec3; max: Vec3; size: Vec3; center: Vec3 };
-export type Closest = { distance: number; a: Vec3; b: Vec3 };
+/**
+ * `measure(a, b)` / `measure.closest(a, b)`: the distance and the closest point on each. `value` is the
+ * same number as `distance`, and the object compares and prints as its distance
+ * (`measure(a, b) >= 2`, `${measure(a, b)}`), so either style of script reads it.
+ */
+export type Closest = { distance: number; value: number; a: Vec3; b: Vec3; valueOf(): number };
+
+type Raw = { distance: number; a: Vec3; b: Vec3 };
+const CLOSEST = Object.freeze({
+  valueOf(this: Closest) {
+    return this.distance;
+  },
+  toString(this: Closest) {
+    return String(this.distance);
+  },
+});
+const asClosest = (r: Raw): Closest => Object.assign(Object.create(CLOSEST), { distance: r.distance, value: r.distance, a: r.a, b: r.b });
 
 const memo = new WeakMap<OpRecord, Map<string, unknown>>();
 function cached<T>(rec: OpRecord | undefined, key: string, fn: () => T): T {
@@ -66,7 +82,7 @@ function withShape<T>(x: Solid | EntitySet, fn: (s: Shape) => T): T {
   });
 }
 
-function closest(a: Measurable, b: Measurable): Closest {
+function closest(a: Measurable, b: Measurable): Raw {
   if (isPoint(a) && isPoint(b)) return { distance: Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]), a: [...a] as Vec3, b: [...b] as Vec3 };
   if (isPoint(a)) {
     const r = closest(b, a);
@@ -177,11 +193,11 @@ function centroid(x: Solid | EntitySet): Vec3 {
 }
 
 type MeasureFn = {
-  /** Distance between two solids or selections, with the closest points on each (same as `measure.closest`). */
+  /** Distance between two solids or selections, with the closest points on each (same as `measure.closest`): `{ distance, value, a, b }`. */
   (a: Solid | EntitySet, b: Solid | EntitySet): Closest;
   /** Minimum distance (mm) between solids, selections or points: 0 when they touch or overlap. */
   distance: typeof distance;
-  /** Minimum distance and the closest point on each. */
+  /** Minimum distance and the closest point on each: `{ distance, value, a, b }`. */
   closest(a: Measurable, b: Measurable): Closest;
   minClearance: typeof minClearance;
   overlap: typeof overlap;
@@ -193,18 +209,22 @@ type MeasureFn = {
 };
 
 /**
- * Measure inside a part body (FeatureScript's ev* functions). Call it as `measure(a, b)` for the
- * distance and closest points, or use the named measurements:
- * `measure.distance(a, b)`, `measure.minClearance(a, b)`, `measure.overlap(a, b)`,
- * `measure.volume(solid)`, `measure.area(solid | faces)`, `measure.length(edges)`,
- * `measure.boundingBox(x)`, `measure.centroid(x)`. Pair with `check(...)` for design rules.
+ * Measure inside a part body (FeatureScript's ev* functions). Each function always returns the same
+ * shape, fixed by which one you call (never "a number or an object"):
+ * - plain numbers (mm, mm², mm³): `measure.distance(a, b)`, `measure.minClearance(a, b)`,
+ *   `measure.overlap(a, b)`, `measure.volume(solid)`, `measure.area(solid | faces)`, `measure.length(edges)`;
+ * - `Closest` `{ distance, value, a, b }`: `measure(a, b)` and `measure.closest(a, b)` (it also
+ *   compares as its distance, so `measure(a, b) >= 2` works);
+ * - `BoundingBox` `{ min, max, size, center }`: `measure.boundingBox(x)`; a point `[x, y, z]`: `measure.centroid(x)`.
+ * Pair with `check(...)` for design rules.
  * @example check(measure.minClearance(body, lid) >= 1, "lid must clear the body by 1 mm")
+ * @example measure(body, lid).distance === measure.distance(body, lid) // true
  */
 export const measure: MeasureFn = (() => {
-  const fn = (a: Solid | EntitySet, b: Solid | EntitySet) => closest(check3(a, "closest", "a, b"), check3(b, "closest", "a, b"));
+  const fn = (a: Solid | EntitySet, b: Solid | EntitySet) => asClosest(closest(check3(a, "closest", "a, b"), check3(b, "closest", "a, b")));
   const members = {
     distance,
-    closest: (a: Measurable, b: Measurable) => closest(check3(a, "closest", "a, b"), check3(b, "closest", "a, b")),
+    closest: (a: Measurable, b: Measurable) => asClosest(closest(check3(a, "closest", "a, b"), check3(b, "closest", "a, b"))),
     minClearance,
     overlap,
     volume,

@@ -332,3 +332,84 @@ test("affected: only parts that read (or looked for) a changed script", () => {
   expect(e.affected(["lib/missing.ts"])).toEqual(["broken"]); // creating it can fix the import
   expect(e.affected(["studios/other.ts"])).toEqual([]);
 });
+
+test("check: hardware seated in its own std holes isn't interference; a real overlap still is", () => {
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "studios/frame.ts": `import { part, box, std, type Vec3 } from "parasocial";
+const side: Vec3[] = [[20, 0, 5], [20, 0, 15]];
+const top: Vec3[] = [[-10, 0, 20], [0, 0, 20]];
+const X: Vec3 = [-1, 0, 0];
+export default part("Frame", () => box(40, 20, 20, { center: "xy" }).hole(side, { insert: "M3x5.7", direction: X }).hole(top, { insert: "M4x8.1" }).hole([10, 0, 20], { screw: "M3", fit: "tap" }));
+export const inserts = part("Inserts", () => std.insert("M3x5.7", { at: side[0], direction: X }).union(std.insert("M3x5.7", { at: side[1], direction: X }), ...top.map((at) => std.insert("M4x8.1", { at }))));
+export const screws = part("Screws", () => std.screw("M3", 6, { at: side[0], direction: X }).union(std.screw("M3", 6, { at: side[1], direction: X })));
+export const wrong = part("Wrong", () => std.insert("M3x5.7", { at: [10, 0, 20] }));`,
+    },
+  });
+  for (const p of e.parts()) expect(e.regenerate(p).problems).toEqual([]);
+  expect(e.interference("frame", "frame:inserts")).toBe(0);
+  expect(e.interference("frame", "frame:screws")).toBe(0);
+  expect(e.interference("frame:inserts", "frame:screws")).toBe(0);
+  // an insert in a tap-drill hole is a collision
+  expect(e.interference("frame", "frame:wrong")).toBeGreaterThan(1);
+  expect(e.interferences(e.parts()).map((h) => [h.a, h.b])).toEqual([["frame", "frame:wrong"]]);
+});
+
+test("a duplicate tag names both uses with their whole call chains, not just the helper line", () => {
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "lib/join.ts": `import { box, type Solid } from "parasocial";
+export function join(s: Solid, tag: string, x: number) {
+  return s.union(box(4, 4, 4).translate([x, 0, 0]), { tag });
+}`,
+      "studios/twice.ts": `import { part, box } from "parasocial";
+import { join } from "../lib/join";
+function bosses(s: ReturnType<typeof box>) {
+  s = join(s, "boss0", 10);
+  s = join(s, "boss0", 20);
+  return s;
+}
+export const calls = part("Calls", () => bosses(box(40, 10, 10)));
+export const loop = part("Loop", () => {
+  let s = box(40, 10, 10);
+  for (let i = 0; i < 2; i++) s = join(s, "boss", i * 10);
+  return s;
+});`,
+    },
+  });
+  const calls = e.regenerate("twice:calls").problems[0];
+  expect(calls.message).toStartWith('tag "boss0" is used twice in twice:calls: first at twice.ts:8 via bosses() at twice.ts:4 via join() at join.ts:3; again at twice.ts:8 via bosses() at twice.ts:5 via join() at join.ts:3.');
+  expect(calls.source).toMatchObject({ file: "studios/twice.ts", line: 5 }); // the second call, not the helper
+  const loop = e.regenerate("twice:loop").problems[0];
+  expect(loop.message).toContain("first at twice.ts:11 via join() at join.ts:3; again at twice.ts:11 via join() at join.ts:3. The same call ran twice");
+  expect(loop.source).toMatchObject({ file: "studios/twice.ts", line: 11 });
+});
+
+test("a param declared again with the same spec reads the same value; a different spec says what differs", () => {
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "lib/winch.ts": `import { param, box } from "parasocial";
+export function drum() {
+  const d = param("drumD", 20, { label: "Drum diameter", min: 5, shared: true });
+  return box(d, 5, 5);
+}`,
+      "studios/w.ts": `import { part, param } from "parasocial";
+import { drum } from "../lib/winch";
+export const ok = part("Ok", () => drum().union(drum().translate([0, 10, 0])));
+export const bad = part("Bad", () => {
+  param("drumD", 25, { label: "Drum diameter", min: 5, shared: true });
+  return drum();
+});`,
+    },
+    overrides: { "*": { drumD: 30 } },
+  });
+  const ok = e.regenerate("w:ok");
+  expect(ok.problems).toEqual([]);
+  expect(ok.params.map((p) => [p.name, p.value])).toEqual([["drumD", 30]]);
+  expect(ok.bbox!.max[0] - ok.bbox!.min[0]).toBeCloseTo(30, 3);
+  const bad = e.regenerate("w:bad").problems[0];
+  expect(bad.message).toStartWith('param "drumD" is declared twice in w:bad with a different default (first at w.ts:5).');
+});

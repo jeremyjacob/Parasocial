@@ -4,7 +4,8 @@ import { OpCache } from "@parasocial/naming";
 import { PartContext, runPart, part, type PartBody } from "@parasocial/api/internal";
 import { box, cylinder, type Solid } from "../src/solid";
 import { std } from "../src/std";
-import { bearingRings, railHoles } from "../src/std/parts";
+import { measure } from "../src/measure";
+import { bearingRings, mgnRailHoles } from "../src/std/parts";
 
 beforeAll(async () => {
   await loadKernel();
@@ -97,7 +98,8 @@ test("ISO 4032 nut, ISO 7089 washer, heat-set insert", () => {
   const w = run(() => std.washer("M8"), (s) => s).value;
   close(w.volume(), (disc(16) - disc(8.4)) * 1.6);
   const i = run(() => std.insert("M3x5.7"), (s) => s).value;
-  close(i.volume(), (disc(4.6) - disc(3)) * 5.7);
+  // modeled as installed: the body fills its recommended hole (Ø4), not the Ø4.6 knurl
+  close(i.volume(), (disc(4) - disc(3)) * 5.7);
   close(i.boundingBox().min[2], -5.7);
 });
 
@@ -129,7 +131,7 @@ test("circlips and grooves", () => {
 });
 
 test("MGN12 rail: 12 × 8, 25 pitch, holes centered; MGN12H carriage 27 wide, 45.4 long, 13 high", () => {
-  expect(railHoles("MGN12", 200)).toEqual([-87.5, -62.5, -37.5, -12.5, 12.5, 37.5, 62.5, 87.5]);
+  expect(mgnRailHoles("MGN12", 200)).toEqual([-87.5, -62.5, -37.5, -12.5, 12.5, 37.5, 62.5, 87.5]);
   const { value: rail, run: rr } = run(() => std.mgnRail("MGN12", 200), (s) => s);
   const b = size(rail);
   close(b[0], 200);
@@ -191,6 +193,45 @@ test("hole spec connectors seat a screw; tags are unique per part", () => {
   const tags = r.ops.map((o) => o.tag).filter(Boolean);
   expect(tags).toContain("M3-ISO4762-hole-cut");
   expect(tags).toContain("M3-ISO4762-hole-2-cut");
+});
+
+test("screws and inserts placed with their hole's at / direction sit coaxially in it", () => {
+  const frameOf = (s: Solid, name: string) => s.meta.connectors![name][0];
+  const unit = (v: readonly number[]) => v.map((x) => Math.round(x * 1e9) / 1e9 + 0);
+  const dirs: [number, number, number][] = [[0, 0, -1], [0, 0, 1], [1, 0, 0], [0, -1, 0], [1, 1, -1]];
+  for (const d of dirs) {
+    const n = Math.hypot(...d);
+    const dir = d.map((v) => v / n);
+    const at = [3, -2, 1].map((v, i) => v - 5 * dir[i]) as [number, number, number]; // on the block's surface, facing −dir
+    const { value } = run(
+      () => box(40, 40, 40, { center: true }),
+      (blk) => {
+        const holed = blk.hole(at, { insert: "M3x5.7", direction: d, connector: "seat" });
+        const ins = std.insert("M3x5.7", { at, direction: d });
+        const scr = std.screw("M3", 10, { at, direction: d });
+        const cb = blk.hole(at, { screw: "M3", counterbore: "ISO4762", direction: d, connector: "seat" });
+        const sunk = std.screw("M3", 10, { at, direction: d, inset: std.tables.heads.ISO4762.M3!.k });
+        return {
+          seat: frameOf(holed, "seat"), top: frameOf(ins, "top"), bottom: frameOf(ins, "bottom"), head: frameOf(scr, "head"), tip: frameOf(scr, "tip"),
+          cbSeat: frameOf(cb, "seat"), sunkHead: frameOf(sunk, "head"),
+          overlap: measure.overlap(holed, ins), tight: measure.overlap(blk.hole(at, { screw: "M3", fit: "tap", direction: d }), ins),
+          headOverlap: measure.overlap(cb, sunk),
+        };
+      },
+    );
+    // the insert's top is the hole's seat, axes opposed to the drill direction, body along it
+    expect(unit(value.top.origin)).toEqual(unit(value.seat.origin));
+    expect(unit(value.top.z)).toEqual(unit(value.seat.z));
+    expect(unit(value.bottom.origin)).toEqual(unit(at.map((v, i) => v + 5.7 * dir[i])));
+    expect(unit(value.head.origin)).toEqual(unit(at));
+    expect(unit(value.tip.origin)).toEqual(unit(at.map((v, i) => v + 10 * dir[i])));
+    expect(unit(value.sunkHead.origin)).toEqual(unit(value.cbSeat.origin));
+    expect(unit(value.sunkHead.z)).toEqual(unit(value.cbSeat.z));
+    // seated in its own hole: no interference; in a smaller (tap) hole: interference
+    expect(value.overlap).toBeLessThan(1e-3);
+    expect(value.tight).toBeGreaterThan(1);
+    expect(value.headOverlap).toBeLessThan(1e-3);
+  }
 });
 
 test("nut traps: pocket, captive with side slot", () => {

@@ -103,11 +103,11 @@ test("selectors and filters behave as documented", () => {
   }));
 });
 
-/** Every `@example` in packages/api/src JSDoc. */
+/** Every `@example` in packages/api/src JSDoc (std/ included). */
 function examples() {
   const out: { file: string; code: string }[] = [];
   const dir = join(import.meta.dir, "../src");
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
+  for (const f of readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"))) {
     for (const block of readFileSync(join(dir, f), "utf8").match(/\/\*\*[\s\S]*?\*\//g) ?? []) {
       const lines = block.replace(/^\/\*\*|\*\/$/g, "").split("\n").map((l) => l.replace(/^\s*\* ?/, ""));
       for (let i = 0; i < lines.length; i++) {
