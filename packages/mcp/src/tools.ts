@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mutators, newID, type NoteTarget } from "@parasocial/sync";
 import { runMutator, readVersion, exportDocument, importDocument, buildDocumentZip, parseDocumentZip, signBlobURL, type Db, type BlobStore } from "@parasocial/sync/server";
-import type { PoolClient } from "@parasocial/engine-pool/client";
+import { EngineUnavailable, type PoolClient } from "@parasocial/engine-pool/client";
 import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
 import { NoteCursor, type NoteEvents } from "./note-events";
 import { documentContext } from "./document-context";
@@ -15,6 +15,7 @@ import { recordTouch, othersOn, changedUnderYou } from "./awareness";
 import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, jointValues, expandTargets, posedBox, posedPoint, posedDir, type Preview } from "./preview";
 import { sourcePart, type AssemblyInfo, type PartPose } from "@parasocial/runtime/protocol";
 import { registerOutputTools } from "./tools-output";
+import { affectedScripts, lineDiff } from "./write-report";
 
 export type Session = {
   id: string;
@@ -107,7 +108,19 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   async function mutate(mr: any) {
     const r = await runMutator(db, mr, ctx());
-    if (!r.ok) throw new ToolError(r.message, r.details);
+    if (r.ok) return;
+    const d = r.details as { code?: string; path?: string; baseVersion?: number | null; current?: { content: string; version: number } | null; index?: number };
+    if (!d.path || !("current" in d)) throw new ToolError(r.message, r.details);
+    // script conflicts: never the whole file back (an agent re-reads what it needs), but what changed since its base
+    const current = d.current ? { version: d.current.version, lines: d.current.content.split("\n").length } : null;
+    let diff = "";
+    if (d.code === "stale" && d.current && d.baseVersion != null) {
+      // a script's version is the document version that last wrote it: that version's snapshot has the base
+      const [b] = await db.sql`SELECT c.content FROM versions v JOIN script_contents c ON c.hash = v.snapshot->'scripts'->>${d.path}::text WHERE v.document_id = ${mr.args.documentID} AND v.number = ${d.baseVersion}`;
+      diff = b ? `\nChanges since version ${d.baseVersion}:\n${lineDiff(b.content, d.current.content) || "(none)"}` : `\n${d.path} didn't exist at version ${d.baseVersion}.`;
+    }
+    const hint = d.code === "stale" || d.code === "exists" ? `\nbaseVersion is this script's own version (list_scripts / read_script), not the document version${current ? `: ${d.path} is at ${current.version}` : ""}.` : "";
+    throw new ToolError(`${r.message}${hint}${diff}`, lean({ code: d.code, path: d.path, baseVersion: d.baseVersion, current, index: d.index }));
   }
 
   async function setStatus(status: "idle" | "working" | "writing", documentID?: string, detail?: Record<string, unknown> | null) {
@@ -190,7 +203,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   /** "error studios/a.ts:12 message" (the location moved to the front). */
   const problemLine = (p: any) => {
     const at = p.source ? `${p.source.file}:${p.source.line}` : "";
-    const message = at ? String(p.message).replace(/\s*\([^()]*:\d+(?::\d+)?\)\s*$/, "") : p.message;
+    const message = at ? String(p.message).replace(/\s*\([^()]*(?::\d+(?::\d+)?|\.ts)\)\s*$/, "") : p.message;
     return `${p.severity}${at ? ` ${at}` : ""} ${message}`;
   };
 
@@ -369,10 +382,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         result = await fn(args, extra);
       } catch (e) {
         thrown = e;
-        const msg = e instanceof ToolError || e instanceof AccessError ? e.message : `Internal error: ${(e as Error).message}`;
+        const known = e instanceof ToolError || e instanceof AccessError || e instanceof EngineUnavailable;
+        const msg = known ? e.message : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
-        // traces are dev-only: internal errors must also reach the server log
-        if (!(e instanceof ToolError || e instanceof AccessError)) console.error(`mcp: ${name} failed (document ${s.defaultDocument?.slice(0, 8) ?? "?"})`, e);
+        // traces are dev-only: internal errors (and the engine being down) must also reach the server log
+        if (e instanceof EngineUnavailable) console.warn(`mcp: ${name}: ${e.message}`);
+        else if (!known) console.error(`mcp: ${name} failed (document ${s.defaultDocument?.slice(0, 8) ?? "?"})`, e);
         result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data)}` : msg }] };
       }
       traceCall({ session: s.id, client: s.clientName, label: s.label, document: s.defaultDocument, tool: name, args, ms: Date.now() - now, isError: !!result.isError, result: result.content, ...(thrown && !(thrown instanceof ToolError) ? { exception: thrown } : {}) });
@@ -573,7 +588,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   // ---------------- scripts ----------------
-  tool("list_scripts", "Script paths with version and line count; content: true includes every script's source (read_script reads one).", { document, content: z.boolean().optional() }, async ({ document: dd, content }) => {
+  tool("list_scripts", "Script paths with version (baseVersion for writes) and line count; content: true includes every script's source (read_script reads one).", { document, content: z.boolean().optional() }, async ({ document: dd, content }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     // only content counts as read (changedByOthers compares against what this session has seen)
@@ -582,7 +597,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, ...(content ? { content: x.content } : { lines: x.content.split("\n").length }), ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
   }, { readOnlyHint: true });
 
-  tool("read_script", "A script's source and version (pass it as baseVersion when writing), and other sessions recently on it.", { document, path: z.string() }, async ({ document: dd, path }) => {
+  tool("read_script", "A script's source and version (its own write counter, not the document version: pass it as baseVersion when writing), and other sessions recently on it.", { document, path: z.string() }, async ({ document: dd, path }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     const sc = d.scripts.find((x) => x.path === path);
@@ -593,11 +608,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   /**
-   * After a committed write: our version and new script versions, a compact regeneration result
-   * per part (full summaries with `verbose`), and who else is on these files. Nothing here may
-   * fail the call, since the write already landed: problems come back in the result.
+   * After a committed write: our version and new script versions, the parts the change reaches
+   * regenerated (studios written, or importing a written file; every part with `all` or `verbose`),
+   * "ok" counted and problem lines per part or file, imports of missing files, and who else is on
+   * these files. Nothing here may fail the call, since the write already landed: problems come back
+   * in the result.
    */
-  async function afterWrite(documentID: string, label: string, w: { versionID: string; paths: string[]; verbose?: boolean | undefined }) {
+  async function afterWrite(documentID: string, label: string, w: { versionID: string; paths: string[]; verbose?: boolean | undefined; all?: boolean }) {
     const [v] = await db.sql`SELECT id, number, message FROM versions WHERE id = ${w.versionID}`;
     // our own version, by id: the document's latest may already be someone else's
     const version = v ? { id: v.id as string, number: Number(v.number), message: v.message as string } : null;
@@ -614,15 +631,27 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     let failed = false;
     try {
       const d = await loadDoc(db, s.userID, documentID);
-      const parts = await partsOf(d);
-      const raw = await engine(d, parts.map((part) => ({ op: "regenerate", part })));
-      failed = raw.some((r: any) => r && !r.ok);
-      out.parts = partStatus(raw);
+      const [infos, asms] = (await engine(d, [{ op: "parts" }, { op: "assemblies" }])) as [{ id: string; file: string }[], AssemblyInfo[]];
+      const { affected, missing } = affectedScripts(new Map(d.scripts.map((x) => [x.path, x.content])), w.paths);
+      const every = w.all || w.verbose;
+      const parts = infos.filter((p) => every || affected.has(p.file)).map((p) => p.id);
+      // a studio with neither parts nor assemblies failed to load: regenerating its stem reports why
+      const silent = d.scripts.map((x) => x.path).filter((f) => /^studios\/.*\.ts$/.test(f) && (every || affected.has(f)) && !infos.some((p) => p.file === f) && !asms.some((a) => a.file === f));
+      const raw = await regenerateParts(d, [...parts, ...silent.map((f) => f.slice("studios/".length, -".ts".length))]);
+      const bad = raw.filter((r: any) => r?.problems.length);
+      failed = bad.some((r: any) => !r.ok);
+      const problems: Record<string, string[]> = {};
+      for (const r of bad as any[]) problems[r.part] = [...(cap(r.problems.map(problemLine), 6) as string[]), ...(r.partial && !r.empty ? ["(showing last good geometry)"] : [])];
+      for (const a of asms) if (a.problems.length && (every || affected.has(a.file))) problems[a.id] = cap(a.problems.map(problemLine), 6) as string[];
+      // imports of files that don't exist, unless that file's load error is already listed
+      const reported = new Set(bad.flatMap((r: any) => r.problems.map((p: any) => p.source?.file)));
+      for (const [file, gone] of missing) if (!reported.has(file)) (problems[file] ??= []).push(...gone.map((g) => `warning ${file} imports ${g}, which doesn't exist`));
+      out.parts = lean({ regenerated: raw.length, ok: raw.length - bad.length, unaffected: infos.length - parts.length || undefined });
+      if (Object.keys(problems).length) out.problems = problems;
       if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r, true));
     } catch (e) {
       failed = true;
-      out.parts = {};
-      out.problems = [`error regeneration failed after the write was saved: ${(e as Error).message}. The write is committed (see version); call list_problems or retry the check, not the write.`];
+      out.regenerationFailed = `${(e as Error).message}. The write is committed${version ? ` (version ${version.number})` : ""}: don't redo it; check later with list_problems.`;
     }
     try {
       const others = await othersOn(db, s, documentID, w.paths);
@@ -642,7 +671,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_script",
-    "Create or replace a script (studios/*.ts or lib/**/*.ts); baseVersion from read_script, null to create. Makes a version, regenerates and returns the new script versions, each part's status (\"ok\" or problem lines; verbose: full results) and files others changed under you. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
+    "Create or replace a script (studios/*.ts or lib/**/*.ts). baseVersion: this script's own version (list_scripts / read_script; not the document version), null to create. Makes a version and regenerates the parts it reaches (its studio, or studios importing it). Returns the version, each script's new version (its next baseVersion), parts counted (regenerated, ok), problem lines per part or file (imports of missing files too) and files others changed under you; verbose: every part, full results. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
     { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, content, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
@@ -1033,6 +1062,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   );
 
   // ---------------- problems & checks ----------------
+  tool("engine_status", "Whether the geometry engine is reachable (documents loaded, build). Check when a tool says it's unavailable.", {}, async () => text(await pool.health()), { readOnlyHint: true });
+
   tool(
     "list_problems",
     "Each part's status (\"ok\" or its error and warning lines), and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session.",
@@ -1121,7 +1152,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const versionID = newID();
     await mutate(mutators.version.restore({ documentID, versionID: id, newVersionID: versionID } as any));
     const paths = (await db.sql`SELECT path FROM scripts WHERE document_id = ${documentID} ORDER BY path`).map((r: any) => r.path as string);
-    return text(await afterWrite(documentID, `restore version`, { versionID, paths, verbose }));
+    return text(await afterWrite(documentID, `restore version`, { versionID, paths, verbose, all: true }));
   });
 
   // ---------------- export / import ----------------

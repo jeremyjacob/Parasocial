@@ -19,7 +19,7 @@ Every document tool takes an optional document id (default: this session's docum
 
 // What the tool descriptions don't already say: how the pieces fit together, and modeling advice.
 export const DETAILS = `Details
-- Edits: a stale baseVersion is rejected with the current content; re-read and redo your change on top of it. Fix the errors a write returns before continuing (the workspace shows the last good geometry meanwhile). otherSessions and changedByOthers in write results name files others are on or changed since you read them (including lib files your studios import): re-read those before building on them. An identical retry succeeds without a new version.
+- Edits: a stale baseVersion is rejected with a diff of what changed since (baseVersion is the script's own version, not the document's); re-read and redo your change on top of it. Fix the errors a write returns before continuing (the workspace shows the last good geometry meanwhile). otherSessions and changedByOthers in write results name files others are on or changed since you read them (including lib files your studios import): re-read those before building on them. An identical retry succeeds without a new version.
 - Resolving: no permission request or routine completion reply; reply only with useful information, a question or a caveat, briefly. A human follow-up reopens a resolved note.
 - Params: set_param never edits source and by default is a preview only your session sees. The Default configuration is exactly what the code says: to change a default, edit the script.
 - Poses: to show a mechanism in another position use set_pose, not params or script edits; render({ parts: ["mechanism"] }) shows the assembly's instances as your session poses them.
