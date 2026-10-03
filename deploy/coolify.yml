@@ -8,6 +8,15 @@
 # The app sets COOP/COEP itself (hooks.server.ts) and the engine origin sets its own headers
 # and CSP (packages/runtime/src/server/serve.ts), so the proxy needs no header config.
 # Secrets are Coolify environment variables (see deploy/.env.example for what each does).
+#
+# migrate, app and engine-pool are NOT built here: .github/workflows/deploy.yml builds them in
+# GitHub Actions, pushes ghcr.io/jeremyjacob/parasocial-<service>:<commit sha>, sets the Coolify
+# env var IMAGE_TAG to that sha and triggers the deploy (Coolify's auto-deploy on push is off).
+# Coolify runs `docker compose pull` for image services, so the server only pulls; it never builds.
+# Rollback: re-run the workflow for an older commit, or set IMAGE_TAG to an older sha and redeploy.
+# deploy/docker-compose.yml (self-host) still builds from source.
+#
+# Healthchecks poll every 30s (each exec is costly on a 2-core box) but every 2s during start_period.
 
 x-db-url: &db-url postgres://parasocial:${POSTGRES_PASSWORD}@postgres:5432/parasocial
 
@@ -23,16 +32,16 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U parasocial -d parasocial"]
-      interval: 2s
+      interval: 30s
       timeout: 3s
       retries: 30
+      start_period: 60s
+      start_interval: 2s
     restart: unless-stopped
 
   # Applies packages/sync/migrations before zero-cache boots (it needs the parasocial_zero publication).
   migrate:
-    build:
-      context: .
-      dockerfile: deploy/migrate.Dockerfile
+    image: ghcr.io/jeremyjacob/parasocial-migrate:${IMAGE_TAG:-latest}
     environment:
       DATABASE_URL: *db-url
     depends_on:
@@ -65,17 +74,17 @@ services:
       - zero-replica:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:4848/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 5s
+      interval: 30s
       timeout: 3s
       retries: 30
+      start_period: 60s
+      start_interval: 2s
     restart: unless-stopped
 
   # SvelteKit (UI, mutators, passkeys, blobs, MCP, built-in agent) + the engine origin.
   # Needs egress: the built-in agent calls model providers.
   app:
-    build:
-      context: .
-      dockerfile: deploy/app.Dockerfile
+    image: ghcr.io/jeremyjacob/parasocial-app:${IMAGE_TAG:-latest}
     depends_on:
       migrate: { condition: service_completed_successfully }
     environment:
@@ -94,26 +103,28 @@ services:
       - blobs:/data/blobs
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/').then(r=>process.exit(r.status<500?0:1),()=>process.exit(1))"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 30
+      start_period: 120s
+      start_interval: 2s
     restart: unless-stopped
 
   # One Deno process per active document running user code for MCP / agent tool calls; Deno's
   # permissions are the sandbox (read-only engine build, no network). One document at a time on a small box.
   engine-pool:
-    build:
-      context: .
-      dockerfile: deploy/engine-pool.Dockerfile
+    image: ghcr.io/jeremyjacob/parasocial-engine-pool:${IMAGE_TAG:-latest}
     environment:
       POOL_TOKEN: ${POOL_TOKEN}
       POOL_MAX_DOCS: ${POOL_MAX_DOCS:-1}
       POOL_IDLE_MS: "300000"
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 30
+      start_period: 120s
+      start_interval: 2s
     restart: unless-stopped
 
 volumes:
