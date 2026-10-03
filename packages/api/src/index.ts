@@ -5,7 +5,8 @@
  * Units: numbers are mm and degrees. World Z is up.
  * Parts: a studio (studios/*.ts) exports parts: `export default part("Bracket", () => solid)` (id = file
  * name) or `export const lid = part("Lid", ...)` (id `case:lid`); `export const name = "Case"` names the
- * studio. Params: `const w = param("width", 40, { label: "Width", min: 10 })` (value in code = default).
+ * studio, `export const description = "..."` says more. Names are short labels (1–4 words, sentence
+ * case, no dashes, part numbers or materials); details go in description, partNumber, material. Params: `const w = param("width", 40, { label: "Width", min: 10 })` (value in code = default).
  *
  * Planes: sketch point [u, v] → world; positive extrude/offset goes along the normal.
  *   plane.XY (top)    [u, v] → [x, y]   normal +Z
@@ -46,7 +47,7 @@
 export { part, param } from "./part";
 export type { PartDef, PartTools, PartOptions, ParamOptions, ConnectorRef } from "./part";
 export { assembly } from "./assembly";
-export type { AssemblyDef, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement, Joint, RelationOpts } from "./assembly";
+export type { AssemblyDef, AssemblyOptions, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement, Joint, RelationOpts } from "./assembly";
 export type { FrameSpec } from "./connector";
 export { sketch, Sketch, loft, pipe } from "./sketch";
 export type { P2, ExtrudeOpts, RevolveOpts } from "./sketch";

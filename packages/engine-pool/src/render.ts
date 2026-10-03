@@ -290,19 +290,38 @@ function pipelines(dev: any) {
 }
 
 // ---------- scene ----------
-function bounds(parts: RenderPart[]) {
+/** Box around the meshes; with a cut, around what it keeps (dot(p, n) ≤ d, plus where triangle edges cross the plane). */
+function bounds(parts: RenderPart[], cut?: { n: Vec3; d: number }) {
   const min: Vec3 = [Infinity, Infinity, Infinity],
     max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  const grow = (x: number, y: number, z: number) => {
+    if (x < min[0]) min[0] = x;
+    if (x > max[0]) max[0] = x;
+    if (y < min[1]) min[1] = y;
+    if (y > max[1]) max[1] = y;
+    if (z < min[2]) min[2] = z;
+    if (z > max[2]) max[2] = z;
+  };
   for (const p of parts) {
     const a = p.mesh.positions;
-    for (let i = 0; i < a.length; i += 3)
-      for (let k = 0; k < 3; k++) {
-        if (a[i + k] < min[k]) min[k] = a[i + k];
-        if (a[i + k] > max[k]) max[k] = a[i + k];
+    if (!cut) {
+      for (let i = 0; i < a.length; i += 3) grow(a[i], a[i + 1], a[i + 2]);
+      continue;
+    }
+    const s = new Float32Array(a.length / 3);
+    for (let i = 0; i < s.length; i++) if ((s[i] = a[i * 3] * cut.n[0] + a[i * 3 + 1] * cut.n[1] + a[i * 3 + 2] * cut.n[2] - cut.d) <= 0) grow(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
+    const idx = p.mesh.indices;
+    for (let t = 0; t < idx.length; t += 3)
+      for (let e = 0; e < 3; e++) {
+        const i = idx[t + e],
+          j = idx[t + ((e + 1) % 3)];
+        if (s[i] <= 0 === s[j] <= 0) continue;
+        const f = s[i] / (s[i] - s[j]);
+        grow(a[i * 3] + (a[j * 3] - a[i * 3]) * f, a[i * 3 + 1] + (a[j * 3 + 1] - a[i * 3 + 1]) * f, a[i * 3 + 2] + (a[j * 3 + 2] - a[i * 3 + 2]) * f);
       }
   }
-  if (min[0] > max[0]) return { center: [0, 0, 0] as Vec3, radius: 50, min: [-50, -50, -50] as Vec3, max: [50, 50, 50] as Vec3 };
-  return { center: add(min, sub(max, min), 0.5), radius: Math.max(Math.hypot(...sub(max, min)) / 2, 1e-3), min, max };
+  if (min[0] > max[0]) return { center: [0, 0, 0] as Vec3, radius: 50, min: [-50, -50, -50] as Vec3, max: [50, 50, 50] as Vec3, empty: true };
+  return { center: add(min, sub(max, min), 0.5), radius: Math.max(Math.hypot(...sub(max, min)) / 2, 1e-3), min, max, empty: false };
 }
 
 function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) {
@@ -316,14 +335,27 @@ function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) 
   } else {
     // Viewer.fit: keep the view direction, back off until the bounding sphere fits
     const dirs = o.up === "y" ? VIEW_DIRS_Y : VIEW_DIRS;
-    const d = dirs[o.view ?? "iso"] ?? dirs.iso;
-    const fitH = b.radius / Math.sin(FOV / 2);
-    const fitW = b.radius / Math.sin(Math.atan(Math.tan(FOV / 2) * aspect));
-    eye = add(b.center, d, Math.max(fitH, fitW) * 1.12);
-    target = b.center;
+    // "section": from the removed (+normal) side, facing the cut
+    const d = o.view === "section" && o.section ? norm(o.section.normal) : (dirs[o.view ?? "iso"] ?? dirs.iso);
     // looking straight along the up axis, the screen's up is the next axis round (+Y for top in Z-up, -Z in Y-up)
     if (o.up === "y") up = Math.abs(d[1]) > 0.999 ? [0, 0, d[1] > 0 ? -1 : 1] : [0, 1, 0];
     else up = Math.abs(d[2]) > 0.999 ? [0, d[2] > 0 ? 1 : -1, 0] : [0, 0, 1];
+    const fitH = b.radius / Math.sin(FOV / 2);
+    const fitW = b.radius / Math.sin(Math.atan(Math.tan(FOV / 2) * aspect));
+    let dist = Math.max(fitH, fitW) * 1.12;
+    if (o.view === "section") {
+      // facing a cut, fit the box's corners on screen rather than its sphere (a thin slice would look tiny)
+      const sx = norm(cross(up, d)),
+        sy = cross(d, sx),
+        t = Math.tan(FOV / 2);
+      dist = 0;
+      for (let i = 0; i < 8; i++) {
+        const p = sub([i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]], b.center);
+        dist = Math.max(dist, dot(p, d) + (Math.max(Math.abs(dot(p, sy)), Math.abs(dot(p, sx)) / aspect) * 1.12) / t);
+      }
+    }
+    eye = add(b.center, d, dist);
+    target = b.center;
     ortho = false;
     orthoHeight = b.radius * 2.3 * Math.max(1, 1 / aspect);
   }
@@ -427,9 +459,11 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   });
   const parts = entries.map(([, r]) => r);
   const b = bounds(parts);
-  const c = camera(o, b, W / H);
-  const bias = b.radius * 0.003;
   const section = o.section ? { n: norm(o.section.normal), d: dot(norm(o.section.normal), o.section.origin) } : null;
+  // a section view frames what the cut keeps (everything when it keeps nothing)
+  const kept = o.view === "section" && section ? bounds(parts, section) : b;
+  const c = camera(o, kept.empty ? b : kept, W / H);
+  const bias = b.radius * 0.003;
   const yUp = o.up === "y";
   const gridSize = Math.max(b.max[0] - b.min[0], yUp ? b.max[2] - b.min[2] : b.max[1] - b.min[1]) * 1.6;
   const gridStep = Math.pow(10, Math.floor(Math.log10(Math.max(gridSize, 1) / 8)));

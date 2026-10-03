@@ -8,11 +8,13 @@
 	import { IconButton } from '$lib/components/ui/button';
 	import { ConfirmDialog } from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
+	import { ColorSwatch } from '$lib/components/ui/color-swatch';
 	import { theme } from '$lib/theme.svelte';
 	import { rise } from '$lib/styles/motion';
 	import { cn } from '$lib/utils';
 	import { tick, untrack } from 'svelte';
 	import type { WorkspaceState } from './state.svelte';
+	import { assemblyTree, type PartsNode } from './parts-tree';
 
 	let { ws, onAddStudio, onExport, onAddNote, onAddStudioNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void; onAddStudioNote: (file: string) => void } = $props();
 	let filter = $state('');
@@ -27,30 +29,53 @@
 	const agentBusy = (file: string, id: string, sourceFile = file) =>
 		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ([file, sourceFile].includes((a.detail as any)?.path) || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.kind === 'studio' ? t.studio === file : t.part === id)));
 
-	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? id;
+	const partName = (id: string) => {
+		const instance = ws.instances.find((i) => i.id === id);
+		const name = ws.results[sourcePart(id)]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? ws.results[id]?.name ?? id;
+		return instance?.name === undefined ? name : `${name} ${instance.name}`;
+	};
+	type Row = { id: string; name: string; description?: string; status: Status; busy: boolean; kind: PartsNode['kind']; ids: string[]; children: Row[]; definition?: string };
+	const leaves = (rows: Row[]): Row[] => rows.flatMap((r) => r.kind === 'part' ? [r] : leaves(r.children));
+	const matching = (rows: Row[], q: string): Row[] => rows.flatMap((r) => {
+		if (r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q)) return [r];
+		const children = matching(r.children, q);
+		return children.length ? [{ ...r, children }] : [];
+	});
+	const visibleParts = (rows: Row[]): string[] => rows.flatMap((r) => r.kind === 'part' ? [r.id] : expanded.has(r.id) || filter.trim() ? visibleParts(r.children) : []);
 
 	// Each studio with what it shows in the viewport: its parts, or an assembly's instances (joints are in Properties).
 	const tree = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
 		// assemblies first, otherwise in document order
 		const studios = [...ws.partTree].sort((a, b) => Number(b.assemblies.length > 0) - Number(a.assemblies.length > 0));
-		return studios.flatMap(({ file, name, assemblies, ids }) => {
-			const asmError = ws.asm.problems.some((p) => assemblies.some((a) => a.id === p.assembly));
-			const rows = ids.map((id) => {
+		return studios.flatMap(({ file, name, description, assemblies, ids }) => {
+			const asmProblems = ws.asm.problems.filter((p) => assemblies.some((a) => a.id === p.assembly));
+			const asmStatus: Status = asmProblems.some((p) => p.severity !== 'warning') ? 'error' : asmProblems.length ? 'warning' : 'ok';
+			const parts = new Map(ids.map((id) => {
 				// an instance shows its source part's state
 				const src = sourcePart(id);
 				const r = ws.results[id];
 				const err = r?.problems.some((p) => p.severity === 'error');
 				const warn = r?.problems.some((p) => p.severity === 'warning');
 				const status: Status = ws.regen[src] === 'running' && !r ? 'pending' : err ? 'error' : warn ? 'warning' : 'ok';
-				return { id, name: r?.name ?? partName(id), status, busy: ws.regen[src] === 'running' || agentBusy(file, id, ws.scriptOf(src)) };
-			});
+				return [id, { id, name: partName(id), status, busy: ws.regen[src] === 'running' || agentBusy(file, id, ws.scriptOf(src)), kind: 'part', ids: [id], children: [] } satisfies Row] as const;
+			}));
+			const rowOf = (node: PartsNode): Row => {
+				if (node.kind === 'part') return parts.get(node.id)!;
+				const children = node.children.map(rowOf);
+				const members = node.ids.map((id) => parts.get(id)!);
+				return { ...node, children, status: members.reduce<Status>((s, r) => RANK[r.status] > RANK[s] ? r.status : s, 'ok'), busy: members.some((r) => r.busy) };
+			};
+			const assemblyRows = assemblies.map((a) => rowOf(assemblyTree(a, ws.asm.assemblies)));
+			const instanceIDs = new Set(assemblies.flatMap((a) => a.instances.map((i) => i.id)));
+			const standalone = [...parts.values()].filter((r) => !instanceIDs.has(r.id));
+			const rows: Row[] = [...standalone, ...(assemblies.length === 1 ? assemblyRows[0].children : assemblyRows)];
 			// a studio's name matching shows all its parts; otherwise only the matching parts
 			const all = !q || name.toLowerCase().includes(q);
-			const shown = all ? rows : rows.filter((r) => r.name.toLowerCase().includes(q) || r.id.includes(q));
+			const shown = all ? rows : matching(rows, q);
 			if (!all && !shown.length) return [];
-			const status = rows.reduce<Status>((s, r) => (RANK[r.status] > RANK[s] ? r.status : s), asmError ? 'error' : 'ok');
-			return [{ file, name, asm: assemblies.length > 0, rows: shown, ids, status, busy: rows.some((r) => r.busy) }];
+			const status = rows.reduce<Status>((s, r) => (RANK[r.status] > RANK[s] ? r.status : s), asmStatus);
+			return [{ file, name, description, asm: assemblies.length > 0, rows: shown, ids, status, busy: rows.some((r) => r.busy) }];
 		});
 	});
 	const selectedPart = $derived(new Set(ws.selection.map((s) => s.part)));
@@ -76,7 +101,7 @@
 	 */
 	function clickPart(file: string, id: string, e: MouseEvent) {
 		if (!e.shiftKey) return selectParts(file, [id], e);
-		const rows = tree.find((g) => g.file === file)?.rows.map((r) => r.id) ?? [];
+		const rows = visibleParts(tree.find((g) => g.file === file)?.rows ?? []);
 		// a stale anchor (deselected elsewhere, another studio, filtered out) falls back to the studio's last selected part
 		const from = [anchor, ...ws.selection.map((s) => s.part).reverse()].find((p) => p && selectedPart.has(p) && rows.includes(p));
 		if (!from) return selectParts(file, [id]);
@@ -89,11 +114,16 @@
 	let list: HTMLUListElement | undefined = $state();
 	$effect(() => {
 		const part = ws.selection.at(-1)?.part;
-		if (!part) return;
+		if (!part || ws.selectedAssemblyScope) return;
 		untrack(() => {
-			const g = tree.find((g) => g.rows.some((r) => r.id === part));
+			const g = tree.find((g) => leaves(g.rows).some((r) => r.id === part));
 			if (!g) return;
-			if (!expanded.has(g.file)) expanded = new Set(expanded).add(g.file);
+			const next = new Set(expanded).add(g.file);
+			const reveal = (rows: Row[]) => {
+				for (const r of rows) if (r.kind !== 'part' && r.ids.includes(part)) { next.add(r.id); reveal(r.children); }
+			};
+			reveal(g.rows);
+			expanded = next;
 			tick().then(() => list?.querySelector(`[data-part="${CSS.escape(part)}"]`)?.scrollIntoView({ block: 'nearest' }));
 		});
 	});
@@ -153,6 +183,20 @@
 		];
 	}
 
+	function selectGroup(file: string, r: Row, e?: MouseEvent) {
+		anchor = null;
+		showStudio(file);
+		ws.selectAssemblyScope(r.id, e ? ws.selectionMode(e) : 'replace');
+	}
+	function groupMenu(r: Row): MenuEntry[] {
+		return [
+			...(!ws.readOnly && r.ids.length ? [{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote(r.ids) }] : []),
+			...(r.ids.length ? [{ label: 'Export…', icon: Download, onSelect: () => onExport(r.ids) }] : []),
+			{ label: 'Open assembly code', icon: Code2, onSelect: () => openScript(ws.asm.assemblies.find((a) => a.id === r.definition)?.file ?? `studios/${r.definition?.split(':')[0]}.ts`) },
+			{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(r.name).then(() => toast('Copied')) }
+		];
+	}
+
 </script>
 
 <ConfirmDialog
@@ -178,6 +222,7 @@
 					<!-- Figma-style: the chevron hangs in the row's left padding, the type icon takes the leading cell -->
 					<ListRow
 						name={g.name}
+						description={g.description}
 						class="pl-6 text-fg-secondary"
 						status={g.status}
 						statusLabel={LABEL[g.status]}
@@ -204,28 +249,36 @@
 				</ContextMenu>
 				{#if open}
 					<ul class="flex flex-col gap-px pt-px" role="group">
-						{#each g.rows as r (r.id)}
-							<li role="treeitem" aria-selected={selectedPart.has(r.id)} data-part={r.id}>
-								<ContextMenu items={menuFor(r.id, r.name, g.file, g.ids.length)} onOpen={() => ctxSelect(g.file, r.id)}>
-									<ListRow
-										name={r.name}
-										class="pl-10"
-										color={ws.partColor(r.id, dark)}
-										status={r.status}
-										statusLabel={LABEL[r.status]}
-										busy={r.busy}
-										selected={selectedPart.has(r.id)}
-										dimmed={active !== g.file}
-										visible={!ws.hidden.includes(r.id)}
-										onVisibleChange={(v) => ws.setHidden(r.id, !v)}
-										onclick={(e) => clickPart(g.file, r.id, e)}
-									/>
-								</ContextMenu>
-							</li>
-						{/each}
+						{@render renderRows(g.rows, g.file, g.ids.length, 1)}
 					</ul>
 				{/if}
 			</li>
 		{/each}
 	</ul>
 </div>
+
+{#snippet renderRows(rows: Row[], file: string, siblings: number, depth: number)}
+	{#each rows as r (r.id)}
+		{@const group = r.kind !== 'part'}
+		{@const open = expanded.has(r.id) || !!filter.trim()}
+		{@const selected = group ? r.ids.length > 0 && r.ids.every((id) => selectedPart.has(id)) : selectedPart.has(r.id)}
+		{@const visible = r.ids.some((id) => !ws.hidden.includes(id))}
+		<li role="treeitem" aria-selected={selected} aria-expanded={group ? open : undefined} data-part={group ? undefined : r.id} data-subassembly={r.kind === 'subassembly' ? r.id : undefined} data-assembly={r.kind === 'assembly' ? r.id : undefined}>
+			<div style:padding-left="{(depth - 1) * 16}px">
+				<ContextMenu items={group ? groupMenu(r) : menuFor(r.id, r.name, file, siblings)} onOpen={() => group ? selectGroup(file, r) : ctxSelect(file, r.id)}>
+					<ListRow name={r.name} description={r.description} class="pl-10" color={group ? undefined : ws.partColor(r.id, dark)} status={r.status} statusLabel={LABEL[r.status]} busy={r.busy && (!group || !open)} {selected} dimmed={active !== file} {visible} hideable={r.ids.length > 0} onVisibleChange={(v) => ws.setVisibility(r.ids.map((part) => ({ part, hidden: !v })))} onclick={(e) => group ? selectGroup(file, r, e) : clickPart(file, r.id, e)}>
+						{#snippet leading()}
+							{#if group}
+								<button type="button" class="focus-ring absolute top-1/2 left-4 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg" aria-label="{open ? 'Collapse' : 'Expand'} {r.name}" onpointerdown={(e) => e.stopPropagation()} onclick={(e) => (e.stopPropagation(), toggleExpanded(r.id))}><ChevronRight size={14} class={cn(open && 'rotate-90')} /></button>
+								<span class="inline-flex text-fg-tertiary" title={r.kind === 'subassembly' ? 'Subassembly' : 'Assembly'}><Boxes size={14} /></span>
+							{:else}
+								<ColorSwatch color={active === file ? ws.partColor(r.id, dark) : 'var(--fg-disabled)'} size={12} class={cn(!visible && 'opacity-30', active !== file && 'opacity-75')} />
+							{/if}
+						{/snippet}
+					</ListRow>
+				</ContextMenu>
+			</div>
+			{#if group && open}<ul class="flex flex-col gap-px pt-px" role="group">{@render renderRows(r.children, file, siblings, depth + 1)}</ul>{/if}
+		</li>
+	{/each}
+{/snippet}

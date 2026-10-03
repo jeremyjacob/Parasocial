@@ -30,9 +30,9 @@
 </script>
 
 <!-- Panel tabs (Figma "Design · Prototype", Framer "Pages · Layers"): quiet text, active gets a soft pill. -->
-<Tabs.Root bind:value {onValueChange} class={cn('flex min-h-0 flex-col', className)}>
-	<div class={cn('flex h-12 shrink-0 items-center gap-1 px-2', listClass)}>
-		<Tabs.List class="flex items-center gap-0.5">
+<Tabs.Root bind:value {onValueChange} class={cn('flex min-h-0 min-w-0 flex-col', className)}>
+	<div class={cn('scrollbar-slim flex h-12 shrink-0 items-center gap-1 overflow-x-auto px-2', listClass)}>
+		<Tabs.List class="flex shrink-0 items-center gap-0.5">
 			{#each items as item (item.value)}
 				<Tabs.Trigger
 					value={item.value}
@@ -53,7 +53,7 @@
 	</div>
 	{#if content}
 		{#each items as item (item.value)}
-			<Tabs.Content value={item.value} class="flex min-h-0 flex-1 flex-col focus-visible:outline-none">
+			<Tabs.Content value={item.value} class="flex min-h-0 min-w-0 flex-1 flex-col focus-visible:outline-none">
 				{@render content(item.value)}
 			</Tabs.Content>
 		{/each}

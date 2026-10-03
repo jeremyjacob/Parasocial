@@ -444,3 +444,12 @@ test("worker: a kernel fault is reported after the answer, and the worker answer
   await flush();
   expect(events.length).toBe(3);
 });
+
+test("pool: an evaluation that runs too long times out and replaces the worker", async () => {
+  const h = await host("pool");
+  const id = await h.request({ op: "evaluate", script: "lib/a.ts", expr: "loop()" });
+  h.workers[0].emit({ type: "started", id });
+  await h.tick(100);
+  expect(h.workers[0].terminated).toBe(true);
+  expect(h.replies.find((r) => r.id === id)).toMatchObject({ ok: false, timeout: true, error: expect.stringMatching(/^evaluation timed out/) });
+});

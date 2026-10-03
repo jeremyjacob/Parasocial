@@ -6,8 +6,14 @@
  * exports one or more parts: `export default part("Name", () => solid)` is part id `<file>`; named
  * exports like `export const lid = part("Lid", ...)` in studios/case.ts are part id `case:lid`. Related
  * parts can share a studio and its helpers. `export const name = "Case"` gives the studio a display
- * name. Parts are modeled in place (where they sit in the product). A studio exports parts or
- * assemblies, never both.
+ * name and `export const description = "Two-part shell with snap hinge"` a line saying more (the
+ * Parts tree shows it on hover). Parts are modeled in place (where they sit in the product). A studio
+ * exports parts or assemblies, never both.
+ *
+ * Names (studio, part, assembly) are labels in the Parts tree: 1–4 words, sentence case, naming what
+ * the thing is ("Winch drum", "Stator mount"). No dashes or parentheticals, and no part numbers,
+ * materials, revisions or status in a name; those go in `partNumber`, `material` and `description`
+ * (`part()` and `assembly()` options, or the studio's `description` export).
  *
  * Params: `param(name, default, { label, min, max, step, unit, options, shared })`. The value in code is
  * the default; configurations override it (set_param never edits source; to change a default, edit the
@@ -85,7 +91,8 @@ export function connectorRef(part: PartDef, what: string, connector: string, ind
  * `export default part("Bracket", () => sketch(plane.XY).rect(40, 25).extrude(3))` (part id `bracket`),
  * or several as named exports, `export const lid = part("Lid", () => ...)` in `studios/case.ts`
  * (part id `case:lid`). Each part regenerates on its own, with its own params, color and ops.
- * The studio's display name is `export const name = "Case"` (the file name when absent).
+ * The studio's display name is `export const name = "Case"` (the file name when absent); keep names
+ * short and put details in options (`description`, `partNumber`, `material`), not the name.
  * Options say what the part is, for the bill of materials and drawings:
  * `part("Pin", () => ..., { material: "steel", partNumber: "PS-104", description: "Hinge pin Ø5", vendor: "McMaster", standard: true })`.
  */

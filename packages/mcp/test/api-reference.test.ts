@@ -122,6 +122,42 @@ test("lookups return the d.ts declarations verbatim, with their docs and example
   expect(apiIndex().length).toBeLessThan(3500);
 });
 
+test("dimension tables: keyof typeof keys inline, lookups by table, path and key", () => {
+  const text = (s: string) => apiReference({ symbol: s }).text;
+  // `keyof typeof BEARINGS` comes with its keys, for the alias and for declarations using it
+  expect(text("BearingSize")).toMatch(/^\/\/ BearingSize: .*"6804"/m);
+  expect(text("InsertSize")).toMatch(/^\/\/ InsertSize: .*"M3x4"/m);
+  const bearing = text("std.bearing");
+  expect(bearing.match(/^\/\/ BearingSize:/gm)?.length).toBe(1);
+  // a key gives its row in every table that has it
+  const row = text("6804");
+  expect(row).toContain('std.tables.bearings["6804"] (BEARINGS): { d: 20, D: 32, B: 7 }');
+  expect(row.length).toBeLessThan(300);
+  expect(text("M3x4")).toContain("std.tables.inserts.M3x4 (INSERTS): { d: 3, od: 4.6, l: 4, hole: 4 }");
+  const m3 = text("M3");
+  for (const p of ["heads.ISO4762.M3", "heads.ISO7380.M3", "metric.M3", "nuts.M3", "washers.M3"]) expect(m3).toContain(`std.tables.${p} (`);
+  expect(m3.match(/Head dimensions/g)?.length).toBe(1);
+  // one table, by constant name or path, compact; into its rows by path
+  for (const q of ["BEARINGS", "std.tables.bearings", "bearings"]) {
+    const t = text(q);
+    expect(t).toStartWith("// std.tables.bearings (BEARINGS): Deep-groove");
+    expect(t).toContain('"6804": { d: 20, D: 32, B: 7 }');
+    expect(t).not.toContain("INSERTS");
+    expect(t.length).toBeLessThan(2500);
+  }
+  expect(text('std.tables.bearings["608"]')).toContain("{ d: 8, D: 22, B: 7 }");
+  expect(text("METRIC.M2.5")).toContain('std.tables.metric["M2.5"] (METRIC): { d: 2.5, pitch: 0.45');
+  expect(text("std.tables.heads.ISO7380")).toMatch(/^M3: \{ dk: 5\.7/m);
+  // std.tables: an index of the tables, not their data
+  const index = text("std.tables");
+  expect(index).toContain("std.tables.bearings (BEARINGS: d D B): 608");
+  expect(index).toContain("ISO7380{M3");
+  expect(index.length).toBeLessThan(2000);
+  // the tables topic is unchanged, and unknown keys still miss
+  expect(apiReference({ topic: "tables" }).text).toContain("export declare const BEARINGS");
+  expect(apiReference({ symbol: "6899" }).isError).toBe(true);
+});
+
 test("api_reference is an MCP tool", async () => {
   const server = new McpServer({ name: "test", version: "1" });
   registerApiReference(server, { id: "test-session" });

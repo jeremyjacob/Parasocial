@@ -47,6 +47,8 @@ export class FakePool {
         return e.interference(op.a, op.b);
       case "interferencePairs":
         return op.pairs.map(([a, b]: [string, string]) => e.interference(a, b));
+      case "distancePairs":
+        return e.distances(op.pairs, op.within);
       case "measure":
         return e.measure(op.a, op.b);
       case "check":
@@ -73,6 +75,8 @@ export class FakePool {
         const bytes = e.exportParts(op.parts ?? [op.part], op.format);
         return { base64: Buffer.from(bytes).toString("base64"), bytes: bytes.length };
       }
+      case "evaluate":
+        return e.evaluate(op.script, op.expr, op.part);
       case "render":
         this.renders.push(op);
         return { png: "" };

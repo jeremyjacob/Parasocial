@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mutators, type ParasocialZero } from '@parasocial/sync';
 import type { Viewer } from '@parasocial/viewer';
 import { WorkspaceState } from './state.svelte';
+import { nestedAssemblies } from '$lib/test/assemblies';
 
 describe('visibility undo', () => {
 	let ws: WorkspaceState;
@@ -83,4 +84,25 @@ describe('visibility undo', () => {
 		expect(name).toBe('Renamed');
 		expect(ws.hidden).toEqual(['base', 'lid']);
 	});
+});
+
+it('toggles subassemblies as whole groups and drops scope properties for a part selection', () => {
+	localStorage.clear();
+	const ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: {} as ParasocialZero });
+	vi.spyOn(ws, 'publishPresence').mockImplementation(() => {});
+	ws.asm.assemblies = nestedAssemblies();
+	const scope = 'rack/module@left';
+	ws.select([{ part: 'rack/module@left/parts:base', kind: 'part' as any, index: 0 }]);
+	ws.selectAssemblyScope(scope, 'toggle');
+	expect(ws.selection).toHaveLength(3);
+	expect(ws.selectedAssemblyScope?.id).toBe(scope);
+	ws.selectAssemblyScope(scope, 'toggle');
+	expect(ws.selection).toEqual([]);
+	expect(ws.selectedAssemblyScope).toBeNull();
+	ws.selectAssemblyScope(scope);
+	ws.select([{ part: 'rack/module@left/parts:base', kind: 'face', index: 0 }]);
+	expect(ws.selectedAssemblyScope).toBeNull();
+	ws.selectAssemblyScope(scope);
+	ws.asm.assemblies = [];
+	expect(ws.selectedAssemblyScope).toBeNull();
 });

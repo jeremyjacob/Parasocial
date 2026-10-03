@@ -10,6 +10,7 @@
 	import { toast } from '$lib/components/ui/toast';
 	import { mutators } from '@parasocial/sync';
 	import { sourcePart, type AssemblyJoint, type EntityDescription } from '@parasocial/runtime/protocol';
+	import { withinScope } from '@parasocial/runtime/assembly-scope';
 	import { theme } from '$lib/theme.svelte';
 	import { num } from '$lib/format';
 	import type { WorkspaceState } from './state.svelte';
@@ -85,21 +86,34 @@
 		// assembly ids have no "/": the name starts with the scope below the assembly, then "/"
 		const own = scope ? j.name.slice(j.scope.length - j.scope.indexOf('/')) : j.name;
 		const cap = own[0].toUpperCase() + own.slice(1);
+		if (selectedScope) {
+			const selectedLabel = ws.scopeLabel(selectedScope.id);
+			const relative = selectedLabel && scope?.startsWith(`${selectedLabel} › `) ? scope.slice(selectedLabel.length + 3) : scope;
+			return j.scope === selectedScope.id || !relative ? cap : `${cap} · ${relative}`;
+		}
 		return scope ? `${scope} › ${cap}` : cap;
 	};
 
 	/** The studio in the viewport: its problems, and the joints that drive its assemblies (followers around a closed loop, and fastened joints, stay out). */
 	const studio = $derived(ws.studio);
+	const selectedScope = $derived(ws.selectedAssemblyScope);
+	const assemblies = $derived(selectedScope ? [selectedScope.assembly] : studio?.assemblies ?? []);
+	/** The selected copy's assembly definition, else the studio's one assembly: its options (description, part number). */
+	const definition = $derived(selectedScope ? ws.asm.assemblies.find((a) => a.id === selectedScope.definition) : studio?.assemblies.length === 1 ? studio.assemblies[0] : undefined);
+	const description = $derived(selectedScope ? definition?.description : studio?.description);
+	const inScope = (scope: string) => !selectedScope || withinScope(scope, selectedScope.id);
+	const detailIDs = $derived(selectedScope ? selectedScope.instances.map((i) => i.id) : studio?.ids ?? []);
+	const detailFile = $derived(selectedScope ? ws.asm.assemblies.find((a) => a.id === selectedScope.definition)?.file : studio?.file);
 	const joints = $derived(
-		(studio?.assemblies ?? []).flatMap((a) =>
-			a.joints.filter((j) => ws.asm.drivers[a.id]?.includes(j.name) ?? j.type !== 'fastened').map((j) => ({ asm: a.id, joint: j, name: jointName(j), value: ws.asm.values[a.id]?.[j.name] ?? j.value }))
+		assemblies.flatMap((a) =>
+			a.joints.filter((j) => inScope(j.scope) && (ws.asm.drivers[a.id]?.includes(j.name) ?? j.type !== 'fastened')).map((j) => ({ asm: a.id, joint: j, name: jointName(j), value: ws.asm.values[a.id]?.[j.name] ?? j.value }))
 		)
 	);
 	/** Joints tied together (gear, rack and pinion, screw): the follower moves with its driver, so only drivers have fields above. */
 	const RELATION_LABEL = { gear: 'Gear', rackPinion: 'Rack and pinion', screw: 'Screw', linear: 'Linear' } as const;
 	const relations = $derived(
-		(studio?.assemblies ?? []).flatMap((a) =>
-			(a.relations ?? []).map((r) => {
+		assemblies.flatMap((a) =>
+			(a.relations ?? []).filter((r) => inScope(r.scope)).map((r) => {
 				const named = (n: string) => {
 					const j = a.joints.find((x) => x.name === n);
 					return j ? jointName(j) : n;
@@ -112,8 +126,8 @@
 	);
 	const problems = $derived.by(() => {
 		if (!studio) return [];
-		const asm = ws.asm.problems.filter((p) => studio.assemblies.some((a) => a.id === p.assembly)).map((p) => p.message);
-		const parts = studio.ids.flatMap((id) => (ws.results[id]?.problems ?? []).filter((p) => p.severity === 'error' || p.severity === 'warning').map((p) => `${partName(id)}: ${p.message}`));
+		const asm = ws.asm.problems.filter((p) => assemblies.some((a) => a.id === p.assembly)).map((p) => p.message);
+		const parts = detailIDs.flatMap((id) => (ws.results[id]?.problems ?? []).filter((p) => p.severity === 'error' || p.severity === 'warning').map((p) => `${partName(id)}: ${p.message}`));
 		return [...new Set([...asm, ...parts])];
 	});
 	const withValue = (v: number[], i: number, x: number) => v.map((y, k) => (k === i ? x : y));
@@ -129,13 +143,16 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col overflow-auto" data-testid="properties-panel">
-	{#if !sel.length}
+	{#if !sel.length || selectedScope}
 		{#if studio}
-			<PropertySection bodyClass="gap-0.5" title={studio.name} meta={studio.assemblies.length ? 'Assembly' : 'Studio'}>
-				<div class={row}><span class="text-fg-secondary">Script</span><button class="focus-ring flex items-center gap-1 truncate rounded-xs text-left text-accent hover:underline" onclick={() => reveal(studio.file)}>{studio.file} <ArrowUpRight size={12} /></button></div>
-				<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{studio.ids.length}</span></div>
+			<PropertySection bodyClass="gap-0.5" title={selectedScope?.name ?? studio.name} meta={selectedScope ? selectedScope.id === selectedScope.assembly.id ? 'Assembly' : 'Subassembly' : studio.assemblies.length ? 'Assembly' : 'Studio'}>
+				{#if description}<p class="pb-1.5 text-ui text-fg-secondary" data-testid="studio-description">{description}</p>{/if}
+				{#if definition?.partNumber}<div class={row}><span class="text-fg-secondary">Part number</span><span class="truncate tabular-nums">{definition.partNumber}</span></div>{/if}
+				<div class={row}><span class="text-fg-secondary">Script</span><button class="focus-ring flex items-center gap-1 truncate rounded-xs text-left text-accent hover:underline" onclick={() => reveal(detailFile)}>{detailFile} <ArrowUpRight size={12} /></button></div>
+				<div class={row}><span class="text-fg-secondary">Parts</span><span class="tabular-nums">{detailIDs.length}</span></div>
 				{#if studio.assemblies.length}
-					<div class={row}><span class="text-fg-secondary">Joints</span><span class="tabular-nums">{studio.assemblies.reduce((n, a) => n + a.joints.length, 0)}</span></div>
+					<div class={row}><span class="text-fg-secondary">Joints</span><span class="tabular-nums">{assemblies.reduce((n, a) => n + a.joints.filter((j) => inScope(j.scope)).length, 0)}</span></div>
+					<div class={row}><span class="text-fg-secondary">Subassemblies</span><span class="tabular-nums">{selectedScope ? selectedScope.subs.length : assemblies.reduce((n, a) => n + a.subs.length, 0)}</span></div>
 				{/if}
 				{#each problems as p (p)}
 					<p class="py-0.5 text-ui text-error" data-testid="studio-problem">{p}</p>

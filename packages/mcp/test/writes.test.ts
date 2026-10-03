@@ -15,13 +15,14 @@ import { EngineUnavailable, PoolClient } from "@parasocial/engine-pool/client";
 const engine = {
   mode: "ok" as "ok" | "problem" | "throw",
   regenerated: [] as string[],
+  assemblies: [] as unknown[],
   async run(job: { scripts: Record<string, string>; ops: { op: string; part?: string }[] }) {
     if (engine.mode === "throw") throw new EngineUnavailable("timed out");
     const studios = Object.keys(job.scripts).filter((p) => p.startsWith("studios/")).map((p) => p.slice(8, -3));
     if (job.ops.some((o) => o.op === "regenerate")) engine.regenerated = job.ops.map((o) => o.part!);
     return job.ops.map((o) => {
       if (o.op === "parts") return { ok: true, value: studios.map((id) => ({ id, file: `studios/${id}.ts` })) };
-      if (o.op === "assemblies") return { ok: true, value: [] };
+      if (o.op === "assemblies") return { ok: true, value: engine.assemblies };
       const problems = engine.mode === "problem" ? [{ severity: "error", kind: "operation", message: "fillet radius 5 exceeds adjacent face width 3.2; use a value below 3.2 (a.ts:18)", source: { file: "studios/a.ts", line: 18 }, highlight: { kind: "edge", names: Array(500).fill("x") } }] : [];
       return { ok: true, value: { part: o.part, name: o.part, ok: !problems.length, problems, faces: Array(200).fill({}), edges: Array(400).fill({}), bbox: { min: [0, 0, 0], max: [1, 1, 1] }, timings: { total: 1, ops: 1 }, params: [] } };
     });
@@ -217,4 +218,20 @@ test("export_document returns a download URL unless base64 is asked for", async 
   expect(r.bytes).toBeGreaterThan(0);
   const inline = await claude.call("export_document", { base64: true });
   expect(typeof inline.base64).toBe("string");
+});
+
+test("assembly problems reach list_problems and write reports, warnings included", async () => {
+  engine.mode = "ok";
+  const warning = { severity: "warning", kind: "runtime", message: 'studio "Rig" shows "Corner" twice: exported and inserted by "Cart". Export "Corner" from its own studio and import it here (rig.ts:5)', part: "rig:corner", source: { file: "studios/rig.ts", line: 5 } };
+  engine.assemblies = [{ id: "rig:corner", file: "studios/rig.ts", export: "corner", name: "Corner", studio: "Rig", instances: [], subs: [], fixed: [], joints: [], relations: [], problems: [warning] }];
+  try {
+    const line = 'warning studios/rig.ts:5 studio "Rig" shows "Corner" twice: exported and inserted by "Cart". Export "Corner" from its own studio and import it here';
+    const w = await claude.call("write_scripts", { files: [{ path: "studios/rig.ts", content: "export {};\n", baseVersion: null }] });
+    expect(w.problems["rig:corner"]).toEqual([line]);
+    const r = await claude.call("list_problems");
+    expect(r.assemblies).toEqual({ "rig:corner": [line] });
+    expect(r.introducedBy["studios/rig.ts"]).toContain("v");
+  } finally {
+    engine.assemblies = [];
+  }
 });

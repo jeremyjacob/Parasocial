@@ -7,6 +7,7 @@ import * as api from "@parasocial/api";
 import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
+import { evaluateExpression, type EvaluateResult } from "./evaluate";
 import { zipSync, strToU8 } from "fflate";
 
 export type DocumentState = {
@@ -18,9 +19,10 @@ export type DocumentState = {
 
 /**
  * A part a studio exports: `export default part(...)` is `<stem>`, `export const lid = part(...)` is `<stem>:lid`.
- * `studio` is the studio's display name: its `export const name = "..."`, else the file stem.
+ * `studio` is the studio's display name: its `export const name = "..."`, else the file stem;
+ * `studioDescription` is its `export const description = "..."`.
  */
-export type PartInfo = { id: string; file: string; export: string; name: string; studio: string };
+export type PartInfo = { id: string; file: string; export: string; name: string; studio: string; studioDescription?: string };
 
 /**
  * An assembly a studio exports (`export default assembly(...)`). It holds its own copies of the
@@ -35,6 +37,10 @@ export type AssemblyInfo = {
   export: string;
   name: string;
   studio: string;
+  studioDescription?: string;
+  /** From `assembly(name, body, { description, partNumber })`. */
+  description?: string;
+  partNumber?: string;
   /** The assembly's copies of parts, inserted ones first, then in the order the script names them. */
   instances: AssemblyInstance[];
   /** Inserted assemblies, parents before the ones they insert. */
@@ -227,6 +233,18 @@ export class Engine {
     return Object.fromEntries(this.scripts);
   }
 
+  /**
+   * Evaluate `expr` in `script`'s module scope (its exports, top-level bindings and imports). Params
+   * read `part`'s overrides (its active configuration), else only shared overrides and defaults.
+   */
+  evaluate(script: string, expr: string, part?: string): EvaluateResult {
+    const id = part === undefined ? undefined : sourcePart(part);
+    const info = id === undefined ? undefined : this.partInfos().find((p) => p.id === id);
+    if (id !== undefined && !info) throw new Error(`no part "${part}". Parts: ${this.parts().join(", ") || "none"}`);
+    const ctx = new PartContext({ part: id ?? "evaluate", file: info?.file ?? script, cache: this.cache, overrides: (id && this.overrides[id]) || {}, sharedOverrides: this.overrides[SHARED] ?? {}, units: this.units, mapFrame: mapScriptFrame, isUserFile: (f) => /^(studios|lib)\//.test(f) });
+    return evaluateExpression({ scripts: this.scripts, api: API_MODULE, seed: this.seed, script, expr, ctx });
+  }
+
   /** Part ids in stable order (by script path, then export order). */
   parts(): string[] {
     return this.partInfos().map((p) => p.id);
@@ -266,6 +284,8 @@ export class Engine {
         continue;
       }
       const studio = studioName(exports) ?? stem;
+      const about = studioDescription(exports);
+      const studioDesc = about ? { studioDescription: about } : {};
       const list: PartInfo[] = [];
       const seen = new Set<PartDef>();
       // the default export first, then named exports in source order
@@ -273,16 +293,16 @@ export class Engine {
       for (const [key, v] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")]) {
         if (!isPartDef(v) || owner.get(v) !== f || seen.has(v)) continue;
         seen.add(v);
-        list.push({ id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio });
+        list.push({ id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, name: v.name, studio, ...studioDesc });
       }
       for (const [key, v] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")])
         if (isAssemblyDef(v) && !this.assemblyIdOf.has(v)) {
           const id = key === "default" ? stem : `${stem}:${key}`;
           this.assemblyIdOf.set(v, id);
-          this.assemblyDefs.push({ info: { id, file: f, export: key, name: v.name, studio }, def: v });
+          this.assemblyDefs.push({ info: { id, file: f, export: key, name: v.name, studio, ...studioDesc, ...v.meta }, def: v });
         }
       // nothing exported yet: one placeholder part carries the "must export a part" error
-      if (!list.length && !this.assemblyDefs.some((a) => a.info.file === f)) list.push({ id: stem, file: f, export: "default", name: stem, studio });
+      if (!list.length && !this.assemblyDefs.some((a) => a.info.file === f)) list.push({ id: stem, file: f, export: "default", name: stem, studio, ...studioDesc });
       this.lastByFile.set(f, list);
       out.push(...list);
     }
@@ -314,6 +334,13 @@ export class Engine {
         continue;
       }
       this.flatten(a, def, info.id, [def], new Map());
+    }
+    // the workspace shows every assembly a studio exports: one its other assembly inserts shows twice
+    for (const a of out) {
+      const by = out.find((b) => b !== a && b.file === a.file && b.subs.some((s) => s.assembly === a.id));
+      if (!by) continue;
+      const source = { file: a.file, line: exportLine(this.scripts.get(a.file) ?? "", a.export) };
+      a.problems.push({ severity: "warning", kind: "runtime", message: `studio "${a.studio}" shows "${a.name}" twice: exported and inserted by "${by.name}". Export "${a.name}" from its own studio and import it here (${a.file.split("/").pop()}:${source.line})`, part: a.id, source });
     }
     return (this.assemblyCache = out);
   }
@@ -899,6 +926,36 @@ export class Engine {
     }
   }
 
+  /**
+   * Minimum distance and closest points (world, posed) per pair, or null when the pair is `within` or
+   * farther apart (posed bounding boxes grown by `within` don't meet) or can't be measured.
+   */
+  distances(pairs: [string, string][], within: number): ({ distance: number; a: Vec3; b: Vec3 } | null)[] {
+    const info = new Map<string, { box: Box; shape?: Shape } | null>();
+    const get = (p: string) => {
+      if (!info.has(p))
+        try {
+          const rec = this.body(p);
+          let bb = this.boxes.get(rec);
+          if (!bb) this.boxes.set(rec, (bb = scoped(() => boundingBox(rec.shape))));
+          info.set(p, { box: worldBox(bb, this.poses.get(p) ?? IDENTITY) });
+        } catch {
+          info.set(p, null);
+        }
+      return info.get(p)!;
+    };
+    return pairs.map(([a, b]) => {
+      const A = get(a), B = get(b);
+      if (!A || !B || [0, 1, 2].some((k) => A.box.min[k] - within > B.box.max[k] || B.box.min[k] - within > A.box.max[k])) return null;
+      try {
+        const d = kDistance((A.shape ??= this.posedShape(a)), (B.shape ??= this.posedShape(b)));
+        return d.distance < within ? d : null;
+      } catch {
+        return null;
+      }
+    });
+  }
+
   /** Export a part as STEP, STL or 3MF bytes. */
   exportPart(part: string, format: "step" | "stl" | "3mf"): Uint8Array {
     return this.exportParts([part], format);
@@ -1017,6 +1074,19 @@ function isFilletFace(r: OpRecord, i: number): boolean {
 function studioName(exports: Record<string, any>): string | undefined {
   const n = exportEntries(exports).find(([k]) => k === "name")?.[1];
   return typeof n === "string" && n.trim() ? n.trim() : undefined;
+}
+
+/** The line that exports `key` ("default" for the default export), else 1. */
+function exportLine(src: string, key: string): number {
+  const k = key.replace(/[$]/g, "\\$");
+  const re = key === "default" ? /^\s*export\s+default\b|\bas\s+default\b/m : new RegExp(`^\\s*export\\s+(?:const|let|var|function)\\s+${k}\\b|^\\s*export\\s*\\{[^}]*\\b${k}\\b`, "m");
+  const m = re.exec(src);
+  return m ? src.slice(0, m.index + m[0].search(/\S/)).split("\n").length : 1;
+}
+
+function studioDescription(exports: Record<string, any>): string | undefined {
+  const d = exportEntries(exports).find(([k]) => k === "description")?.[1];
+  return typeof d === "string" && d.trim() ? d.trim() : undefined;
 }
 
 const isPartDef = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;

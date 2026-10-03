@@ -93,6 +93,18 @@ test("CSV and Markdown", () => {
   expect(md).toMatch(/3 lines, 5 parts, [\d.]+ g \(1 line without a material density not included\)\./);
 });
 
+test("a subassembly copy BOM counts only that copy's parts with its instance ids", () => {
+  const e = new Engine();
+  e.setDocument({ scripts });
+  const bom = computeBom(e, { assembly: "rack/module@left" });
+  expect(bom.scope).toBe("rack/module@left");
+  expect(bom.name).toBe("Module left");
+  expect(bom.totals.quantity).toBe(5);
+  expect(bom.rows.find((r) => r.name === "M3 screw")?.quantity).toBe(3);
+  expect(bom.rows.flatMap((r) => r.instances ?? []).every((id) => id.startsWith("rack/module@left/"))).toBe(true);
+  expect(bom.subassemblies).toBeUndefined();
+});
+
 test("unknown assemblies and bad part options are explained", () => {
   const e = new Engine();
   e.setDocument({ scripts });

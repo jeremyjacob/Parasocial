@@ -31,9 +31,13 @@ export type EngineRequest =
   | { op: "tangentChain"; part: string; edge: number }
   | { op: "loopOf"; part: string; edge: number; face?: number }
   | { op: "opsAtLine"; part: string; file: string; line: number }
+  /** A JS/TS expression evaluated in a script module's scope (params from `part`'s overrides), as JSON-friendly data. */
+  | { op: "evaluate"; script: string; expr: string; part?: string }
   | { op: "interference"; a: string; b: string }
   /** Volume-only collision batch; one worker round trip for a document's part pairs. */
   | { op: "interferencePairs"; pairs: [string, string][] }
+  /** Minimum distance + closest points per pair (null when `within` or farther; bbox-prefiltered). */
+  | { op: "distancePairs"; pairs: [string, string][]; within: number }
   /** The assemblies the studios export (joints resolved to part ids). */
   | { op: "assemblies" }
   /** Dragged assembly positions (part -> transform from its modeled pose); measure, interference and export use them. */
@@ -94,6 +98,7 @@ export const sourcePart = (id: string) => {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 const isStr = (x: unknown): x is string => typeof x === "string";
+const optStr = (x: unknown): boolean => x === undefined || typeof x === "string";
 
 export function validateEngineMessage(m: unknown): EngineMessage | null {
   if (!isObj(m) || !isStr(m.type)) return null;
@@ -110,7 +115,7 @@ export function validateEngineMessage(m: unknown): EngineMessage | null {
 /** A part list (setDocument / setScript / parts / snapshotParts). */
 export function validatePartInfos(v: unknown): PartInfo[] | null {
   if (!Array.isArray(v)) return null;
-  for (const p of v) if (!isObj(p) || !isStr(p.id) || !isStr(p.file) || !isStr(p.export) || !isStr(p.name) || !isStr(p.studio)) return null;
+  for (const p of v) if (!isObj(p) || !isStr(p.id) || !isStr(p.file) || !isStr(p.export) || !isStr(p.name) || !isStr(p.studio) || !optStr(p.studioDescription)) return null;
   return v as PartInfo[];
 }
 
@@ -124,9 +129,9 @@ const isConnectorAt = (x: unknown) => isObj(x) && isStr(x.connector) && (x.index
 export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
   if (!Array.isArray(v)) return null;
   for (const a of v) {
-    if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
+    if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !optStr(a.studioDescription) || !optStr(a.description) || !optStr(a.partNumber) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
     if (!Array.isArray(a.instances) || !a.instances.every((i: unknown) => isObj(i) && isStr(i.id) && isStr(i.part) && isStr(i.scope) && (i.name === undefined || isStr(i.name)) && (i.place === undefined || isPose(i.place)))) return null;
-    if (!Array.isArray(a.subs) || !a.subs.every((s: unknown) => isObj(s) && isStr(s.id) && isStr(s.parent) && isStr(s.assembly) && (s.place === undefined || isPose(s.place)))) return null;
+    if (!Array.isArray(a.subs) || !a.subs.every((s: unknown) => isObj(s) && isStr(s.id) && isStr(s.parent) && isStr(s.assembly) && (s.name === undefined || isStr(s.name)) && (s.place === undefined || isPose(s.place)))) return null;
     for (const p of a.problems) if (!isObj(p) || !isStr(p.message)) return null;
     for (const j of a.joints) {
       if (!isObj(j) || !isStr(j.name) || !JOINT_TYPES.includes(j.type as string) || !isStr(j.a) || !isStr(j.b) || !isStr(j.scope) || typeof j.overlap !== "boolean" || typeof j.named !== "boolean") return null;

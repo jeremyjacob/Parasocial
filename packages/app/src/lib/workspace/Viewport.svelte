@@ -173,7 +173,11 @@
 	});
 	$effect(() => {
 		ws.selection;
+		measurementGeometry;
+		loadingGeometry;
+		poses;
 		measureSelection();
+		return () => { measurementRequest++; };
 	});
 
 	function pickAt(e: PointerEvent | MouseEvent): EntityRef | null {
@@ -421,6 +425,12 @@
 	// ---- measurement card: fixed bottom right, every value named (§8 Selection label) ----
 	/** Readouts for a two-entity selection (async: the kernel measures the minimum distance). */
 	let pair = $state.raw<Readout[]>([]);
+	let measuring = $state(false);
+	let measurementError = $state<string | null>(null);
+	let measurementRequest = 0;
+	// Cached geometry can be selected before its live shape is ready; retry when it settles.
+	const measurementGeometry = $derived(ws.selection.map((s) => `${ws.results[s.part]?.key}:${ws.results[s.part]?.fromCache}:${ws.regen[sourcePart(s.part)]}`).join(','));
+	const loadingGeometry = $derived(!ws.kernelReady || ws.selection.some((s) => ws.results[s.part]?.fromCache || ws.regen[sourcePart(s.part)] === 'running'));
 	const readouts = $derived(ws.selection.length === 2 ? pair : singleReadouts(ws.selection, ws.results));
 	/** Which readout's dimension line is drawn: the pinned one, or the row under the pointer. */
 	let pinned = $state<string | null>(null);
@@ -432,13 +442,16 @@
 	});
 
 	async function measureSelection() {
+		const request = ++measurementRequest;
 		pair = [];
 		peek = null;
+		measurementError = null;
 		const sel = ws.selection;
-		if (sel.length !== 2 || !ws.engine || !ws.kernelReady) return;
+		measuring = sel.length === 2;
+		if (sel.length !== 2 || !ws.engine || loadingGeometry) return;
 		try {
-			const m = await ws.engine.measure(sel[0] as any, sel[1] as any);
-			if (ws.selection !== sel) return;
+			const m = await ws.engine.measure(sel[0], sel[1]);
+			if (request !== measurementRequest) return;
 			pair = pairReadouts(sel, m, ws.results, (part, v, dir) => {
 				const t = viewer?.partTransform(part);
 				if (!t) return v;
@@ -447,7 +460,11 @@
 			});
 			// when "distance" is ambiguous (two holes), lead with center to center
 			pinned = pair.some((r) => r.key === 'center') ? 'center' : 'min';
-		} catch {}
+		} catch (e) {
+			if (request === measurementRequest) measurementError = e instanceof Error ? e.message : String(e);
+		} finally {
+			if (request === measurementRequest) measuring = false;
+		}
 	}
 	function noteMeasurement() {
 		if (ws.selection.length !== 2 || !shown?.a || !shown.b) return;
@@ -605,11 +622,15 @@
 				line: p.source?.line
 			};
 		}
-		const ap = ws.asm.problems[0];
+		const asmErrors = ws.asm.problems.filter((p) => p.severity !== 'warning');
+		const ap = asmErrors[0];
 		if (ap) {
 			const name = ws.asm.assemblies.find((a) => a.id === ap.assembly)?.name ?? ap.assembly;
-			return { tone: 'error' as const, title: `${name}: joints need a fix`, detail: ws.asm.problems.length > 1 ? `${ws.asm.problems.length} problems` : '', message: ap.message, source: ap.source ? `${ap.source.file.split('/').pop()}:${ap.source.line}` : undefined, file: ap.source?.file, line: ap.source?.line };
+			return { tone: 'error' as const, title: `${name}: joints need a fix`, detail: asmErrors.length > 1 ? `${asmErrors.length} problems` : '', message: ap.message, source: ap.source ? `${ap.source.file.split('/').pop()}:${ap.source.line}` : undefined, file: ap.source?.file, line: ap.source?.line };
 		}
+		const asmWarnings = ws.asm.problems.filter((p) => p.severity === 'warning');
+		const aw = asmWarnings[0];
+		if (aw) return { tone: 'warning' as const, title: `${ws.asm.assemblies.find((a) => a.id === aw.assembly)?.studio ?? aw.assembly}: ${asmWarnings.length} warning${asmWarnings.length > 1 ? 's' : ''}`, detail: '', message: aw.message, source: aw.source ? `${aw.source.file.split('/').pop()}:${aw.source.line}` : undefined, file: aw.source?.file, line: aw.source?.line };
 		if (warnings.length) {
 			const r = warnings[0];
 			const p = r.problems[0];
@@ -752,8 +773,17 @@
 		</div>
 	{/if}
 
-	{#if readouts.length}
+	{#if readouts.length || ws.selection.length === 2}
 		<div class="absolute right-3 bottom-3 z-20 flex min-w-52 flex-col rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] shadow-toolbar" data-testid="measure-card" in:rise={{ y: 4, scale: 0.98, origin: '100% 100%' }} out:fadeOut>
+			{#if measurementError || (ws.selection.length === 2 && ws.engineError)}
+				<div class="flex max-w-72 flex-col gap-1 px-2 py-1" role="alert">
+					<p class="text-ui text-error">Couldn't measure this selection</p>
+					<p class="text-label text-fg-secondary">{measurementError ?? ws.engineError}</p>
+					<Button size="sm" variant="ghost" onclick={measureSelection}>Retry</Button>
+				</div>
+			{:else if measuring}
+				<p class="px-2 py-1 text-label text-fg-secondary" role="status">{loadingGeometry ? 'Loading geometry…' : 'Measuring…'}</p>
+			{/if}
 			{#each readouts as r (r.key)}
 				{@const on = shown?.key === r.key}
 				{#if r.a}

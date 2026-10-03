@@ -30,6 +30,7 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   await page.screenshot({ path: "test-results/parts-tree.png" });
 
   // the studio in the viewport is bold; selecting a part tints its row; there's no isolate toggle
+  await wsEval(page, "ws.additiveSelection = true");
   const row = (name: string) => studio.locator("div.group\\/row", { hasText: name }).first();
   await expect(row("Stack").locator(".row-main")).toHaveClass(/font-medium/);
   await expect(studio).toHaveAttribute("aria-current", "true");
@@ -43,7 +44,7 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   await row("Lid").click();
   expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket:lid"]);
   await row("Base").click({ modifiers: ["Shift"] });
-  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket:lid", "bracket"]);
+  expect(await wsEval(page, "ws.selection.map(r => r.part)")).toEqual(["bracket", "bracket:lid"]);
   await expect(studio.getByRole("button", { name: /Isolate/ })).toHaveCount(0);
   await expect(studio.getByRole("button", { name: "Hide Stack" })).toHaveCount(0);
   // clicking the studio row selects the studio itself (its properties), not its parts
@@ -97,7 +98,7 @@ test("visibility toggles share undo and redo, with one entry per selection actio
 
   // H toggles a mixed selection in one step; Alt+H shows all in one step.
   await row("Base").click();
-  await row("Clip").click({ modifiers: ["Shift"] });
+  await row("Clip").click({ modifiers: ["ControlOrMeta"] });
   await page.keyboard.press("h");
   expect(await wsEval(page, "ws.hidden")).toEqual(["bracket"]);
   await page.keyboard.press("ControlOrMeta+z");

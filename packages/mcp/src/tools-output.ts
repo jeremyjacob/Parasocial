@@ -27,7 +27,7 @@ const planeName = z.enum(["front", "back", "top", "bottom", "right", "left"]);
 export function registerOutputTools(h: OutputToolHelpers) {
   h.tool(
     "bom",
-    'Bill of materials: every part of the document once, or with `assembly` (an id like "mechanism") its copies counted per part, subassemblies included. Rows: part number, description, vendor, material, volume, mass, bounding-box size; parts sharing a part number (or standard parts with the same name and vendor) are one row. Declare these with part(name, body, { material, partNumber, description, vendor, standard }). format: json (default), csv or markdown.',
+    'Bill of materials: every part once, or with `assembly` (assembly or subassembly copy id) its copies counted, including nested copies. Rows: part number, description, vendor, material, volume, mass, bounding-box size; parts sharing a part number (or standard parts with the same name and vendor) are one row. Declare these with part(name, body, { material, partNumber, description, vendor, standard }). format: json (default), csv or markdown.',
     { document: h.document, assembly: z.string().optional(), format: z.enum(["json", "csv", "markdown"]).optional() },
     async ({ document, assembly, format }) => {
       const d = await h.load(document);

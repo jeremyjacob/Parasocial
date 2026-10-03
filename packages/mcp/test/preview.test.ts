@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadKernel } from "@parasocial/kernel";
 import { Engine } from "@parasocial/runtime";
-import { mergeOverrides, solveAssemblies, jointValues, expandTargets, posedBox, emptyPreview, findAssembly } from "../src/preview";
+import { mergeOverrides, solveAssemblies, jointValues, scopedJointValues, poseTarget, expandTargets, posedBox, emptyPreview, findAssembly } from "../src/preview";
 import { posed, type RenderPart } from "@parasocial/engine-pool/render";
 
 const root = join(import.meta.dir, "../../../examples/hinge");
@@ -156,4 +156,12 @@ test("a placed root carries its assembly for MCP too; scoped joint names are hin
   // render targets: the assembly, and an instance inside its subassembly
   expect(expandTargets(["winch"], e.parts(), infos).ids).toHaveLength(4);
   expect(expandTargets(["winch/winch_assembly:drive@upright/parts:shaft"], e.parts(), infos)).toEqual({ ids: ["winch/winch_assembly:drive@upright/parts:shaft"], unknown: [] });
+  const sub = "winch/winch_assembly:drive@upright";
+  const members = [`${sub}/parts:gearbox`, `${sub}/parts:shaft`];
+  expect(expandTargets([sub, members[1]], e.parts(), infos)).toEqual({ ids: members, unknown: [] });
+  expect(expandTargets([`${sub}2`], e.parts(), infos).unknown).toEqual([`${sub}2`]);
+  expect(assemblies.find((x) => x.id === "winch")?.subassemblies).toEqual([{ id: sub, parent: "winch", assembly: "winch_assembly:drive", name: "Drive upright", instances: members }]);
+  const target = poseTarget(infos, sub)!;
+  expect(scopedJointValues(target, { "Drum rotation": 45 })).toEqual({ "winch_assembly:drive@upright/Drum rotation": [45] });
+  expect(() => scopedJointValues(target, { "parts:frame+parts:motor": 45 })).toThrow(/No movable joint/);
 });

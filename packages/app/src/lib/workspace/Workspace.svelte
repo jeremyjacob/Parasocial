@@ -470,7 +470,7 @@
 		</div>
 	</div>
 {:else}
-	<div class={cn('grid h-dvh bg-app text-fg', uiHidden ? 'grid-rows-[minmax(0,1fr)]' : 'grid-rows-[auto_minmax(0,1fr)]')} data-testid="workspace">
+	<div class={cn('grid h-dvh min-w-0 overflow-hidden bg-app text-fg', uiHidden ? 'grid-rows-[minmax(0,1fr)]' : 'grid-rows-[auto_minmax(0,1fr)]')} data-testid="workspace">
 		{#if !uiHidden}
 		<TopBar document={ws.doc?.name ?? ''} bind:mode={ws.mode} agents={agentPeople} user={{ name: user?.name ?? '', kind: 'human' }} documentMenu={docMenu} onCommand={() => (paletteOpen = true)}>
 			{#snippet presence()}
@@ -509,11 +509,11 @@
 		{/if}
 
 		<div
-			class={cn('grid min-h-0', uiHidden ? 'grid-cols-1' : 'grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,256px)] 2xl:grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,288px)]')}
+			class={cn('grid min-h-0 min-w-0', uiHidden ? 'grid-cols-1' : 'grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,256px)] 2xl:grid-cols-[var(--left-w,240px)_minmax(0,1fr)_var(--right-w,288px)]')}
 			style:--left-w={leftWidth ? `${leftWidth}px` : undefined}
 			style:--right-w={rightWidth ? `${rightWidth}px` : undefined}
 		>
-			<aside class={cn('relative flex min-h-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
+			<aside class={cn('relative flex min-h-0 min-w-0 flex-col border-r border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Document">
 				<Tabs items={leftTabs} bind:value={ws.leftTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'parts'}<PartsPanel {ws} onAddStudio={addStudio} onExport={openExport} onAddStudioNote={(file) => nc.startFromStudio(file)} onAddNote={(parts) => noteTool(parts.map((part) => ({ part, kind: 'part' as any, index: 0 })))} />
@@ -544,7 +544,7 @@
 				</div>
 			</main>
 
-			<aside class={cn('relative flex min-h-0 flex-col border-l border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Inspector">
+			<aside class={cn('relative flex min-h-0 min-w-0 flex-col border-l border-line-subtle bg-panel', uiHidden && 'hidden')} aria-label="Inspector">
 				<Tabs items={rightTabs} bind:value={ws.rightTab} class="flex min-h-0 flex-1 flex-col" listClass="border-b border-line">
 					{#snippet content(tab)}
 						{#if tab === 'properties'}<PropertiesPanel {ws} />

@@ -74,6 +74,24 @@ export const b = part("B", () => box(10, 10, 10));` } });
   expect(e.interference("a", "a:b")).toBeCloseTo(1000, 4);
 });
 
+test("distances: posed min distance with closest points, bbox prefilter, touching is 0", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: { "studios/a.ts": `import { part, box } from "parasocial";
+export default part("A", () => box(10, 10, 10));
+export const b = part("B", () => box(10, 10, 10));
+export const c = part("C", () => box(10, 10, 10));` } });
+  for (const p of ["a", "a:b", "a:c"]) e.regenerate(p);
+  const r = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  e.setPoses({ "a:b": { r, t: [13, 0, 0] }, "a:c": { r, t: [0, 10, 0] } });
+  const [ab, ac, bc] = e.distances([["a", "a:b"], ["a", "a:c"], ["a:b", "a:c"]], 5);
+  expect(ab!.distance).toBeCloseTo(3, 6);
+  expect(ab!.a[0]).toBeCloseTo(10, 6);
+  expect(ab!.b[0]).toBeCloseTo(13, 6);
+  expect(ac!.distance).toBeCloseTo(0, 6);
+  expect(bc!.distance).toBeCloseTo(3, 6);
+  expect(e.distances([["a", "a:b"], ["a", "nope"]], 2)).toEqual([null, null]);
+});
+
 function docFrom(dir: string) {
   const root = join(import.meta.dir, "../../../examples", dir);
   const scripts: Record<string, string> = {};

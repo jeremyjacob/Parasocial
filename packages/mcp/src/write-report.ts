@@ -1,5 +1,5 @@
 // Pieces of a write's result: which scripts a change reaches (so only their parts regenerate),
-// imports of files that don't exist, and a short line diff for stale-version errors.
+// imports of files that don't exist, names that pack in details, and a short line diff for stale-version errors.
 import { importsOf } from "./awareness";
 
 /** An import target as the loader finds it (`x.ts`, else `x/index.ts`); the `.ts` path when neither exists. */
@@ -68,4 +68,33 @@ export function lineDiff(a: string, b: string, max = 40): string {
     }
   }
   return out.length > max ? [...out.slice(0, max), `… ${out.length - max} more diff lines (read_script)`].join("\n") : out.join("\n");
+}
+
+/** Past this, a name is a sentence: the Parts tree truncates it and it's hard to scan. */
+const NAME_MAX = 32;
+/** Separators that tack details onto a name: dashes, parentheses, colons. */
+const PACKED = /[—–]|\s-\s|[(:]/;
+
+/**
+ * Hints for studio, part and assembly names in `files` that pack in details (a dash and a part
+ * number, a material, a status) or run long; those belong in description, partNumber or material.
+ */
+export function nameHints(
+  parts: readonly { file: string; name: string; studio: string }[],
+  assemblies: readonly { file: string; name: string; studio: string }[],
+  files: ReadonlySet<string>,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const check = (name: string, what: string, file: string) => {
+    const key = `${what}\u0000${file}\u0000${name}`;
+    if (typeof name !== "string" || seen.has(key) || !(name.length > NAME_MAX || PACKED.test(name))) return;
+    seen.add(key);
+    const where = what === "studio" ? "export const description" : `${what}(name, body, { description, partNumber${what === "part" ? ", material" : ""} })`;
+    out.push(`${file}: ${what} name "${name}" packs in details; keep names to 1–4 words and move the rest to ${where}`);
+  };
+  for (const x of [...parts, ...assemblies]) if (files.has(x.file)) check(x.studio, "studio", x.file);
+  for (const p of parts) if (files.has(p.file)) check(p.name, "part", p.file);
+  for (const a of assemblies) if (files.has(a.file)) check(a.name, "assembly", a.file);
+  return out;
 }

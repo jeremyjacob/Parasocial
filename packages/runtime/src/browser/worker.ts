@@ -21,7 +21,7 @@ let ready: Promise<EngineInfo> | null = null;
  */
 let poisoned = false;
 /** Requests that run user script code: the host's watchdog covers them from "started". */
-const RUNS_SCRIPTS = new Set(["setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies"]);
+const RUNS_SCRIPTS = new Set(["setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "evaluate"]);
 
 async function boot(cfg: WorkerInit): Promise<EngineInfo> {
   const t0 = performance.now();
@@ -110,12 +110,16 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       return { value: engine.loopOf(req.part, req.edge, req.face) };
     case "opsAtLine":
       return { value: engine.opsAtLine(req.part, req.file, req.line) };
+    case "evaluate":
+      return { value: engine.evaluate(req.script, req.expr, req.part) };
     case "describeAll":
       return { value: engine.describeAll(req.part) };
     case "interference":
       return { value: engine.interference(req.a, req.b) };
     case "interferencePairs":
       return { value: req.pairs.map(([a, b]) => engine.interference(a, b)) };
+    case "distancePairs":
+      return { value: engine.distances(req.pairs, req.within) };
     case "export": {
       const bytes = engine.exportParts(req.parts ?? (req.part ? [req.part] : []), req.format);
       // base64 so it survives JSON (pool) and structured clone alike

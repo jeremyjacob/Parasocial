@@ -15,6 +15,8 @@
 
 	type Props = {
 		name: string;
+		/** One line saying more (a studio's `description` export), shown with the name on hover. */
+		description?: string;
 		color?: string;
 		status?: Status;
 		/** Status text shown after the dot, for errors ("didn't regenerate"). */
@@ -45,6 +47,7 @@
 	};
 	let {
 		name,
+		description,
 		color,
 		status = 'ok',
 		statusLabel,
@@ -131,6 +134,7 @@
 	<button
 		type="button"
 		class={cn('row-main min-w-0 flex-1 truncate text-left outline-none', !visible ? 'text-fg-tertiary/60' : dimmed ? 'text-fg-secondary' : 'text-fg', (selected || strong) && 'font-medium')}
+		title={description ? `${name}\n${description}` : undefined}
 		aria-current={selected ? 'true' : undefined}>{name}</button
 	>
 	<!--

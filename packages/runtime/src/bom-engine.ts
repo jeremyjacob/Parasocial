@@ -2,13 +2,15 @@
 import { exactBox } from "@parasocial/kernel";
 import type { Engine } from "./engine";
 import { sourcePart } from "./protocol";
+import { findAssemblyScope } from "./assembly-scope";
 import { buildBom, type Bom, type BomOptions, type BomPartInput } from "./bom";
 
 /** Regenerate what the BOM needs and build it. */
 export function computeBom(engine: Engine, opts: BomOptions = {}): Bom {
   const infos = engine.partInfos();
   const assemblies = engine.assemblies();
-  const asm = opts.assembly !== undefined ? assemblies.find((a) => a.id === opts.assembly) : undefined;
+  const asm = opts.assembly !== undefined ? findAssemblyScope(assemblies, opts.assembly) : undefined;
+  if (opts.assembly !== undefined && !asm) throw new Error(`no assembly "${opts.assembly}"; assemblies: ${assemblies.map((a) => a.id).join(", ") || "none"}`);
   const ids = asm ? [...new Set(asm.instances.map((i) => sourcePart(i.id)))] : infos.map((p) => p.id);
   const parts: BomPartInput[] = ids.map((id) => {
     const r = engine.regenerate(id, "fine");
@@ -22,4 +24,3 @@ export function computeBom(engine: Engine, opts: BomOptions = {}): Bom {
   });
   return buildBom(parts, infos, assemblies, opts);
 }
-

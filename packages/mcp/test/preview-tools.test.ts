@@ -60,7 +60,7 @@ test("previews are per session; shared scope writes the document", async () => {
     // ---- params: session preview by default
     const set = await A.call("set_param", { part: "box", name: "height", value: 60 });
     expect(set.scope).toBe("session");
-    expect(set.regeneration[0].bbox.max[2]).toBe(60);
+    expect(set.bboxChanged.box.bbox.max[2]).toBe(60);
     expect(await top(A, "box")).toBe(60);
     expect(await top(B, "box")).toBe(40);
     expect(await versions()).toBe(v0);
@@ -108,6 +108,25 @@ test("previews are per session; shared scope writes the document", async () => {
     await A.call("render").catch(() => {});
     expect(pool.renders.at(-1).parts).toEqual(["box", "box:lid", "box:drawer"]);
     await expect(A.call("render", { parts: ["mechanism/box:nope"] })).rejects.toThrow(/Unknown part, instance or assembly: mechanism\/box:nope/);
+    // hide: instance or part ids drop out of the set; the rest keep their poses
+    await A.call("render", { parts: ["mechanism"], hide: ["mechanism/box:drawer"] }).catch(() => {});
+    r = pool.renders.at(-1);
+    expect(r.parts).toEqual(["mechanism/box", "mechanism/box:lid"]);
+    expect(Object.keys(r.poses)).toEqual(["mechanism/box:lid"]);
+    await A.call("render", { parts: ["mechanism"], hide: ["box:lid"] }).catch(() => {});
+    expect(pool.renders.at(-1).parts).toEqual(["mechanism/box", "mechanism/box:drawer"]);
+    await A.call("render", { hide: ["box"] }).catch(() => {});
+    expect(pool.renders.at(-1).parts).toEqual(["box:lid", "box:drawer"]);
+    await expect(A.call("render", { parts: ["mechanism"], hide: ["nope"] })).rejects.toThrow(/Unknown part, instance or assembly to hide: nope/);
+    await expect(A.call("render", { parts: ["mechanism"], hide: ["mechanism"] })).rejects.toThrow(/nothing to render/);
+    // section: defaults to the section view unless a view or camera is given; view "section" needs one
+    await A.call("render", { parts: ["box"], section: { origin: [0, 0, 5], normal: [0, 0, 1] } }).catch(() => {});
+    expect(pool.renders.at(-1)).toMatchObject({ view: "section", section: { origin: [0, 0, 5], normal: [0, 0, 1] } });
+    await A.call("render", { parts: ["box"], view: "front", section: { origin: [0, 0, 5], normal: [0, 0, 1] } }).catch(() => {});
+    expect(pool.renders.at(-1).view).toBe("front");
+    await A.call("render", { parts: ["box"], camera: { position: [100, 100, 100], target: [0, 0, 0] }, section: { origin: [0, 0, 5], normal: [0, 0, 1] } }).catch(() => {});
+    expect(pool.renders.at(-1).view).toBe("iso");
+    await expect(A.call("render", { parts: ["box"], view: "section" })).rejects.toThrow(/needs section/);
 
     // ---- check: per-assembly interference at the session pose
     const checked = await A.call("check");
@@ -132,6 +151,49 @@ test("previews are per session; shared scope writes the document", async () => {
     expect(saved.scope).toBe("shared");
     expect(await configurations()).toBe(1);
     expect(await versions()).toBe(v0 + 1);
+
+    // ---- subassembly ids select one inserted copy, with relative joint names
+    await run(db, mutators.script.write({ documentID: doc, path: 'studios/rack.ts', baseVersion: null, content: `
+import { assembly } from "parasocial";
+import mechanism from "./mechanism";
+export default assembly("Rack", ({ insert, fix }) => {
+  const left = insert(mechanism, { name: "left" });
+  const right = insert(mechanism, { name: "left2", place: { translate: [100, 0, 0] } });
+  fix(left, right);
+});` }), { userID });
+    const left = 'rack/mechanism@left';
+    const right = 'rack/mechanism@left2';
+    const leftMembers = ['box', 'box:lid', 'box:drawer'].map((p) => `${left}/${p}`);
+    const leftPose = await A.call('set_pose', { assembly: left, joints: { lid: 90 } });
+    expect(leftPose.id).toBe(left);
+    expect(leftPose.assembly).toBe('rack');
+    expect(leftPose.joints.map((j: any) => j.name)).toEqual(['mechanism@left/lid', 'mechanism@left/drawer']);
+    await A.call('set_pose', { assembly: right, joints: { lid: 30 } });
+    await A.call('render', { parts: [left] }).catch(() => {});
+    expect(pool.renders.at(-1).parts).toEqual(leftMembers);
+    expect(pool.renders.at(-1).poses[`${left}/box:lid`]).toBeTruthy();
+    const leftDescription = await A.call('describe_model', { part: left, entities: false });
+    expect(leftDescription.parts.map((p: any) => p.part)).toEqual(leftMembers);
+    expect(leftDescription.parts.find((p: any) => p.part.endsWith('/box:lid')).posed).toBe(true);
+    expect((await A.call('describe_model', { entities: false })).assemblies.find((a: any) => a.id === 'rack').subassemblies.map((s: any) => s.id)).toEqual([left, right]);
+    expect((await A.call('bom', { assembly: left })).rows.every((r: any) => r.instances.every((id: string) => id.startsWith(`${left}/`)))).toBe(true);
+    expect((await A.call('check', { part: left })).valid).toEqual(leftMembers);
+    expect((await A.call('export', { part: left, format: 'stl' })).bytes).toBeGreaterThan(0);
+
+    // Reset and commit only this copy; its sibling's preview stays private.
+    await A.call('set_pose', { assembly: left, reset: true });
+    expect(A.session.preview?.get(doc)?.poses.rack).toEqual({ 'mechanism@left2/lid': [30] });
+    await A.call('set_pose', { assembly: left, joints: { lid: 80 }, scope: 'shared' });
+    expect((await savedPoses()).rack['mechanism@left/lid'][0]).toBeCloseTo(80, 3);
+    expect((await savedPoses()).rack['mechanism@left2/lid'][0]).toBe(0);
+    expect(A.session.preview?.get(doc)?.poses.rack).toEqual({ 'mechanism@left2/lid': [30] });
+    await B.call('set_pose', { assembly: right, joints: { lid: 20 }, scope: 'shared' });
+    expect((await savedPoses()).rack['mechanism@left/lid'][0]).toBeCloseTo(80, 3);
+    await A.call('set_pose', { assembly: left, reset: true, scope: 'shared' });
+    expect((await savedPoses()).rack['mechanism@left/lid']).toBeUndefined();
+    expect((await savedPoses()).rack['mechanism@left2/lid'][0]).toBeCloseTo(20, 3);
+    expect(A.session.preview?.get(doc)?.poses.rack).toEqual({ 'mechanism@left2/lid': [30] });
+    await expect(A.call('set_pose', { assembly: left, joints: { 'mechanism@left2/lid': 20 } })).rejects.toThrow(/No movable joint/);
   } finally {
     for (const o of opened) (await o.client.close(), await o.server.close());
     await db.drop();

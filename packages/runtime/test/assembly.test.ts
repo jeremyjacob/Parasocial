@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 import { loadKernel } from "@parasocial/kernel";
-import { Engine } from "../src";
+import { Engine, computeBom, bomToMarkdown } from "../src";
 import { resolveAssembly } from "../src/mechanism";
 
 beforeAll(async () => {
@@ -447,4 +447,83 @@ export default assembly("Box", ({ revolute, slider, gear, screw, rackPinion }) =
   expect(problem(`const h = revolute(base, lid, base.at("hinge")); rackPinion(h, h, 5);`)).toEqual(["rackPinion: the rack: the revolute joint doesn't slide; use a slider or cylindrical joint"]);
   expect(problem(`const h = revolute(base, lid, base.at("hinge")); screw(h, 2);`)).toEqual(["screw(joint, lead): the revolute joint isn't cylindrical; for a separate nut or carriage, screw(leadScrew, carriage, lead)"]);
   expect(problem(`const h = revolute(base, lid, base.at("hinge")); gear(h, h, 0);`)).toEqual(["gear(a, b, ratio): ratio must be a non-zero number"]);
+});
+
+test("studio and assembly descriptions reach the part and assembly lists and the BOM", () => {
+  const e = new Engine();
+  const box = BOX.replace(`export const name = "Box";`, `export const name = "Box";\nexport const description = "Hinged box with a flat lid";`);
+  const mech = ASM.replace(`export default assembly("Box", ({ revolute }) => {
+  revolute(base, lid, base.at("hinge"), { min: -120, max: 0, name: "hinge" });
+});`, `export default assembly("Box", ({ revolute }) => {
+  revolute(base, lid, base.at("hinge"), { min: -120, max: 0, name: "hinge" });
+}, { description: "Lid swings open 120°", partNumber: "BX-1" });`);
+  e.setDocument({ scripts: { "studios/box.ts": box, "studios/mech.ts": mech } });
+  expect(e.partInfos().map((p) => p.studioDescription)).toEqual(["Hinged box with a flat lid", "Hinged box with a flat lid"]);
+  const [a] = e.assemblies();
+  expect([a.description, a.partNumber, a.studioDescription]).toEqual(["Lid swings open 120°", "BX-1", undefined]);
+  const bom = computeBom(e, { assembly: "mech" });
+  expect([bom.partNumber, bom.description]).toEqual(["BX-1", "Lid swings open 120°"]);
+  expect(bomToMarkdown(bom)).toStartWith("# Bill of materials: Box (BX-1)\n\nLid swings open 120°\n");
+});
+
+test("assembly options are checked", () => {
+  const e = new Engine();
+  e.setDocument({ scripts: { "studios/box.ts": BOX, "studios/mech.ts": ASM.replace(`name: "hinge" });\n});`, `name: "hinge" });\n}, { material: "steel" } as any);`) } });
+  expect(e.assemblies()).toEqual([]);
+  expect(e.regenerate("mech").problems[0].message).toContain('unknown option "material"; use partNumber, description');
+});
+
+test("an assembly a studio both exports and inserts shows twice: a warning on the export", () => {
+  const CORNER = `assembly("Corner", ({ fix, revolute }) => {
+  fix(bolt);
+  revolute(bolt.at("head"), wheel.at("hub"), { name: "spin" });
+})`;
+  const e = new Engine();
+  e.setDocument({
+    scripts: {
+      "studios/cart.ts": CART,
+      "studios/rig.ts": `import { assembly } from "parasocial";
+import { chassis, wheel, bolt } from "./cart";
+export const name = "Rig";
+
+export const corner = ${CORNER};
+export const axle = assembly("Axle", ({ insert }) => {
+  insert(corner, { name: "left" });
+});
+export default assembly("Cart", ({ insert, fix }) => {
+  fix(chassis);
+  insert(axle);
+});
+`,
+    },
+  });
+  const all = e.assemblies();
+  const byId = (id: string) => all.find((a) => a.id === id)!;
+  // nested inserts count: the corner is in the cart through the axle (the default export is checked first)
+  expect(byId("rig:corner").problems).toEqual([
+    { severity: "warning", kind: "runtime", message: 'studio "Rig" shows "Corner" twice: exported and inserted by "Cart". Export "Corner" from its own studio and import it here (rig.ts:5)', part: "rig:corner", source: { file: "studios/rig.ts", line: 5 } },
+  ]);
+  expect(byId("rig:axle").problems.map((p) => p.message)).toEqual(['studio "Rig" shows "Axle" twice: exported and inserted by "Cart". Export "Axle" from its own studio and import it here (rig.ts:9)']);
+  expect(byId("rig").problems).toEqual([]);
+
+  // two assemblies in a studio that don't insert each other, or an insert from another studio: nothing shows twice
+  e.setDocument({
+    scripts: {
+      "studios/cart.ts": CART,
+      "studios/corner.ts": `import { assembly } from "parasocial";
+import { wheel, bolt } from "./cart";
+export default ${CORNER};
+`,
+      "studios/rig.ts": `import { assembly } from "parasocial";
+import { chassis, wheel, bolt } from "./cart";
+import corner from "./corner";
+export const spare = ${CORNER.replace('"Corner"', '"Spare"')};
+export default assembly("Cart", ({ insert, fix }) => {
+  fix(chassis);
+  insert(corner);
+});
+`,
+    },
+  });
+  expect(e.assemblies().flatMap((a) => a.problems)).toEqual([]);
 });

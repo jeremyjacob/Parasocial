@@ -13,7 +13,8 @@ import type { WorkspaceState } from './state.svelte';
 
 type Built = { info: AssemblyInfo; mech: Mechanism; key: string; movable?: Map<string, boolean>; driverList?: string[] };
 export type Overlap = { a: string; b: string; volume: number };
-export type AssemblyProblem = { assembly: string; message: string; source?: { file: string; line: number } };
+/** An error unless `severity` says warning (a studio showing an assembly twice). */
+export type AssemblyProblem = { assembly: string; message: string; severity?: 'warning'; source?: { file: string; line: number } };
 
 const PREF = 'parasocial:interference';
 const PREF_ON_TOP = 'parasocial:interference-on-top';
@@ -75,7 +76,7 @@ export class AssemblyController {
 		const problems: AssemblyProblem[] = [];
 		const next = new Map<string, Built>();
 		for (const info of this.assemblies) {
-			for (const p of info.problems) problems.push({ assembly: info.id, message: p.message, source: p.source });
+			for (const p of info.problems) problems.push({ assembly: info.id, message: p.message, ...(p.severity === 'warning' && { severity: 'warning' as const }), source: p.source });
 			// connectors from each part's regeneration (null: not regenerated yet, build once it has)
 			const resolved = resolveAssembly(
 				info,

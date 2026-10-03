@@ -12,10 +12,10 @@ import { NoteCursor, type NoteEvents } from "./note-events";
 import { documentContext } from "./document-context";
 import { trace } from "./trace";
 import { recordTouch, othersOn, changedUnderYou } from "./awareness";
-import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, jointValues, expandTargets, posedBox, posedPoint, posedDir, type Preview } from "./preview";
-import { sourcePart, type AssemblyInfo, type PartPose } from "@parasocial/runtime/protocol";
+import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, poseTarget, scopedJointValues, expandTargets, posedBox, posedPoint, posedDir, type Preview } from "./preview";
+import { sourcePart, type AssemblyInfo, type PartInfo, type PartPose } from "@parasocial/runtime/protocol";
 import { registerOutputTools } from "./tools-output";
-import { affectedScripts, lineDiff } from "./write-report";
+import { affectedScripts, lineDiff, nameHints } from "./write-report";
 
 export type Session = {
   id: string;
@@ -172,7 +172,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   async function assemblyState(d: DocState, targets?: string[]) {
     const [infos] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
     const wanted = targets && new Set(targets.map((id) => findAssembly(infos, id)?.id ?? id));
-    const needed = wanted ? infos.filter((a) => wanted.has(a.id) || a.instances.some((i) => wanted.has(i.id))) : infos;
+    const needed = wanted ? infos.filter((a) => wanted.has(a.id) || a.subs.some((sub) => wanted.has(sub.id)) || a.instances.some((i) => wanted.has(i.id))) : infos;
     if (!needed.length) return { infos, poses: {} as Record<string, PartPose>, assemblies: [] as ReturnType<typeof solveAssemblies>["assemblies"] };
     const sources = [...new Set(needed.flatMap((a) => a.instances.map((i) => i.part)))];
     // not engine(): a part that fails to regenerate leaves its assembly unposed instead of failing the call
@@ -180,7 +180,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const meta = new Map(sources.map((p, i) => [p, results[i]?.ok ? (results[i] as any).value : undefined]));
     const [row] = await db.sql`SELECT settings FROM documents WHERE id = ${d.id}`;
     const shared = (row?.settings as any)?.poses;
-    return { infos, ...solveAssemblies(needed, (p) => meta.get(p), shared && typeof shared === "object" ? shared : {}, s.preview?.get(d.id)?.poses) };
+    return { infos, ...solveAssemblies(needed, (p) => meta.get(p), shared && typeof shared === "object" ? shared : {}, s.preview?.get(d.id)?.poses, infos) };
   }
 
   /**
@@ -623,6 +623,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ path, version: sc.version, content: sc.content, ...(others ? { otherSessions: others } : {}) });
   }, { readOnlyHint: true });
 
+  tool("evaluate", "Evaluate an expression in a script's module scope, e.g. expr \"winch().drumFront\". Params: defaults and shared overrides, or part's (with previews) if given.", { document, script: z.string(), expr: z.string().min(1).max(4000), part: z.string().optional() }, async ({ document: dd, script, expr, part }) => {
+    const d = await loadDoc(db, s.userID, docID(dd));
+    if (!d.scripts.some((x) => x.path === script)) throw new ToolError(`No script at ${script}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
+    const [r] = await engine(d, [{ op: "evaluate", script, expr, ...(part ? { part } : {}) }]);
+    return text(r);
+  }, { readOnlyHint: true });
+
   /**
    * After a committed write: our version and new script versions, the parts the change reaches
    * regenerated (studios written, or importing a written file; every part with `all` or `verbose`),
@@ -647,7 +654,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     let failed = false;
     try {
       const d = await loadDoc(db, s.userID, documentID);
-      const [infos, asms] = (await engine(d, [{ op: "parts" }, { op: "assemblies" }])) as [{ id: string; file: string }[], AssemblyInfo[]];
+      const [infos, asms] = (await engine(d, [{ op: "parts" }, { op: "assemblies" }])) as [PartInfo[], AssemblyInfo[]];
       const { affected, missing } = affectedScripts(new Map(d.scripts.map((x) => [x.path, x.content])), w.paths);
       const every = w.all || w.verbose;
       const parts = infos.filter((p) => every || affected.has(p.file)).map((p) => p.id);
@@ -665,6 +672,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       out.parts = lean({ regenerated: raw.length, ok: raw.length - bad.length, unaffected: infos.length - parts.length || undefined });
       if (Object.keys(problems).length) out.problems = problems;
       if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r, true));
+      const names = nameHints(infos, asms, new Set(w.paths));
+      if (names.length) out.names = names;
     } catch (e) {
       failed = true;
       out.regenerationFailed = `${(e as Error).message}. The write is committed${version ? ` (version ${version.number})` : ""}: don't redo it; check later with list_problems.`;
@@ -687,7 +696,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_script",
-    "Create or replace a script (studios/*.ts or lib/**/*.ts). baseVersion: this script's own version (list_scripts / read_script; not the document version), null to create. Makes a version and regenerates the parts it reaches (its studio, or studios importing it). Returns the version, each script's new version (its next baseVersion), parts counted (regenerated, ok), problem lines per part or file (imports of missing files too) and files others changed under you; verbose: every part, full results. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
+    "Create or replace a script (studios/*.ts or lib/**/*.ts). baseVersion: this script's own version (list_scripts / read_script; not the document version), null to create. Makes a version and regenerates the parts it reaches (its studio, or studios importing it). Returns the version, each script's new version (its next baseVersion), parts counted (regenerated, ok), problem lines per part or file (imports of missing files too), names that pack in details (names: move them to description/partNumber) and files others changed under you; verbose: every part, full results. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
     { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, content, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
@@ -746,10 +755,10 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   );
 
   // ---------------- geometry ----------------
-  const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right"] as const;
+  const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right", "section"] as const;
   tool(
     "render",
-    'PNG of the model (800×600 unless width/height). view: iso (default), top, bottom, front, back, left, right, or "note:<id>" (the note\'s camera and targets); or a camera. Z up like the workspace (top looks down −Z, front along +Y); up: "y" for Y-up views. parts: part, instance (mechanism/box:lid) or assembly ids, default every part; instances are where this session poses them, and your set_param previews apply. highlight: names or selectors to mark orange. section: cut this image only, removing where dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5).',
+    'PNG of the model (800×600 unless width/height). view: iso (default), top, bottom, front, back, left, right, section, or "note:<id>" (the note\'s camera and targets); or a camera. Z up like the workspace (top looks down −Z, front along +Y); up: "y" for Y-up views. parts: part, instance, assembly or subassembly copy ids, default every part; instances are where this session poses them, and your set_param previews apply. hide: ids to leave out (a part id hides all its instances); the rest stays posed. highlight: names or selectors to mark orange. section: cut this image only, removing where dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5); view "section" (default with section) faces the cut.',
     {
       document,
       view: z.string().optional(),
@@ -764,11 +773,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       }).optional(),
       highlight: z.array(z.object({ part: z.string(), name: z.string() })).optional(),
       parts: z.array(z.string()).optional(),
+      hide: z.array(z.string()).optional(),
       style: z.enum(["shaded", "shadedEdges", "wireframe", "hiddenLine"]).optional(),
       width: z.number().int().min(128).max(2048).optional(),
       height: z.number().int().min(128).max(2048).optional(),
     },
-    async ({ document: dd, view, up, camera, section, highlight, parts, style, width, height }) => {
+    async ({ document: dd, view, up, camera, section, highlight, parts, hide, style, width, height }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const asm = await assemblyState(d, parts ?? []);
@@ -779,9 +789,17 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (t.unknown.length) throw new ToolError(`Unknown part, instance or assembly: ${t.unknown.join(", ")}. Parts: ${all.join(", ") || "none"}${asm.infos.length ? `. Assemblies: ${asm.infos.map((a) => `${a.id} (${a.instances.map((i) => i.id).join(", ")})`).join("; ")}` : ""}`);
         ids = t.ids;
       }
+      if (hide?.length) {
+        const t = expandTargets(hide, all, asm.infos);
+        if (t.unknown.length) throw new ToolError(`Unknown part, instance or assembly to hide: ${t.unknown.join(", ")}. Parts: ${all.join(", ") || "none"}`);
+        const gone = new Set(t.ids);
+        ids = ids.filter((id) => !gone.has(id) && !gone.has(sourcePart(id)));
+        if (!ids.length) throw new ToolError("hide leaves nothing to render.");
+      }
       await regen(d, ids);
       let cam = camera as any;
-      let v: string | undefined = view ?? "iso";
+      if (view === "section" && !section) throw new ToolError('view "section" needs section.');
+      let v: string | undefined = view ?? (section && !camera ? "section" : "iso");
       if (view?.startsWith("note:")) {
         const [n] = await db.sql`SELECT anchor FROM notes WHERE id = ${view.slice(5)} AND document_id = ${documentID}`;
         if (!n) throw new ToolError(`No note ${view.slice(5)}.`);
@@ -798,7 +816,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       }
       const poses = Object.fromEntries(ids.filter((p) => asm.poses[p]).map((p) => [p, asm.poses[p]]));
       const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, poses, style, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
-      await activity(documentID, `render ${view ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
+      await activity(documentID, `render ${view ?? v ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
       return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
     },
     { readOnlyHint: true },
@@ -806,12 +824,21 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "describe_model",
-    "Parts with bounding box, mass properties, material and params. entities (default when part is given): every face and edge with name, type, area/length, normal/axis, center and `by` (the operation and source line that made it); neighbors: true adds faces' adjacent faces. part: a part, instance (mechanism/box:lid, in world coordinates where this session poses it) or assembly id. Without part, also lists assemblies, their instances and joint values (from your session, shared or home).",
-    { document, part: z.string().optional(), entities: z.boolean().optional(), neighbors: z.boolean().optional() },
-    async ({ document: dd, part, entities, neighbors }) => {
+    "Parts with bounding box, mass properties and material. entities (default when part is given): every face and edge with name, type, area/length, normal/axis, center and `by` (the operation and source line that made it); neighbors: true adds faces' adjacent faces. part: part, instance, assembly or subassembly copy id (world coordinates at the session pose). Params once per source part (`params`), shared in `sharedParams`; params: false omits them. Without part, also lists assemblies and joint values. assemblies: true: only assemblies (instance count, joints, problems).",
+    { document, part: z.string().optional(), entities: z.boolean().optional(), neighbors: z.boolean().optional(), params: z.boolean().optional(), assemblies: z.boolean().optional() },
+    async ({ document: dd, part, entities, neighbors, params: withParams, assemblies: onlyAssemblies }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const asm = await assemblyState(d, part ? [part] : undefined);
+      const head = { document: d.name, units: d.units, configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default" };
+      if (onlyAssemblies) {
+        if (part && !asm.assemblies.length) throw new ToolError(`No assembly "${part}". Assemblies: ${asm.infos.map((a) => a.id).join(", ") || "none"}`);
+        // "revolute 90 deg (0..110) session"
+        const joint = (j: (typeof asm.assemblies)[number]["joints"][number]) => `${j.type} ${j.value.map((v, i) => `${v} ${j.units[i]}`).join(", ")}${j.limits.some(Boolean) ? ` (${j.limits.map((l) => (l ? `${l.min ?? "-inf"}..${l.max ?? "inf"}` : "free")).join(", ")})` : ""} ${j.from}`;
+        await activity(documentID, `describe_model assemblies${part ? ` ${part}` : ""}`);
+        const poses = s.preview?.get(documentID)?.poses;
+        return text({ ...head, sessionPoses: poses && Object.keys(poses).length ? poses : undefined, assemblies: asm.assemblies.map((a) => lean({ id: a.id, name: a.name !== a.id ? a.name : undefined, instances: a.instances.length, subassemblies: a.subassemblies.length || undefined, joints: a.joints.length ? Object.fromEntries(a.joints.map((j) => [j.name, joint(j)])) : undefined, problems: a.problems })) });
+      }
       let parts = await partsOf(d);
       if (part) {
         const t = expandTargets([part], parts, asm.infos);
@@ -823,12 +850,17 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const descriptions = await engine(d, entityParts.map((part) => ({ op: "describeAll", part })));
       const entitiesOf = new Map(entityParts.map((part: string, i: number) => [part, descriptions[i]]));
       const out: any[] = [];
+      // name: value with unit, once per source part (shared ones once); get_params has defaults, bounds and sources
+      const preview = s.preview?.get(documentID)?.params;
+      const params: Record<string, Record<string, string>> = {};
+      const sharedParams: Record<string, string> = {};
+      const fmt = (r: any, p: any) => `${typeof p.value === "number" ? round(p.value, 4) : p.value}${p.unit && typeof p.value === "number" ? ` ${p.unit}` : ""}${p.overridden ? " (override)" : ""}${preview?.[sourcePart(r.part)]?.[p.name] !== undefined || preview?.["*"]?.[p.name] !== undefined ? " (preview)" : ""}`;
+      if (withParams ?? true) for (const r of results as any[]) for (const p of r.params) if (p.shared) sharedParams[p.name] ??= fmt(r, p); else (params[sourcePart(r.part)] ??= {})[p.name] ??= fmt(r, p);
       for (const r of results as any[]) {
         // instances: part coordinates -> where this session poses them
         const pose = asm.poses[r.part];
         const place = (e: any) => (pose ? { ...e, center: vec(posedPoint(e.center, pose)), normal: vec(posedDir(e.normal, pose)), axis: vec(posedDir(e.axis, pose)), direction: vec(posedDir(e.direction, pose)), point: vec(posedPoint(e.point, pose)) } : e);
         const summary = summarize(r)!;
-        const preview = s.preview?.get(documentID)?.params;
         const color = r.color?.kind === "rgb" ? r.color.hex : r.color?.kind;
         const entry: any = lean({
           ...summary,
@@ -839,8 +871,6 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           appearance: part ? r.appearance : undefined,
           material: r.material?.name ? `${r.material.name}${r.material.density ? ` (${r.material.density} g/cm³)` : ""}` : r.material,
           mass: r.mass && lean({ volume: round(r.mass.volume, 2), area: round(r.mass.area, 2), grams: r.material?.density ? round(r.mass.mass, 2) : undefined, centroid: vec(posedPoint(r.mass.centroid, pose)) }),
-          // name: value with unit; get_params has defaults, bounds and sources
-          params: r.params.length ? Object.fromEntries(r.params.map((p: any) => [p.name, `${typeof p.value === "number" ? round(p.value, 4) : p.value}${p.unit && typeof p.value === "number" ? ` ${p.unit}` : ""}${p.overridden ? " (override)" : ""}${preview?.[sourcePart(r.part)]?.[p.name] !== undefined || preview?.["*"]?.[p.name] !== undefined ? " (preview)" : ""}`])) : undefined,
         });
         if ((entities ?? !!part) && !r.empty) {
           const all = entitiesOf.get(r.part);
@@ -851,12 +881,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         out.push(entry);
       }
       await activity(documentID, `describe_model${part ? ` ${part}` : ""}`);
-      const preview = s.preview?.get(documentID);
+      const session = s.preview?.get(documentID);
       return text({
-        document: d.name,
-        units: d.units,
-        configuration: d.configurations.find((c) => c.id === configOf(d))?.name ?? "Default",
-        sessionPreview: preview && (Object.keys(preview.params).length || Object.keys(preview.poses).length) ? preview : undefined,
+        ...head,
+        sessionPreview: session && (Object.keys(session.params).length || Object.keys(session.poses).length) ? session : undefined,
+        sharedParams: Object.keys(sharedParams).length ? sharedParams : undefined,
+        params: Object.keys(params).length ? params : undefined,
         parts: out,
         assemblies: !part && asm.assemblies.length ? asm.assemblies.map(({ poses: _, ...a }) => a) : undefined,
       });
@@ -951,9 +981,47 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return id;
   }
 
+  /** Set (undefined: drop) this session's preview of part.name. */
+  function putPreview(documentID: string, part: string, name: string, v: string | number | undefined) {
+    const prev = previewOf(documentID);
+    if (v !== undefined) return void ((prev.params[part] ??= {})[name] = v);
+    if (prev.params[part]) (delete prev.params[part][name], !Object.keys(prev.params[part]).length && delete prev.params[part]);
+  }
+  /** Run `f` with this session's preview of part.name at `v`, then put it back. */
+  async function withPreview<T>(documentID: string, part: string, name: string, v: string | number | undefined, f: () => Promise<T>) {
+    const cur = s.preview?.get(documentID)?.params[part]?.[name];
+    putPreview(documentID, part, name, v);
+    try {
+      return await f();
+    } finally {
+      putPreview(documentID, part, name, cur);
+    }
+  }
+  /** This session's param previews, or just how many when the map is large. */
+  function previewEcho(documentID: string) {
+    const p = s.preview?.get(documentID)?.params ?? {};
+    return JSON.stringify(p).length <= 400 ? p : `${Object.values(p).reduce((n, o) => n + Object.keys(o).length, 0)} previewed params (get_params marks them)`;
+  }
+  /**
+   * set_param's result: parts counted (regenerated, ok), problem lines per part, and the parts
+   * declaring the param whose bounding box moved (`before` regenerates them as they were); with
+   * `verbose`, every part's summary.
+   */
+  async function paramReport(part: string, name: string, after: any[], before: (parts: string[]) => Promise<any[]>, verbose?: boolean) {
+    const bad = after.filter((r) => r?.problems.length);
+    const problems = Object.fromEntries(bad.map((r) => [r.part, [...(cap(r.problems.map(problemLine), 6) as string[]), ...(r.partial && !r.empty ? ["(showing last good geometry)"] : [])]]));
+    const box = (b?: any) => (b ? { min: vec(b.min), max: vec(b.max) } : null);
+    const declaring = after.filter((r) => r && !r.empty && r.params.some((p: any) => p.name === name && (part !== "*" || p.shared))).map((r) => r.part as string);
+    const was = new Map(declaring.length ? (await before(declaring)).map((r: any, i) => [declaring[i]!, box(r?.bbox)]) : []);
+    const changed: Record<string, unknown> = {};
+    for (const r of after) if (r && was.has(r.part) && JSON.stringify(box(r.bbox)) !== JSON.stringify(was.get(r.part))) changed[r.part] = { bbox: box(r.bbox), was: was.get(r.part) };
+    return lean({ parts: { regenerated: after.length, ok: after.length - bad.length }, problems: bad.length ? problems : undefined, bboxChanged: Object.keys(changed).length ? changed : undefined, regeneration: verbose ? after.map((r) => summarize(r)) : undefined });
+  }
+  const paramTargets = async (d: DocState, part: string) => (part === "*" ? await partsOf(d) : [part]);
+
   tool(
     "set_param",
-    'Override a param without editing source. value: a number in its unit or an expression ("=width/2", "1/4 in"); null clears the override (by default your preview if you have one, else the shared one). scope "session" (default): a preview only this MCP session sees (render, measure, describe_model…), no version, nobody else affected. scope "shared": saved as a version in your active configuration (or `configuration`; one named after you is made if you are on Default). part: part id, instance id (its part) or "*" for a shared param. Returns the regenerated part.',
+    'Override a param without editing source. value: a number in its unit or an expression ("=width/2", "1/4 in"); null clears the override (by default your preview if you have one, else the shared one). scope "session" (default): a preview only this session sees, no version. scope "shared": saved as a version in your active configuration (or `configuration`; one named after you is made if you are on Default). part: part id, instance id (its part) or "*" for a shared param. Returns counts, problems and bboxChanged; verbose: every part.',
     {
       document,
       part: z.string(),
@@ -961,17 +1029,17 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       value: z.union([z.number(), z.string(), z.null()]),
       scope: z.enum(["session", "shared"]).optional(),
       configuration: z.string().optional(),
+      verbose,
     },
-    async ({ document: dd, part, name, value, scope, configuration }) => {
+    async ({ document: dd, part, name, value, scope, configuration, verbose }) => {
       const documentID = docID(dd);
       part = sourcePart(part);
-      if (value === null) return resetParam(documentID, part, name, scope, configuration);
+      if (value === null) return resetParam(documentID, part, name, scope, configuration, verbose);
       if ((scope ?? "session") === "session") {
         const d = await loadDoc(db, s.userID, documentID);
-        const prev = previewOf(documentID);
-        const before = prev.params[part]?.[name];
-        (prev.params[part] ??= {})[name] = typeof value === "number" ? value : String(value);
-        const targets = part === "*" ? await partsOf(d) : [part];
+        const before = previewOf(documentID).params[part]?.[name];
+        putPreview(documentID, part, name, typeof value === "number" ? value : String(value));
+        const targets = await paramTargets(d, part);
         let raw: any[];
         try {
           raw = await engine(d, targets.map((p) => ({ op: "regenerate", part: p })));
@@ -980,50 +1048,51 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
           if (!(e instanceof ToolError)) throw e;
         }
         if (!raw.some((r) => r?.params?.some((p: any) => p.name === name))) {
-          if (before === undefined) delete prev.params[part][name];
-          else prev.params[part][name] = before;
-          if (!Object.keys(prev.params[part]).length) delete prev.params[part];
+          putPreview(documentID, part, name, before);
           const known = raw.flatMap((r) => r?.params?.map((p: any) => p.name) ?? []);
           throw new ToolError(`No param "${name}" on ${part}.${known.length ? ` Params: ${[...new Set(known)].join(", ")}` : " Check the part id (get_params)."}`);
         }
-        return text({ scope: "session", sessionPreview: prev.params, regeneration: raw.map((r) => summarize(r)) });
+        const report = await paramReport(part, name, raw, (ps) => withPreview(documentID, part, name, before, () => regenerateParts(d, ps)), verbose);
+        return text({ scope: "session", sessionPreview: previewEcho(documentID), ...report });
       }
       await requireMember(db, s.userID, documentID, "editor");
-      let d = await loadDoc(db, s.userID, documentID);
-      if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
-      const configurationID = await ensureConfig(d);
+      const old = await loadDoc(db, s.userID, documentID);
+      if (configuration) s.activeConfig.set(documentID, findConfig(old, configuration));
+      const configurationID = await ensureConfig(old);
       await mutate(mutators.param.set({ documentID, configurationID, part, name, expression: String(value), value: typeof value === "number" ? value : Number.isFinite(+value) ? +value : String(value), versionID: newID() } as any));
-      d = await loadDoc(db, s.userID, documentID);
-      const [r] = await regen(d, [part]);
+      // the shared value now applies: drop this session's preview of it
+      const previewed = s.preview?.get(documentID)?.params[part]?.[name];
+      putPreview(documentID, part, name, undefined);
+      const d = await loadDoc(db, s.userID, documentID);
+      const raw = await regenerateParts(d, await paramTargets(d, part));
       const v = await latestVersion(documentID);
       if (v) s.lastVersion.set(documentID, v.id);
       await activity(documentID, `set ${part}.${name} = ${value}`);
-      // the shared value now applies: drop this session's preview of it
-      const prev = s.preview?.get(documentID);
-      if (prev?.params[part]) (delete prev.params[part][name], !Object.keys(prev.params[part]).length && delete prev.params[part]);
-      return text({ scope: "shared", configuration: d.configurations.find((c) => c.id === configurationID)?.name, regeneration: r });
+      const report = await paramReport(part, name, raw, (ps) => withPreview(documentID, part, name, previewed, () => regenerateParts(old, ps)), verbose);
+      return text({ scope: "shared", configuration: d.configurations.find((c) => c.id === configurationID)?.name, ...report });
     },
   );
 
   /** set_param with value null: drop the session preview, or clear the override in the configuration (a version). */
-  async function resetParam(documentID: string, part: string, name: string, scope?: "session" | "shared", configuration?: string) {
-    const prev = s.preview?.get(documentID);
-    if (scope === "session" || (!scope && prev?.params[part]?.[name] !== undefined)) {
-      if (prev?.params[part]?.[name] === undefined) throw new ToolError(`No session preview for ${part}.${name}.`);
-      delete prev.params[part][name];
-      if (!Object.keys(prev.params[part]).length) delete prev.params[part];
+  async function resetParam(documentID: string, part: string, name: string, scope?: "session" | "shared", configuration?: string, verbose?: boolean) {
+    const previewed = s.preview?.get(documentID)?.params[part]?.[name];
+    if (scope === "session" || (!scope && previewed !== undefined)) {
+      if (previewed === undefined) throw new ToolError(`No session preview for ${part}.${name}.`);
+      putPreview(documentID, part, name, undefined);
       const d = await loadDoc(db, s.userID, documentID);
-      return text({ scope: "session", regeneration: await regen(d, part === "*" ? undefined : [part]) });
+      const raw = await regenerateParts(d, await paramTargets(d, part));
+      const report = await paramReport(part, name, raw, (ps) => withPreview(documentID, part, name, previewed, () => regenerateParts(d, ps)), verbose);
+      return text({ scope: "session", sessionPreview: previewEcho(documentID), ...report });
     }
     await requireMember(db, s.userID, documentID, "editor");
-    let d = await loadDoc(db, s.userID, documentID);
-    if (configuration) s.activeConfig.set(documentID, findConfig(d, configuration));
-    const configurationID = configOf(d);
+    const old = await loadDoc(db, s.userID, documentID);
+    if (configuration) s.activeConfig.set(documentID, findConfig(old, configuration));
+    const configurationID = configOf(old);
     if (!configurationID) throw new ToolError("You're on Default, which has no overrides.");
     await mutate(mutators.param.reset({ documentID, configurationID, part, name, versionID: newID() } as any));
-    d = await loadDoc(db, s.userID, documentID);
-    const [r] = await regen(d, [part]);
-    return text({ scope: "shared", regeneration: r });
+    const d = await loadDoc(db, s.userID, documentID);
+    const raw = await regenerateParts(d, await paramTargets(d, part));
+    return text({ scope: "shared", ...(await paramReport(part, name, raw, (ps) => regenerateParts(old, ps), verbose)) });
   }
 
   // switching is session state only (no write): get_params / set_param take `configuration`, and so does this
@@ -1037,7 +1106,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   // ---------------- assembly poses ----------------
   tool(
     "set_pose",
-    'Pose a mechanism: joint values in degrees or mm, 0 where modeled, clamped to limits, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints; joints you don\'t name keep their value or settle. Joint names: the script\'s { name }, else "<partA>+<partB>"; joints of an inserted assembly are prefixed "<its assembly id>@<insert name>/", e.g. "winch_assembly:drive@upright/Drum rotation" (describe_model lists them). scope "session" (default): a preview only this MCP session sees (render, measure, check, describe_model, export), nothing saved. scope "shared": save the positions to the document for everyone (like dragging in the workspace; no version); without joints it saves your session preview. reset: true first drops your session values (shared: the saved positions). Returns each joint\'s value and source (session, shared or home).',
+    'Pose an assembly or subassembly copy: joint values in degrees or mm, 0 where modeled, clamped to limits, e.g. { lid: 90 } or { base: [10, 0, 45] } for multi-variable joints; joints you don\'t name keep their value or settle. Joint names: the script\'s { name }, else "<partA>+<partB>"; joints of an inserted assembly are prefixed "<its assembly id>@<insert name>/", e.g. "winch_assembly:drive@upright/Drum rotation" (describe_model lists them). With a subassembly copy id as assembly, use relative joint names; reset affects only that copy. scope "session" (default): a preview only this session sees, nothing saved. scope "shared": save the positions to the document for everyone (no version); without joints it saves your session preview. reset: true first drops your session values (shared: the saved positions). Returns each joint\'s value and source (session, shared or home).',
     {
       document,
       assembly: z.string(),
@@ -1050,24 +1119,35 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const d = await loadDoc(db, s.userID, documentID);
       if (scope === "shared") await requireMember(db, s.userID, documentID, "editor");
       let state = await assemblyState(d, [assembly]);
-      const info = findAssembly(state.infos, assembly);
-      if (!info) throw new ToolError(`No assembly "${assembly}". Assemblies: ${state.infos.map((a) => `${a.id} (${a.name})`).join(", ") || "none"}`);
+      const target = poseTarget(state.infos, assembly);
+      if (!target) throw new ToolError(`No assembly or subassembly "${assembly}". Assemblies: ${state.infos.map((a) => `${a.id} (${a.name})`).join(", ") || "none"}`);
+      const info = target.assembly;
+      const sub = target.id !== info.id;
+      const jointNames = new Set(target.joints.map((j) => j.name));
+      const outside = (values: Record<string, number[]>) => Object.fromEntries(Object.entries(values).filter(([name]) => !jointNames.has(name)));
       let values: Record<string, number[]>;
       try {
-        values = jointValues(info, joints ?? {});
+        values = scopedJointValues(target, joints ?? {});
       } catch (e) {
         throw new ToolError((e as Error).message);
       }
       const prev = previewOf(documentID);
-      const mine = reset ? {} : (prev.poses[info.id] ?? {});
+      const prior = prev.poses[info.id] ?? {};
+      const mine = reset ? (sub ? outside(prior) : {}) : prior;
       if (scope === "shared") {
-        if (reset) await mutate(mutators.document.setPose({ id: documentID, assembly: info.id, joints: null }));
+        if (reset) {
+          const [row] = await db.sql`SELECT settings FROM documents WHERE id = ${documentID}`;
+          const saved = (row?.settings as any)?.poses?.[info.id] ?? {};
+          await mutate(mutators.document.setPose({ id: documentID, assembly: info.id, joints: sub ? outside(saved) : null }));
+        }
         // solve from the shared positions (plus any preview kept) with the new values on top, then save the whole pose
-        prev.poses[info.id] = { ...mine, ...values };
+        const commit = sub ? Object.fromEntries(Object.entries(mine).filter(([name]) => jointNames.has(name))) : mine;
+        prev.poses[info.id] = { ...commit, ...values };
         state = await assemblyState(await loadDoc(db, s.userID, documentID), [info.id]);
         const solved = state.assemblies.find((a) => a.id === info.id)!;
         if (Object.keys(values).length || !reset) await mutate(mutators.document.setPose({ id: documentID, assembly: info.id, joints: Object.fromEntries(solved.joints.map((j) => [j.name, j.value])) }));
         delete prev.poses[info.id];
+        if (sub && Object.keys(outside(mine)).length) prev.poses[info.id] = outside(mine);
       } else {
         prev.poses[info.id] = { ...mine, ...values };
         if (!Object.keys(prev.poses[info.id]).length) delete prev.poses[info.id];
@@ -1076,7 +1156,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       // instances are in describe_model; the joints are what changed
       const { poses: _, instances: __, ...out } = state.assemblies.find((a) => a.id === info.id)! as any;
       if (scope === "shared") await activity(documentID, `set pose ${info.name}`);
-      return text(lean({ scope: scope ?? "session", ...out }));
+      return text(lean({ scope: scope ?? "session", ...out, ...(sub && { id: target.id, name: target.name, assembly: info.id, joints: out.joints.filter((j: any) => jointNames.has(j.name)) }) }));
     },
   );
 
@@ -1085,12 +1165,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "list_problems",
-    "Each part's status (\"ok\" or its error and warning lines), and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session.",
+    "Each part's status (\"ok\" or its error and warning lines), assemblies' problems, and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session.",
     { document },
     async ({ document: dd }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
       const results = await regenerateParts(d, await partsOf(d));
+      const [asms] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
       const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
       const introduced = (file: string | undefined, kind: string) => {
         // the most recent version that changed this script (or params, for param problems)
@@ -1104,38 +1185,50 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       };
       // one entry per file (or "params") with problems, not per problem
       const introducedBy: Record<string, string> = {};
-      for (const r of results as any[]) for (const p of r.problems) {
+      for (const r of [...results, ...asms] as any[]) for (const p of r.problems) {
         const key = p.kind === "param" ? "params" : (p.source?.file ?? "unknown");
         if (!(key in introducedBy)) introducedBy[key] = introduced(p.source?.file, p.kind) ?? "unknown";
       }
-      return text(lean({ parts: partStatus(results), introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
+      const assemblies = Object.fromEntries(asms.filter((a) => a.problems.length).map((a) => [a.id, a.problems.map(problemLine)]));
+      return text(lean({ parts: partStatus(results), assemblies: Object.keys(assemblies).length ? assemblies : undefined, introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
     },
     { readOnlyHint: true },
   );
 
-  tool("check", "Geometry validity (BRepCheck) of each part, interference volumes between parts as modeled, and between each assembly's instances where this session poses them.", { document, part: z.string().optional() }, async ({ document: dd, part }) => {
+  tool("check", "Geometry validity (BRepCheck) and interference at the session pose. part accepts a part, instance, assembly or subassembly copy id. clearance (mm): also lists pairs closer than this (near, closest first; touching = 0).", { document, part: z.string().optional(), clearance: z.number().positive().optional() }, async ({ document: dd, part, clearance }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    const parts = part ? [part] : await partsOf(d);
+    const all = await partsOf(d);
+    const asm = await assemblyState(d);
+    const target = part ? expandTargets([part], all, asm.infos) : undefined;
+    if (target?.unknown.length) throw new ToolError(`Unknown part, instance, assembly or subassembly: ${part}`);
+    const parts = target?.ids ?? all;
     await regen(d);
     const checks = await engine(d, parts.map((p) => ({ op: "check", part: p })));
     // valid parts by id; invalid ones with their problems
     const invalid = parts.map((p, i) => ({ part: p, problems: checks[i] as any[] })).filter((x) => x.problems.length);
     const out: any = { valid: parts.filter((_, i) => !(checks[i] as any[]).length), ...(invalid.length ? { invalid } : {}) };
-    const all = await partsOf(d);
     const pairs: any[] = [];
     for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
     const [, vols] = await engine(d, [{ op: "setPoses", poses: {} }, { op: "interferencePairs", pairs }]);
     out.interference = pairs.map(([a, b], i) => ({ a, b, volume: round(vols[i] as number, 3) })).filter((x) => x.volume > 1e-6);
-    const asm = await assemblyState(d);
+    // pairs closer than clearance but not interfering, closest first
+    const near = async (pairs: [string, string][], poses: Record<string, PartPose>, hit: { a: string; b: string }[]) => {
+      const skip = new Set(hit.flatMap((h) => [`${h.a}\u0000${h.b}`, `${h.b}\u0000${h.a}`]));
+      pairs = pairs.filter(([a, b]) => !skip.has(`${a}\u0000${b}`));
+      const [, ds] = await engine(d, [{ op: "setPoses", poses }, { op: "distancePairs", pairs, within: clearance! }]);
+      return pairs.flatMap(([a, b], i) => { const m = (ds as any[])[i]; return m ? [{ a, b, distance: round(m.distance, 4), points: [vec(m.a), vec(m.b)] }] : []; }).sort((x, y) => x.distance - y.distance);
+    };
+    if (clearance) out.near = await near(pairs, {}, out.interference);
     if (asm.infos.length) {
       out.assemblies = [];
       for (const a of asm.infos) {
         const ids = a.instances.map((i) => i.id);
         const ignore = a.joints.filter((j) => j.overlap).map((j) => [j.a, j.b]);
         const [, hits] = await engine(d, [{ op: "setPoses", poses: asm.poses }, { op: "interferences", parts: ids, ignore, poses: asm.poses }]);
-        const overlaps = ((hits as any[]) ?? []).filter((h) => !part || [h.a, h.b].some((x) => x === part || sourcePart(x) === part)).map((h) => ({ a: h.a, b: h.b, volume: round(h.volume, 3) }));
-        out.assemblies.push({ assembly: a.id, interference: overlaps, problems: asm.assemblies.find((x) => x.id === a.id)?.problems.length ? asm.assemblies.find((x) => x.id === a.id)!.problems : undefined });
+        const overlaps = ((hits as any[]) ?? []).filter((h) => !part || [h.a, h.b].some((x) => parts.includes(x) || sourcePart(x) === part)).map((h) => ({ a: h.a, b: h.b, volume: round(h.volume, 3) }));
+        const close = clearance ? await near(ids.flatMap((x, i) => ids.slice(i + 1).map((y) => [x, y] as [string, string])).filter(([x, y]) => !ignore.some(([p, q]) => (p === x && q === y) || (p === y && q === x)) && (!part || [x, y].some((z) => parts.includes(z) || sourcePart(z) === part))), asm.poses, (hits as any[]) ?? []) : undefined;
+        out.assemblies.push({ assembly: a.id, interference: overlaps, ...(close ? { near: close } : {}), problems: asm.assemblies.find((x) => x.id === a.id)?.problems.length ? asm.assemblies.find((x) => x.id === a.id)!.problems : undefined });
       }
     }
     return text(out);
@@ -1175,12 +1268,14 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   });
 
   // ---------------- export / import ----------------
-  tool("export", "Export a part as STEP, STL or 3MF; returns a signed download URL (valid 1 hour).", { document, part: z.string(), format: z.enum(["step", "stl", "3mf"]) }, async ({ document: dd, part, format }) => {
+  tool("export", "Export a part, instance, assembly or subassembly copy as STEP, STL or 3MF; returns a signed download URL (valid 1 hour).", { document, part: z.string(), format: z.enum(["step", "stl", "3mf"]) }, async ({ document: dd, part, format }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
-    const poses = part.includes("/") ? (await assemblyState(d, [part])).poses : {};
-    await regen(d, [part]);
-    const [, f] = await engine(d, [{ op: "setPoses", poses }, { op: "export", part, format }]);
+    const asm = await assemblyState(d, [part]);
+    const targets = expandTargets([part], await partsOf(d), asm.infos);
+    if (targets.unknown.length) throw new ToolError(`Unknown part, instance, assembly or subassembly: ${part}`);
+    await regen(d, targets.ids);
+    const [, f] = await engine(d, [{ op: "setPoses", poses: asm.poses }, { op: "export", parts: targets.ids, format }]);
     const bytes = Buffer.from((f as any).base64, "base64");
     const type = ({ step: "model/step", stl: "model/stl", "3mf": "model/3mf" } as Record<string, string>)[format as string];
     const url = await storeFile(documentID, new Uint8Array(bytes), type);

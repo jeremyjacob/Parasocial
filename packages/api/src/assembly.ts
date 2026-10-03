@@ -29,6 +29,12 @@
  * `insert(otherAssembly, { name })` adds a subassembly with its joints (parts `mechanism/corner@left/cart:wheel`);
  * reach its parts with `sub.part(wheel).at("hub")`; its `fix()` only holds its parts to each other,
  * and `fix(sub)` holds it by its root part (its own joints still move).
+ * Nested copies: `sub.assembly(axle, "front").part(wheel, "left")` reaches a named part of an
+ * assembly inserted inside it. The Parts tree keeps these copies as expandable subassemblies:
+ * select, hide/show, note or export a whole copy; Properties shows its joints. Copy ids like
+ * `mechanism/corner@left` work with render, describe_model, check, export, bom and set_pose.
+ * With set_pose's assembly set to that copy id, joints can be relative (`spin`, or `axle@front/spin`);
+ * they save under the owning assembly's scoped names, and resetting the copy keeps sibling poses.
  * Joint names: a joint is named by `{ name }`, else by its two parts (`box:base+box:lid`); a
  * subassembly's joints are prefixed with where it's inserted, `<its assembly id>@<insert name>/`:
  * `spin` in `insert(drive, { name: "upright" })`, drive exported by studio winch_assembly.ts as
@@ -205,6 +211,15 @@ export type AssemblyDef = {
   readonly __assembly: true;
   readonly name: string;
   readonly body: AssemblyBody;
+  readonly meta?: AssemblyOptions;
+};
+
+/** Optional third argument of `assembly()`: what it is, for the Parts tree and the bill of materials. */
+export type AssemblyOptions = {
+  /** Assembly number. */
+  partNumber?: string;
+  /** One line saying what it is, e.g. "Compact level-wind winch for 2 mm rope". */
+  description?: string;
 };
 
 /**
@@ -215,12 +230,29 @@ export type AssemblyDef = {
  * `insert` (`<assembly>/<part>@<name>`), including copies of other assemblies (their parts are
  * `<assembly>/<sub>@<name>/<part>`). Every joint is 0 where the parts are modeled, or where two
  * connectors meet; in the viewport people drag the ones that are free to move, and overlapping
- * instances show red.
+ * instances show red. Options say what it is: `assembly("Winch", body, { description: "Compact level-wind winch", partNumber: "W-100" })`.
  */
-export function assembly(name: string, body: AssemblyBody): AssemblyDef {
+export function assembly(name: string, body: AssemblyBody, options?: AssemblyOptions): AssemblyDef {
   if (typeof name !== "string" || !name.trim()) throw new Error('assembly(name, body): name must be a non-empty string, e.g. assembly("Hinge", ({ revolute }) => ...)');
   if (typeof body !== "function") throw new Error("assembly(name, body): body must be a function that declares joints");
-  return Object.freeze({ __assembly: true as const, name, body });
+  const meta = assemblyMeta(name, options);
+  return Object.freeze({ __assembly: true as const, name, body, ...(meta && { meta }) });
+}
+
+function assemblyMeta(name: string, o: AssemblyOptions | undefined): AssemblyOptions | undefined {
+  if (o === undefined) return undefined;
+  const what = `assembly("${name}", body, options)`;
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${what}: options must be an object, e.g. { description: "Compact level-wind winch" }`);
+  const known = ["partNumber", "description"] as const;
+  for (const k of Object.keys(o)) if (!(known as readonly string[]).includes(k)) throw new Error(`${what}: unknown option "${k}"; use ${known.join(", ")}`);
+  const meta: AssemblyOptions = {};
+  for (const k of known) {
+    const v: unknown = o[k];
+    if (v === undefined) continue;
+    if (typeof v !== "string" && typeof v !== "number") throw new Error(`${what}: ${k} must be a string`);
+    meta[k] = String(v);
+  }
+  return Object.freeze(meta);
 }
 
 // ---------- evaluation (runtime) ----------

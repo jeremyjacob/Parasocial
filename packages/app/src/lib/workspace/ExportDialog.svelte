@@ -7,6 +7,7 @@
 	import { toast } from '$lib/components/ui/toast';
 	import type { WorkspaceState } from './state.svelte';
 	import { sourcePart } from '@parasocial/runtime/protocol';
+	import { findAssemblyScope } from '@parasocial/runtime/assembly-scope';
 	import { bomToCSV, bomToMarkdown } from '@parasocial/runtime/bom';
 
 	/** `target`: the parts to export when the dialog opens (a part, a studio's parts, the selection); empty = the studio in the viewport. */
@@ -46,11 +47,15 @@
 	// bill of materials: the whole document, or an assembly with its copies counted
 	let bomScope = $state('document');
 	let bomFormat = $state<'csv' | 'md'>('csv');
-	const bomItems = $derived([{ value: 'document', label: 'Every part' }, ...ws.asm.assemblies.map((a) => ({ value: a.id, label: `${a.name} (assembly)` }))]);
+	const bomItems = $derived([{ value: 'document', label: 'Every part' }, ...ws.asm.assemblies.flatMap((a) => [
+		{ value: a.id, label: `${a.name} (assembly)` },
+		...a.subs.map((s) => ({ value: s.id, label: `${a.name} › ${ws.scopeLabel(s.id)} (subassembly)` }))
+	])]);
 
 	const nameOf = (p: string) => ws.results[p]?.name ?? ws.partInfos.find((i) => i.id === sourcePart(p))?.name ?? p;
 	/** File name base: the part's name for one part, the studio's when they all come from one studio, else the document's. */
 	function baseName(parts: string[]) {
+		if (scope.startsWith('assembly:')) return findAssemblyScope(ws.asm.assemblies, scope.slice('assembly:'.length))?.name ?? ws.doc?.name ?? 'parts';
 		if (parts.length === 1) return nameOf(parts[0]);
 		const studios = new Set(parts.map((p) => ws.partTree.find((g) => g.ids.includes(p))?.name));
 		const [only] = studios;
@@ -61,6 +66,11 @@
 	const scopes = $derived.by(() => {
 		const out: { value: string; label: string; parts: string[] }[] = [{ value: 'all', label: `All parts (${ws.parts.length})`, parts: ws.parts }];
 		for (const g of ws.partTree) if (g.ids.length > 1) out.push({ value: `studio:${g.file}`, label: `${g.name} (${g.ids.length} parts)`, parts: g.ids });
+		for (const a of ws.asm.assemblies) for (const id of [a.id, ...a.subs.map((s) => s.id)]) {
+			const members = findAssemblyScope(ws.asm.assemblies, id)!.instances.map((i) => i.id);
+			const label = id === a.id ? a.name : `${a.name} › ${ws.scopeLabel(id)}`;
+			out.push({ value: `assembly:${id}`, label: `${label} (${members.length} parts)`, parts: members });
+		}
 		for (const p of ws.parts) out.push({ value: `part:${p}`, label: nameOf(p), parts: [p] });
 		return out;
 	});
@@ -73,13 +83,15 @@
 	$effect(() => {
 		if (open && !wasOpen) {
 			const t = (target.length ? target : ws.shownParts).filter((p) => ws.allParts.includes(p));
-			const match = t.length ? scopes.find((s) => s.value !== 'all' && sameSet(s.parts, t)) : null;
+			const group = ws.selectedAssemblyScope;
+			const groupScope = group && scopes.find((s) => s.value === `assembly:${group.id}` && sameSet(s.parts, t));
+			const match = groupScope || (t.length ? scopes.find((s) => s.value !== 'all' && sameSet(s.parts, t)) : null);
 			custom = t.length && !match && !sameSet(t, ws.parts) ? t : [];
 			scope = match?.value ?? (custom.length ? 'custom' : 'all');
 			what = 'parts';
 			drawPartID = (t.map(sourcePart).find((p) => ws.parts.includes(p)) ?? ws.parts[0] ?? '') as string;
 			const asm = ws.studio?.assemblies[0];
-			bomScope = asm ? asm.id : 'document';
+			bomScope = match?.value.startsWith('assembly:') ? match.value.slice('assembly:'.length) : asm ? asm.id : 'document';
 		}
 		wasOpen = open;
 	});

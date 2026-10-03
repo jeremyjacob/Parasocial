@@ -6,7 +6,7 @@ import { measureToolList } from "../src/token-budget";
 test("tool definitions and instructions stay within their budget", async () => {
   const m = await measureToolList();
   // was 32.1k chars (44 tools) and 6.6k of instructions before the token-efficiency pass
-  expect(m.total).toBeLessThan(22_000);
+  expect(m.total).toBeLessThan(22_500); // +evaluate tool
   expect(m.instructions.total).toBeLessThan(4_500);
   expect(m.tools.filter((t) => t.total > 2_000).map((t) => `${t.name}: ${t.total}`)).toEqual([]);
 });

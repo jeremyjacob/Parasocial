@@ -6,6 +6,66 @@ const PARTS = ["box", "box:lid", "box:drawer"];
 const INSTANCES = PARTS.map((p) => `mechanism/${p}`);
 const SHOTS = process.env.SHOTS_DIR;
 
+test("nested subassemblies have selectable groups, visibility undo and scoped joint properties", async ({ page, user }) => {
+  await openExample(page, 'hinge', PARTS);
+  const scripts = [
+    `import { assembly } from "parasocial";
+import mechanism from "./mechanism";
+export const name = "Module";
+export default assembly("Module", ({ insert, fix }) => fix(insert(mechanism, { name: "door" })));`,
+    `import { assembly } from "parasocial";
+import module from "./studio1";
+export const name = "Rack";
+export default assembly("Rack", ({ insert, fix }) => {
+  fix(insert(module, { name: "left" }));
+  fix(insert(module, { name: "right", place: { translate: [100, 0, 0] } }));
+});`
+  ];
+  for (const [i, content] of scripts.entries()) {
+    await page.getByRole('button', { name: 'Add studio', exact: true }).click();
+    await page.getByTestId('new-studio-blank').click();
+    const path = `studios/studio${i + 1}.ts`;
+    await expect.poll(() => page.evaluate((path) => (globalThis as any).__ws.scripts.some((s: any) => s.path === path), path)).toBe(true);
+    await page.evaluate(async ({ path, content }) => {
+      const ws = (globalThis as any).__ws;
+      ws.openBuffer(path);
+      ws.editBuffer(path, content);
+      const error = await ws.saveBuffer(path);
+      if (error) throw new Error(error);
+    }, { path, content });
+    await page.waitForFunction((id) => (globalThis as any).__ws.asm.assemblies.some((a: any) => a.id === id && !a.problems.length), `studio${i + 1}`);
+  }
+  await wsEval(page, "ws.setActiveStudio('studios/studio2.ts')");
+  const rack = page.locator('[data-studio="studios/studio2.ts"]');
+  await rack.getByRole('button', { name: 'Expand Rack', exact: true }).click();
+  const left = rack.locator('[data-subassembly="studio2/studio1@left"]');
+  await left.locator('.row-main').first().click();
+  const members = PARTS.map((p) => `studio2/studio1@left/mechanism@door/${p}`);
+  await expect.poll(() => wsEval<string[]>(page, 'ws.selection.map(s => s.part)')).toEqual(members);
+  const properties = page.getByTestId('properties-panel');
+  await expect(properties.getByText('Subassembly', { exact: true })).toBeVisible();
+  await expect(properties.locator('[data-joint]')).toHaveCount(2);
+  const lid = properties.getByRole('spinbutton', { name: 'Lid · Hinged box door', exact: true });
+  await lid.fill('60');
+  await lid.press('Enter');
+  await expect.poll(() => wsEval<number>(page, "ws.doc.settings.poses?.studio2?.['studio1@left/mechanism@door/lid']?.[0]")).toBeCloseTo(60, 3);
+  expect(await wsEval<number>(page, "ws.asm.values.studio2['studio1@right/mechanism@door/lid'][0]")).toBe(0);
+  await left.locator('.row-main').first().click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Export…' }).click();
+  await expect(page.getByRole('button', { name: 'Parts to export' })).toContainText('Rack › Module left (3 parts)');
+  await page.getByRole('radio', { name: 'BOM', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Bill of materials for' })).toContainText('Rack › Module left (subassembly)');
+  await page.keyboard.press('Escape');
+  await left.getByRole('button', { name: 'Hide Module left', exact: true }).click();
+  await expect.poll(() => wsEval<string[]>(page, 'ws.hidden')).toEqual(members);
+  await page.keyboard.press('Meta+z');
+  await expect.poll(() => wsEval<string[]>(page, 'ws.hidden')).toEqual([]);
+  await left.getByRole('button', { name: 'Expand Module left', exact: true }).click();
+  await left.getByRole('button', { name: 'Expand Hinged box door', exact: true }).click();
+  await expect(left.locator(`[data-part="${members[1]}"] .row-main`)).toHaveText('Lid');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/subassemblies.png` });
+});
+
 test("drag the lid open: limits hold, the position is saved, undo puts it back", async ({ page, user }) => {
   await openExample(page, "hinge", PARTS);
   await page.waitForFunction(() => (globalThis as any).__ws.asm.assemblies.length === 1);

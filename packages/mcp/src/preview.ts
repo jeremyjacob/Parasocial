@@ -9,6 +9,7 @@
 import { Mechanism, JOINT_VARS, applyPoint, applyDir, isIdentity, type Pose, type Vec3 } from "@parasocial/assembly";
 import { resolveAssembly, unsatisfied } from "@parasocial/runtime/mechanism";
 import { sourcePart, type AssemblyInfo, type PartPose } from "@parasocial/runtime/protocol";
+import { findAssemblyScope, type AssemblyScope } from "@parasocial/runtime/assembly-scope";
 
 export type Preview = {
   /** part -> param -> expression */
@@ -38,6 +39,7 @@ export type AssemblyState = {
   name: string;
   studio: string;
   instances: string[];
+  subassemblies: { id: string; parent: string; assembly: string; name: string; instances: string[] }[];
   joints: JointState[];
   problems: string[];
   /** Instance id -> transform from where its part is modeled (identity ones left out). */
@@ -48,7 +50,7 @@ export type AssemblyState = {
  * Solve every assembly: the shared saved values (documents.settings.poses) first, then this
  * session's values on top (the rest settle around them), as the app does after a drag.
  */
-export function solveAssemblies(infos: AssemblyInfo[], parts: (part: string) => PartMeta | undefined, shared: Record<string, Record<string, number[]>> = {}, session: Record<string, Record<string, number[]>> = {}): { poses: Record<string, PartPose>; assemblies: AssemblyState[] } {
+export function solveAssemblies(infos: AssemblyInfo[], parts: (part: string) => PartMeta | undefined, shared: Record<string, Record<string, number[]>> = {}, session: Record<string, Record<string, number[]>> = {}, definitions = infos): { poses: Record<string, PartPose>; assemblies: AssemblyState[] } {
   const poses: Record<string, PartPose> = {};
   const assemblies: AssemblyState[] = [];
   for (const info of infos) {
@@ -63,7 +65,11 @@ export function solveAssemblies(infos: AssemblyInfo[], parts: (part: string) => 
       nameOf,
     );
     problems.push(...resolved.problems.map((p) => p.message));
-    const state: AssemblyState = { id: info.id, name: info.name, studio: info.studio, instances: info.instances.map((i) => i.id), joints: [], problems, poses: {} };
+    const subassemblies = info.subs.map((s) => {
+      const scope = findAssemblyScope(definitions, s.id)!;
+      return { id: s.id, parent: s.parent, assembly: s.assembly, name: scope.name, instances: scope.instances.map((i) => i.id) };
+    });
+    const state: AssemblyState = { id: info.id, name: info.name, studio: info.studio, instances: info.instances.map((i) => i.id), subassemblies, joints: [], problems, poses: {} };
     assemblies.push(state);
     const { joints, home } = resolved.spec;
     if (resolved.pending) problems.push("some of its parts failed to regenerate, so it shows unposed");
@@ -100,6 +106,20 @@ export function findAssembly(infos: AssemblyInfo[], key: string): AssemblyInfo |
   return infos.find((a) => a.id === key) ?? infos.find((a) => a.name.toLowerCase() === key.toLowerCase());
 }
 
+/** Scope ids select inserted copies; display names continue to select exported assemblies. */
+export function poseTarget(infos: AssemblyInfo[], key: string): AssemblyScope | undefined {
+  return findAssemblyScope(infos, findAssembly(infos, key)?.id ?? key);
+}
+
+/** Within a subassembly, joint names may be relative to that copy or fully scoped. */
+export function scopedJointValues(target: AssemblyScope, joints: Record<string, number | number[]>) {
+  const prefix = target.id === target.assembly.id ? '' : `${target.id.slice(target.assembly.id.length + 1)}/`;
+  const normalized = Object.fromEntries(Object.entries(joints).map(([name, value]) => [
+    target.joints.some((j) => j.name === name) ? name : `${prefix}${name}`, value,
+  ]));
+  return jointValues({ ...target.assembly, joints: target.joints }, normalized);
+}
+
 /**
  * Check and normalize joint values for an assembly: names must exist, a number stands for a
  * one-variable joint, arrays need the joint's arity.
@@ -133,7 +153,7 @@ export function expandTargets(ids: string[], parts: string[], infos: AssemblyInf
   const unknown: string[] = [];
   const instances = new Set(infos.flatMap((a) => a.instances.map((i) => i.id)));
   for (const id of ids) {
-    const asm = findAssembly(infos, id);
+    const asm = poseTarget(infos, id);
     if (parts.includes(id) || instances.has(id)) out.push(id);
     else if (asm) out.push(...asm.instances.map((i) => i.id));
     else unknown.push(id);

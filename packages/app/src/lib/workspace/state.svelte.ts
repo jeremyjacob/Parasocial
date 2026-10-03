@@ -5,6 +5,7 @@ import { untrack } from 'svelte';
 import type { Viewer, EntityRef } from '@parasocial/viewer';
 import { mutators, captureInverse, captureInverseAll, type AnyMR, type ParasocialZero, type Script, type Configuration, type ParamOverride, type Version, type Note, type AgentSession, type Document as DocRow } from '@parasocial/sync';
 import { sourcePart, type PartResult, type PartInfo, type EngineInfo, type AssemblyInfo, type AssemblyInstance } from '@parasocial/runtime/protocol';
+import { findAssemblyScope } from '@parasocial/runtime/assembly-scope';
 import { packResult, unpackResult, derivedKey, type CachedPart } from '@parasocial/runtime/pack';
 import type { EngineClient } from '@parasocial/runtime/browser/client';
 import { partColorAt } from '$lib/styles/tokens';
@@ -110,6 +111,8 @@ export class WorkspaceState {
 		} catch {}
 	}
 	selection = $state.raw<EntityRef[]>([]);
+	/** Scope selected in the Parts tree; geometry selection still contains its individual bodies. */
+	assemblySelection = $state<string | null>(null);
 	hover = $state.raw<EntityRef | null>(null);
 
 	// ---- live param scrubbing (not committed yet) ----
@@ -159,11 +162,12 @@ export class WorkspaceState {
 
 	/**
 	 * Parts grouped under the studio that exports them (Parts tab tree), in path order; `name` is
-	 * the studio's display name. A studio exports parts or assemblies, not both (the engine
+	 * the studio's display name, `description` its description export (else its one assembly's
+	 * description). A studio exports parts or assemblies, not both (the engine
 	 * rejects a mix); an assembly studio comes with its instances. `ids` is what the viewport
 	 * shows while the studio is active: its parts, or its instances.
 	 */
-	get partTree(): { file: string; name: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
+	get partTree(): { file: string; name: string; description?: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
 		return this.scripts
 			.map((s) => s.path)
 			.filter((p) => /^studios\/[^/]+\.ts$/.test(p))
@@ -174,10 +178,11 @@ export class WorkspaceState {
 				// part lists remembered before studios had names lack `studio`
 				const assemblies = this.asm.assemblies.filter((a) => a.file === file);
 				const name = known[0]?.studio ?? assemblies[0]?.studio ?? stem;
+				const description = known[0]?.studioDescription ?? assemblies[0]?.studioDescription ?? (assemblies.length === 1 ? assemblies[0].description : undefined);
 				const parts = known.length || assemblies.length ? known : [{ id: stem, file, export: 'default', name: stem, studio: stem }];
 				const instances = assemblies.flatMap((a) => a.instances);
 				const ids = [...parts.map((p) => p.id), ...instances.map((i) => i.id)];
-				return { file, name, assemblies, parts, instances, ids };
+				return { file, name, description, assemblies, parts, instances, ids };
 			});
 	}
 
@@ -824,6 +829,7 @@ export class WorkspaceState {
 	}
 
 	select(refs: EntityRef[], mode: 'replace' | 'toggle' | 'add' = 'replace') {
+		this.assemblySelection = null;
 		let next: EntityRef[];
 		const same = (a: EntityRef, b: EntityRef) => a.part === b.part && a.kind === b.kind && a.index === b.index;
 		if (mode === 'replace') next = refs;
@@ -839,6 +845,23 @@ export class WorkspaceState {
 		this.selection = next;
 		this.viewer?.setSelection(next);
 		this.publishPresence();
+	}
+
+	get selectedAssemblyScope() {
+		const scope = this.assemblySelection ? findAssemblyScope(this.asm.assemblies, this.assemblySelection) : undefined;
+		if (!scope || scope.instances.length !== this.selection.length || !scope.instances.every((i) => this.selection.some((s) => s.part === i.id && (s.kind as string) === 'part'))) return null;
+		return scope;
+	}
+
+	/** Select a scope as one group; additive toggles never leave a partially selected group. */
+	selectAssemblyScope(id: string, mode: 'replace' | 'toggle' | 'add' = 'replace') {
+		const scope = findAssemblyScope(this.asm.assemblies, id);
+		if (!scope) return;
+		const refs = scope.instances.map((i) => ({ part: i.id, kind: 'part' as any, index: 0 }));
+		const all = refs.every((r) => this.selection.some((s) => s.part === r.part && s.kind === r.kind));
+		if (mode === 'toggle' && all) this.select(this.selection.filter((s) => !refs.some((r) => r.part === s.part)));
+		else this.select(refs, mode === 'toggle' ? 'add' : mode);
+		this.assemblySelection = id;
 	}
 
 	/** Keep browser activity discoverable even before the user selects any geometry. */

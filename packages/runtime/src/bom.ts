@@ -5,6 +5,7 @@
 // the app and the MCP server format BOMs without loading geometry code.
 import type { Material, PartMeta } from "@parasocial/api/internal";
 import type { AssemblyInfo, PartInfo } from "./engine";
+import { findAssemblyScope } from "./assembly-scope";
 
 /** What the BOM needs of one part (a subset of `PartResult`). */
 export type BomPartInput = {
@@ -47,11 +48,14 @@ export type Bom = {
   /** "document", or the assembly id. */
   scope: string;
   name: string;
+  /** An assembly BOM: from `assembly(name, body, { partNumber, description })`. */
+  partNumber?: string;
+  description?: string;
   rows: BomRow[];
   /** A document BOM: the document's assemblies (pass one as `assembly` to count its copies). */
   assemblies?: { id: string; name: string }[];
   /** Copies of assemblies inserted in this one (nested ones included). */
-  subassemblies?: { assembly: string; name: string; quantity: number }[];
+  subassemblies?: { assembly: string; name: string; partNumber?: string; quantity: number }[];
   totals: {
     /** Lines. */
     items: number;
@@ -65,7 +69,7 @@ export type Bom = {
 };
 
 export type BomOptions = {
-  /** An assembly id: count its copies (subassemblies included). Default: every part of the document once. */
+  /** An assembly or subassembly copy id: count its copies, including nested ones. Default: every part once. */
   assembly?: string;
   /** Document name, for the BOM's name when it covers the whole document. */
   documentName?: string;
@@ -74,7 +78,7 @@ export type BomOptions = {
 /** Build a BOM from part results (and the assemblies, for an assembly BOM). */
 export function buildBom(parts: BomPartInput[], infos: Pick<PartInfo, "id" | "name">[], assemblies: AssemblyInfo[], opts: BomOptions = {}): Bom {
   const byId = new Map(parts.map((p) => [p.part, p]));
-  const asm = opts.assembly !== undefined ? assemblies.find((a) => a.id === opts.assembly) : undefined;
+  const asm = opts.assembly !== undefined ? findAssemblyScope(assemblies, opts.assembly) : undefined;
   if (opts.assembly !== undefined && !asm) throw new Error(`no assembly "${opts.assembly}"; assemblies: ${assemblies.map((a) => a.id).join(", ") || "none"}`);
   // copies to count: part id -> instance ids
   const copies = new Map<string, string[]>();
@@ -118,9 +122,13 @@ export function buildBom(parts: BomPartInput[], infos: Pick<PartInfo, "id" | "na
   }
   rows.forEach((r, i) => (r.item = i + 1));
   const known = rows.filter((r) => r.mass !== undefined);
+  // an inserted copy is described by its assembly's own options
+  const def = asm && assemblies.find((a) => a.id === asm.definition);
   const bom: Bom = {
     scope: asm ? asm.id : "document",
     name: asm ? asm.name : (opts.documentName ?? "Document"),
+    ...(def?.partNumber && { partNumber: def.partNumber }),
+    ...(def?.description && { description: def.description }),
     rows,
     totals: {
       items: rows.length,
@@ -133,7 +141,10 @@ export function buildBom(parts: BomPartInput[], infos: Pick<PartInfo, "id" | "na
   if (asm?.subs.length) {
     const count = new Map<string, number>();
     for (const s of asm.subs) count.set(s.assembly, (count.get(s.assembly) ?? 0) + 1);
-    bom.subassemblies = [...count].map(([assembly, quantity]) => ({ assembly, name: assemblies.find((a) => a.id === assembly)?.name ?? assembly, quantity }));
+    bom.subassemblies = [...count].map(([assembly, quantity]) => {
+      const a = assemblies.find((a) => a.id === assembly);
+      return { assembly, name: a?.name ?? assembly, ...(a?.partNumber && { partNumber: a.partNumber }), quantity };
+    });
   }
   return bom;
 }
@@ -165,9 +176,9 @@ export function bomToCSV(bom: Bom): string {
 /** A Markdown table with a title and totals. */
 export function bomToMarkdown(bom: Bom): string {
   const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
-  const out = [`# Bill of materials: ${cell(bom.name)}`, "", `| ${COLUMNS.map(([h]) => h).join(" | ")} |`, `| ${COLUMNS.map(([h]) => (h === "Qty" || h === "Item" || h.startsWith("Volume") || h.startsWith("Mass") ? "---:" : "---")).join(" | ")} |`];
+  const out = [`# Bill of materials: ${cell(bom.name)}${bom.partNumber ? ` (${cell(bom.partNumber)})` : ""}`, "", ...(bom.description ? [cell(bom.description), ""] : []), `| ${COLUMNS.map(([h]) => h).join(" | ")} |`, `| ${COLUMNS.map(([h]) => (h === "Qty" || h === "Item" || h.startsWith("Volume") || h.startsWith("Mass") ? "---:" : "---")).join(" | ")} |`];
   for (const r of bom.rows) out.push(`| ${COLUMNS.map(([, f]) => cell(f(r))).join(" | ")} |`);
   out.push("", `${bom.totals.items} line${bom.totals.items === 1 ? "" : "s"}, ${bom.totals.quantity} part${bom.totals.quantity === 1 ? "" : "s"}${bom.totals.mass !== undefined ? `, ${num(bom.totals.mass, 1)} g${bom.totals.massUnknown ? ` (${bom.totals.massUnknown} line${bom.totals.massUnknown === 1 ? "" : "s"} without a material density not included)` : ""}` : ""}.`);
-  if (bom.subassemblies?.length) out.push("", `Subassemblies: ${bom.subassemblies.map((s) => `${s.quantity}× ${cell(s.name)}`).join(", ")}.`);
+  if (bom.subassemblies?.length) out.push("", `Subassemblies: ${bom.subassemblies.map((s) => `${s.quantity}× ${cell(s.name)}${s.partNumber ? ` (${cell(s.partNumber)})` : ""}`).join(", ")}.`);
   return out.join("\n") + "\n";
 }

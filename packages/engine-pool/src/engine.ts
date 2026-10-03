@@ -13,7 +13,7 @@ declare const POOL: { worker: string; init: Record<string, unknown>; timeoutMs: 
 const cfg = (globalThis as any).POOL as typeof POOL;
 
 /** Requests that run user script code: the watchdog covers them once the worker says "started". */
-const WATCHED = new Set(["regenerate", "regenerateSnapshot", "setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies"]);
+const WATCHED = new Set(["regenerate", "regenerateSnapshot", "setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "evaluate"]);
 const CRASH_WINDOW_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
 
@@ -30,8 +30,8 @@ const meshes = new Map<string, any>(); // last regeneration result per part (wit
 // regeneration is deterministic: reuse its metadata and the mesh already held by this host.
 const regenerations = new Map<string, any>();
 let revision = 0;
-const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export"]);
-const POSED_READS = new Set(["measure", "interference", "interferencePairs", "interferences", "export"]);
+const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
+const POSED_READS = new Set(["measure", "interference", "interferencePairs", "distancePairs", "interferences", "export"]);
 const readCache = new Map<string, { value: any; bytes: number }>();
 let readBytes = 0, readRevision = 0, poses = "";
 function clearReads() {
@@ -147,8 +147,8 @@ function arm(id: number) {
   const p = pending.get(id);
   if (!p || p.timer !== null || !WATCHED.has(p.req.op)) return;
   p.timer = setTimeout(() => {
-    const what = p.req.op === "regenerate" || p.req.op === "regenerateSnapshot" ? "regeneration" : "loading the scripts";
-    const where = what === "regeneration" ? "the script may loop forever" : "a script may loop forever at its top level";
+    const what = p.req.op === "regenerate" || p.req.op === "regenerateSnapshot" ? "regeneration" : p.req.op === "evaluate" ? "evaluation" : "loading the scripts";
+    const where = what === "loading the scripts" ? "a script may loop forever at its top level" : what === "evaluation" ? "the expression or the code it calls may loop forever" : "the script may loop forever";
     // Every pending call belongs to the terminated worker, including queued calls.
     restart(Object.assign(new Error(`${what} timed out after ${cfg.timeoutMs / 1000} s: ${where}`), { timeout: true }), false);
   }, cfg.timeoutMs);
