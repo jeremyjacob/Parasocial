@@ -1,5 +1,56 @@
 import { test, expect, openExample, wsEval } from './fixtures';
 
+test('busy agents animate without continuous style work or stationary geometry redraws', async ({ page, user }) => {
+  void user;
+  await openExample(page, 'bracket', ['bracket']);
+  await wsEval(page, `(async () => {
+    const { mutators } = await import('/@fs${process.cwd()}/packages/sync/src/mutators.ts');
+    const part = ws.partInfos[0];
+    // Stress the activity UI without generating extra geometry.
+    ws.partInfos = [part, ...Array.from({ length: 39 }, (_, i) => ({ ...part, id: 'activity:' + i, name: 'Activity part ' + i }))];
+    for (const [i, status] of ['working', 'writing', 'working'].entries()) {
+      const id = crypto.randomUUID();
+      await ws.zero.mutate(mutators.agent.start({ id, clientName: 'Activity agent ' + i, documentID: ws.documentID })).client;
+      await ws.zero.mutate(mutators.agent.setStatus({ id, status, detail: { path: part.file } })).client;
+    }
+  })()`);
+  await page.getByRole('button', { name: 'Expand Bracket', exact: true }).click();
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(2500);
+  const running = () => page.getByTestId('parts-panel').evaluate((tree) =>
+    tree.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length,
+  );
+  expect(await running()).toBeGreaterThanOrEqual(40);
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const metrics = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
+  const frames = await wsEval<number>(page, 'ws.viewer.stats.frames');
+  const before = await metrics();
+  await page.waitForTimeout(1000);
+  const after = await metrics();
+  console.log('busy agents:', {
+    styleRecalculations: after.RecalcStyleCount - before.RecalcStyleCount,
+    layouts: after.LayoutCount - before.LayoutCount,
+    taskMs: (after.TaskDuration - before.TaskDuration) * 1000,
+  });
+  expect(after.RecalcStyleCount - before.RecalcStyleCount).toBeLessThanOrEqual(4);
+  expect(after.LayoutCount - before.LayoutCount).toBeLessThanOrEqual(4);
+  expect(await wsEval<number>(page, 'ws.viewer.stats.frames')).toBe(frames);
+  await cdp.detach();
+  await page.screenshot({ path: test.info().outputPath('busy-agents.png') });
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await running()).toBe(0);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  expect(await running()).toBeGreaterThanOrEqual(40);
+  await wsEval(page, `(async () => {
+    const { mutators } = await import('/@fs${process.cwd()}/packages/sync/src/mutators.ts');
+    for (const agent of ws.agents) await ws.zero.mutate(mutators.agent.setStatus({ id: agent.id, status: 'idle' })).client;
+  })()`);
+  await expect.poll(running).toBe(0);
+});
+
 test('idle workspace stops animation work and wakes for camera and geometry changes', async ({ page, user }) => {
   void user;
   await openExample(page, 'bracket', ['bracket']);

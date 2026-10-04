@@ -171,6 +171,14 @@
 		background-position: -50% 0;
 	}
 }
+@keyframes ps-row-shimmer {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(100%);
+	}
+}
 @keyframes ps-progress {
 	0% {
 		transform: translateX(-100%) scaleX(0.3);

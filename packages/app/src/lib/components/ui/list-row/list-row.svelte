@@ -115,9 +115,10 @@
 	onpointerenter={paintOver}
 >
 	{#if busy}
+		<!-- Move a fixed gradient on the compositor; background-position repaints every busy row each frame. -->
 		<span
 			aria-hidden="true"
-			class="pointer-events-none absolute inset-0 animate-[ps-shimmer_1.8s_linear_infinite] bg-[length:200%_100%] motion-reduce:animate-none"
+			class="pointer-events-none absolute inset-0 animate-[ps-row-shimmer_1.8s_linear_infinite] motion-reduce:animate-none"
 			style="background-image:linear-gradient(100deg, transparent 30%, var(--accent-subtle) 50%, transparent 70%)"
 		></span>
 	{/if}
