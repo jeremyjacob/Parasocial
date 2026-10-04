@@ -24,11 +24,20 @@ export function vertexOf(r: OpRecord, i: number): Vec3 {
   return (c.vertex[i] ??= vertexPoint(entityShape(r, "vertex", i)));
 }
 
-/** Representative point of an entity (face centroid, edge midpoint, vertex). */
+/**
+ * Representative point of an entity: face centroid, vertex, edge midpoint, except a closed circle or
+ * ellipse uses its center (its midpoint is just opposite wherever the seam happens to be).
+ */
 export function centerOf(r: OpRecord, kind: EntityKind, i: number): Vec3 {
   if (kind === "face") return faceOf(r, i).center;
-  if (kind === "edge") return edgeOf(r, i).mid;
+  if (kind === "edge") return edgeCenter(edgeOf(r, i));
   return vertexOf(r, i);
+}
+export const edgeCenter = (e: EdgeInfo): Vec3 => (e.closed && e.center ? e.center : e.mid);
+
+/** A point on or near the entity (face centroid, edge midpoint, vertex): a cheap prefilter for distance queries. */
+export function pointOn(r: OpRecord, kind: EntityKind, i: number): Vec3 {
+  return kind === "edge" ? edgeOf(r, i).mid : centerOf(r, kind, i);
 }
 
 /** Principal direction: face normal (plane) / axis (cylinder, cone); line direction / circle axis. */

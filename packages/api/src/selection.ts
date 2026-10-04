@@ -1,7 +1,7 @@
 // Entity sets: selectors, filters (.planar(), .parallelTo(), .largest()) and set operations.
 // A set belongs to one op result; used on a downstream solid it is re-resolved by stable name.
 import type { EntityKind, Vec3 } from "@parasocial/kernel";
-import { entityName, nameIndex, select, isSeamEdge, faceOf, edgeOf, vertexOf, centerOf, directionOf, dot, dist, SelectorError, createdBy, resolveOps, lineage, type OpRecord } from "@parasocial/naming";
+import { entityName, nameIndex, select, isSeamEdge, faceOf, edgeOf, vertexOf, centerOf, edgeCenter, directionOf, dot, dist, SelectorError, createdBy, resolveOps, lineage, type OpRecord } from "@parasocial/naming";
 import { axisVec, type AxisLike } from "./plane";
 import { userError, warn } from "./op";
 
@@ -10,6 +10,7 @@ export type Entity = {
   kind: EntityKind;
   index: number;
   name: string;
+  /** Face centroid, edge midpoint (a full circle's center), vertex point. Used by nearest, sortBy "x"/"y"/"z" and ">Z". */
   center: Vec3;
   /** faces */
   area?: number;
@@ -34,7 +35,7 @@ export function entityView(r: OpRecord, kind: EntityKind, i: number): Entity {
   }
   if (kind === "edge") {
     const e = edgeOf(r, i);
-    return Object.assign(base, { center: e.mid, length: e.length, curve: e.curve, direction: e.direction, radius: e.radius, axis: e.axis });
+    return Object.assign(base, { center: edgeCenter(e), length: e.length, curve: e.curve, direction: e.direction, radius: e.radius, axis: e.axis });
   }
   const p = vertexOf(r, i);
   return Object.assign(base, { center: p, point: p });
@@ -74,7 +75,8 @@ type SortKey ="area" | "length" | "radius" | "x" | "y" | "z" | ((e: Entity) => n
  *
  * Selector strings (also accepted by `.filter("…")`):
  * - names: `"base.side"`, `"bore"`, `"base.cap.end & bore"` — tags and roles in stable names. An
- *   edge or vertex matches when a face around it does, so `edges("top & bore")` is the rim where they meet.
+ *   edge or vertex matches when a face around it does, so `edges("bore & plate.cap.end")` is the rim
+ *   where the two named faces meet (qualify a role like `cap.end` with its op tag).
  * - extremes: `">Z"` (largest center z), `"<X"` (smallest x), `">Z[1]"` (second highest), `">(1,1,0)"`.
  * - direction: `"|Z"` faces whose normal is parallel to Z (top and bottom) / edges along Z;
  *   `"#Z"` faces whose normal is perpendicular to Z (the sides) / edges perpendicular to Z;

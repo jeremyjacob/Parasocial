@@ -157,7 +157,8 @@ export function bearing(size: BearingSize, opts: TagOpt = {}): Solid {
     [ri, b.B],
     [b.d / 2, b.B],
   ];
-  const s = sketch(plane.XZ, { tag: T }).polyline(prof).revolve(360, { tag: T });
+  // a path, not a polyline: faces keep their `<T>/line<n>` names
+  const s = prof.slice(1).reduce((k, q) => k.lineTo(q), sketch(plane.XZ, { tag: T }).moveTo(prof[0])).close().revolve(360, { tag: T });
   return finish(s, STEEL, "steel")
     .connector("bore", { origin: [0, 0, b.B / 2] })
     .connector("back", { origin: [0, 0, 0] })

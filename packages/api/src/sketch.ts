@@ -107,7 +107,7 @@ export class Sketch {
     const sides = ["bottom", "right", "top", "left"];
     if (opts.fillet) {
       if (opts.fillet * 2 > Math.min(w, h) + 1e-9) userError(`rect fillet ${opts.fillet} is too large for a ${w} × ${h} rect (max ${Math.min(w, h) / 2})`);
-      this.loops.push({ closed: true, segs: roundedLoop(p, opts.fillet, (i) => `${base}/${sides[i]}`, (i) => `${base}/corner${i + 1}`) });
+      this.loops.push({ closed: true, segs: roundedLoop(p, p.map(() => opts.fillet!), (i) => `${base}/${sides[i]}`, (i) => `${base}/corner${i + 1}`, "rect fillet") });
       return this;
     }
     this.loops.push({ closed: true, segs: sides.map((s, i) => ({ kind: "line" as const, a: p[i], b: p[(i + 1) % 4], name: `${base}/${s}` })) });
@@ -172,23 +172,46 @@ export class Sketch {
 
   /**
    * Polyline through `points`, closed unless `close: false` (then an open path you can continue).
-   * `fillet` rounds every corner of a closed one. Segments are `<tag>/side1`, `side2`, ….
-   * @example sketch(plane.XZ).polyline([[0, 0], [30, 0], [30, 5], [5, 20], [0, 20]]).extrude(10)
+   * Segments are `<tag>/side1` (points[0] → points[1]), `side2`, …; a closed one's last side returns
+   * to points[0]. `fillet` rounds a closed one's corners: a radius for all, or `{ [pointIndex]: radius }`
+   * for some (the rest stay sharp); the arc at points[i] is `<tag>/corner<i+1>`.
+   * @example sketch(plane.XZ).polyline([[0, 0], [30, 0], [30, 5], [5, 20], [0, 20]], { fillet: { 2: 2, 3: 4 } }).extrude(10)
    */
-  polyline(points: P2[], opts: SegOpts & { close?: boolean; fillet?: number } = {}): this {
+  polyline(points: P2[], opts: SegOpts & { close?: boolean; fillet?: number | Record<number, number> } = {}): this {
     points = points2(points, "polyline");
+    const closed = opts.close !== false;
+    if (closed && points.length > 3 && eq(points[0], points[points.length - 1])) points = points.slice(0, -1);
     if (points.length < 2) userError("polyline needs at least 2 points");
-    optNum(opts.fillet, "polyline fillet");
-    if (opts.fillet && opts.close !== false) {
-      // rounded corners (2D fillet)
-      this.checkTag(opts.tag);
-      const base = opts.tag ?? `${this.prefix()}polyline${this.n("polyline")}`;
-      this.loops.push({ closed: true, segs: roundedLoop(points, opts.fillet, (i) => `${base}/side${i + 1}`, (i) => `${base}/corner${i + 1}`) });
+    const n = points.length;
+    const f = opts.fillet;
+    const radii = points.map(() => 0);
+    if (typeof f === "number" || f === undefined) radii.fill(optNum(f, "polyline fillet") ?? 0);
+    else if (f && typeof f === "object" && !Array.isArray(f))
+      for (const [k, r] of Object.entries(f)) {
+        const i = Number(k);
+        if (!Number.isInteger(i) || i < 0 || i >= n) userError(`polyline fillet: corner ${JSON.stringify(k)} is not a point index (0…${n - 1})`);
+        radii[i] = num(r, `polyline fillet at point ${i}`);
+      }
+    else userError(`polyline fillet must be a radius or { [pointIndex]: radius } (got ${JSON.stringify(f)})`);
+    if (radii.some((r) => r < 0)) userError("polyline fillet radii must not be negative");
+    this.checkTag(opts.tag);
+    const base = opts.tag ?? `${this.prefix()}polyline${this.n("polyline")}`;
+    const side = (i: number) => `${base}/side${i + 1}`;
+    if (!closed) {
+      if (radii.some((r) => r)) warn("polyline fillet only rounds closed polylines; this one is open (close: false)", "operation");
+      this.moveTo(points[0]);
+      for (let i = 1; i < n; i++) {
+        if (eq(points[i - 1], points[i])) continue;
+        this.path!.segs.push({ kind: "line", a: points[i - 1], b: points[i], name: side(i - 1) });
+        this.cursor = [...points[i]] as P2;
+      }
       return this;
     }
-    this.moveTo(points[0]);
-    for (let i = 1; i < points.length; i++) this.lineTo(points[i]);
-    if (opts.close !== false) this.close(opts);
+    this.endPath();
+    if (radii.some((r) => r)) {
+      points.forEach((p, i) => eq(p, points[(i + 1) % n]) && userError(`polyline fillet: points ${i} and ${(i + 1) % n} coincide`));
+      this.loops.push({ closed: true, segs: roundedLoop(points, radii, side, (i) => `${base}/corner${i + 1}`, "polyline fillet") });
+    } else this.loops.push({ closed: true, segs: points.flatMap((p, i): Seg[] => (eq(p, points[(i + 1) % n]) ? [] : [{ kind: "line", a: p, b: points[(i + 1) % n], name: side(i) }])) });
     return this;
   }
 
@@ -416,11 +439,19 @@ export class Sketch {
   }
 
   private offsetBy = 0;
+  private offsetJoin: "round" | "sharp" = "round";
 
-  /** Offset every closed profile outward by `d` (negative shrinks). Corners round. */
-  offset(d: number): this {
+  /**
+   * Offset every closed profile outward by `d`; negative insets it (a wall's inner outline, a gasket,
+   * a pocket floor). Corners the offset opens up (outer ones growing, inner ones on an inset) round by
+   * default; `join: "sharp"` extends the edges to meet instead. Edges are named `<segment>+offset`.
+   * @example sketch(plane.XY).polyline([[0, 0], [40, 0], [40, 10], [15, 10], [15, 30], [0, 30]]).offset(-2, { join: "sharp" }).extrude(3)
+   */
+  offset(d: number, opts: { join?: "round" | "sharp" } = {}): this {
     num(d, "offset");
+    if (opts.join !== undefined && opts.join !== "round" && opts.join !== "sharp") userError(`offset join must be "round" or "sharp" (got ${JSON.stringify(opts.join)})`);
     this.offsetBy += d;
+    if (opts.join) this.offsetJoin = opts.join;
     return this;
   }
 
@@ -550,20 +581,20 @@ export class Sketch {
       build: () => buildProfile(pl, loops),
     });
     if (!this.offsetBy) return rec;
-    const d = this.offsetBy;
+    const d = this.offsetBy,
+      join = this.offsetJoin;
     // offset edges are named after the segment they came from: `outline/right+offset`
     return runOp({
       type: "offset",
-      params: { d },
+      params: { d, join },
       inputs: [rec],
       build: () => {
-        const built = offsetFace(rec.shape, d);
-        built.maker?.delete?.();
+        const built = offsetFace(rec.shape, d, { join });
         return {
-          built: { shape: built.shape, maker: null },
+          built,
           history: (topo) => ({ face: topo.faces.items.map(() => []), edge: topo.edges.items.map(() => []), vertex: topo.vertices.items.map(() => []) }),
           roles: ({ topo }) => ({
-            edge: topo.edges.items.map((e: any, i: number) => {
+            edge: topo.edges.items.map((e: any) => {
               // nearest source segment by midpoint: offsets keep order and shape
               const mid = edgeInfo(e).mid;
               let best = "",
@@ -573,7 +604,7 @@ export class Sketch {
                 const dd = Math.hypot(sm[0] - mid[0], sm[1] - mid[1], sm[2] - mid[2]);
                 if (dd < bd) (bd = dd), (best = rec.roles.edge?.[j] ?? `edge${j}`);
               });
-              return `${best}+offset${i ? "" : ""}`;
+              return `${best}+offset`;
             }),
           }),
         };
@@ -631,8 +662,10 @@ export class Sketch {
   /**
    * Revolve the closed profiles `angle` degrees (default 360) about `axis`: by default the sketch's
    * own v axis through its origin (world Z for `plane.XZ` and `plane.YZ`), or a world axis "X"/"Y"/"Z"
-   * through the world origin, or `{ origin, direction }`. Keep the profile on one side of the axis.
+   * through the world origin, or `{ origin, direction }` for any other axis (a cone or seat about a
+   * hole's axis). Keep the profile on one side of the axis.
    * @example sketch(plane.XZ).rect(5, 20, { at: [10, 0], center: false }).revolve() // tube, r 10..15, z 0..20
+   * @example sketch(plane.XZ).polyline([[30, 0], [36, 0], [30, 6]]).revolve(360, { axis: { origin: [30, 0, 0], direction: "Z" } }) // cone about x = 30
    */
   revolve(angle = 360, opts: RevolveOpts = {}): Solid {
     num(angle, "revolve angle");
@@ -845,29 +878,39 @@ function dir2(v: P2, what: string): P2 {
 
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
-/** A closed polygon with every corner rounded to radius r (tangent arcs). */
-function roundedLoop(pts: P2[], r: number, side: (i: number) => string, corner: (i: number) => string): Seg[] {
+/** A closed polygon with corner i rounded to radius r[i] (tangent arcs; 0 leaves it sharp). */
+function roundedLoop(pts: P2[], r: number[], side: (i: number) => string, corner: (i: number) => string, what: string): Seg[] {
   const n = pts.length;
   const segs: Seg[] = [];
-  const cut: { in: P2; out: P2; mid: P2 }[] = [];
-  for (let i = 0; i < n; i++) {
-    const p = pts[i],
-      a = pts[(i - 1 + n) % n],
+  const cut = pts.map((p, i) => {
+    const a = pts[(i - 1 + n) % n],
       b = pts[(i + 1) % n];
     const u1 = norm2([a[0] - p[0], a[1] - p[1]]),
       u2 = norm2([b[0] - p[0], b[1] - p[1]]);
     const cos = u1[0] * u2[0] + u1[1] * u2[1];
-    const half = Math.acos(Math.max(-1, Math.min(1, cos))) / 2;
-    const t = r / Math.tan(half);
+    // sharp, or straight through (nothing to round)
+    if (!r[i] || cos < -1 + 1e-12) return { in: p, out: p, t: 0 };
+    const half = Math.acos(Math.min(1, cos)) / 2;
+    if (half < 1e-9) userError(`${what}: the outline turns back on itself at point ${i}, so that corner can't be rounded`);
+    const t = r[i] / Math.tan(half);
     const bis = norm2([u1[0] + u2[0], u1[1] + u2[1]]);
-    const c: P2 = [p[0] + bis[0] * (r / Math.sin(half)), p[1] + bis[1] * (r / Math.sin(half))];
-    const mid: P2 = [c[0] - bis[0] * r, c[1] - bis[1] * r];
-    cut.push({ in: [p[0] + u1[0] * t, p[1] + u1[1] * t], out: [p[0] + u2[0] * t, p[1] + u2[1] * t], mid });
+    const c: P2 = [p[0] + bis[0] * (r[i] / Math.sin(half)), p[1] + bis[1] * (r[i] / Math.sin(half))];
+    const mid: P2 = [c[0] - bis[0] * r[i], c[1] - bis[1] * r[i]];
+    return { in: [p[0] + u1[0] * t, p[1] + u1[1] * t] as P2, out: [p[0] + u2[0] * t, p[1] + u2[1] * t] as P2, mid, t };
+  });
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const len = Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+    if (cut[i].t + cut[j].t > len + 1e-9) {
+      const ends = [i, j].filter((k) => cut[k].t).map((k) => `${r[k]} at point ${k}`).join(" and ");
+      userError(`${what} ${ends} doesn't fit: side ${i + 1} is ${+len.toFixed(4)} long and the rounding${cut[i].t && cut[j].t ? "s need" : " needs"} ${+(cut[i].t + cut[j].t).toFixed(4)} of it`);
+    }
   }
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
-    segs.push({ kind: "line", a: cut[i].out, b: cut[j].in, name: side(i) });
-    segs.push({ kind: "arc", a: cut[j].in, m: cut[j].mid, b: cut[j].out, name: corner(j) });
+    if (!eq(cut[i].out, cut[j].in)) segs.push({ kind: "line", a: cut[i].out, b: cut[j].in, name: side(i) });
+    const m = cut[j].mid;
+    if (m) segs.push({ kind: "arc", a: cut[j].in, m, b: cut[j].out, name: corner(j) });
   }
   return segs;
 }

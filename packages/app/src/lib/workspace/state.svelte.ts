@@ -77,6 +77,12 @@ export class WorkspaceState {
 	}
 	hidden = $state<string[]>([]);
 	/**
+	 * Isolate (Shift+H): only these parts and instances show; null when not isolated. A view layer
+	 * over `hidden` that never writes to it, so leaving restores the visibility from before. Like
+	 * `hidden`, it's per session and never synced.
+	 */
+	isolated = $state.raw<string[] | null>(null);
+	/**
 	 * The studio shown in the viewport: one at a time, like a CAD document's tabs. An assembly
 	 * studio shows its own copies of the parts it joins. Remembered per document; null = the first.
 	 */
@@ -225,6 +231,8 @@ export class WorkspaceState {
 	/** Show one studio in the viewport (selection outside it is dropped). */
 	setActiveStudio(file: string) {
 		if (this.studio?.file === file) return;
+		// isolation is of the studio's own parts
+		this.exitIsolate();
 		this.activeStudio = file;
 		try {
 			localStorage.setItem(`parasocial:studio:${this.documentID}`, file);
@@ -573,7 +581,7 @@ export class WorkspaceState {
 			appearance: r.appearance,
 			dim: !r.ok
 		}, { crossfade });
-		v.setVisible(id, !this.hidden.includes(id));
+		v.setVisible(id, this.isShown(id));
 		this.highlightErrors(r);
 	}
 
@@ -896,8 +904,54 @@ export class WorkspaceState {
 		this.setVisibility([{ part, hidden }]);
 	}
 
-	/** One visibility action, including multi-selection toggles and Show all. */
+	/** Whether a part shows in the viewport: not hidden, or while isolated, one of the isolated. */
+	isShown(part: string) {
+		return this.isolated ? this.isolated.includes(part) : !this.hidden.includes(part);
+	}
+
+	/** Show only these parts (shown in the viewport); hidden ones among them show too, while isolated. */
+	isolate(parts: string[]) {
+		const shown = new Set(this.shownParts);
+		const ids = [...new Set(parts)].filter((p) => shown.has(p));
+		if (!ids.length) return false;
+		this.isolated = ids;
+		this.refreshVisibility();
+		return true;
+	}
+
+	/** Leave isolation: every part's visibility is what it was before (hidden stays hidden). */
+	exitIsolate() {
+		if (!this.isolated) return;
+		this.isolated = null;
+		this.refreshVisibility();
+	}
+
+	/** Shift+H: isolate the selected parts, or leave isolation. False when there was nothing to do. */
+	toggleIsolate() {
+		if (this.isolated) return (this.exitIsolate(), true);
+		return this.isolate(this.selection.map((r) => r.part));
+	}
+
+	private refreshVisibility() {
+		for (const id of this.shownParts) this.viewer?.setVisible(id, this.isShown(id));
+		this.asm.check();
+	}
+
+	/**
+	 * One visibility action, including multi-selection toggles and Show all. While isolated, hiding
+	 * and showing change what's isolated instead (not undoable, like isolating), so leaving still
+	 * restores the visibility from before.
+	 */
 	setVisibility(changes: Visibility[]) {
+		if (this.isolated) {
+			const isolated = new Set(this.isolated);
+			for (const { part, hidden } of changes) {
+				if (hidden) isolated.delete(part);
+				else isolated.add(part);
+			}
+			this.isolated = [...isolated];
+			return this.refreshVisibility();
+		}
 		const desired = new Map(changes.map(({ part, hidden }) => [part, hidden]));
 		const redo = [...desired].filter(([part, hidden]) => this.hidden.includes(part) !== hidden).map(([part, hidden]) => ({ part, hidden }));
 		if (!redo.length) return;
@@ -913,9 +967,10 @@ export class WorkspaceState {
 		for (const change of changes) {
 			if (change.hidden) hidden.add(change.part);
 			else hidden.delete(change.part);
-			this.viewer?.setVisible(change.part, !change.hidden);
 		}
 		this.hidden = [...hidden];
+		// undoing a visibility change while isolated changes what shows after leaving
+		for (const change of changes) this.viewer?.setVisible(change.part, this.isShown(change.part));
 		this.asm.check();
 	}
 

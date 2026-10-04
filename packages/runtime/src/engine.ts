@@ -2,11 +2,12 @@
 // cache, and answers geometry queries. Environment-agnostic: runs in the browser worker, in
 // the headless engine pool, and under bun test.
 import { noteKernelFault, faultMessage, boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
-import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
+import { OpCache, edgeCenter, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
 import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
+import { withinScope } from "./assembly-scope";
 import { evaluateExpression, type EvaluateResult } from "./evaluate";
 import { zipSync, strToU8 } from "fflate";
 
@@ -50,8 +51,16 @@ export type AssemblyInfo = {
   joints: AssemblyJoint[];
   /** Joints tied to each other (gear, rack and pinion, screw, linear), by joint name. */
   relations: AssemblyRelation[];
+  /** Copies that overlap on purpose, from `expectOverlap` (omitted when none). */
+  overlaps?: AssemblyOverlap[];
   problems: Problem[];
 };
+
+/**
+ * Two copies that overlap on purpose (`expectOverlap`): instance ids, or subassembly copy ids
+ * standing for all their parts (`withinScope`).
+ */
+export type AssemblyOverlap = { a: string; b: string; scope: string; reason?: string; source?: SourceRef };
 
 /**
  * Two joints' values tied together: b = ratio·a + offset, each in its own unit (degrees, mm).
@@ -100,8 +109,11 @@ export type AssemblyJoint = {
   source?: SourceRef;
 };
 
-/** Where two parts overlap: the shared volume, meshed in part `a`'s own coordinates. */
-export type Interference = { a: string; b: string; volume: number; mesh?: MeshData };
+/** Where two solids overlap, in world (posed) coordinates: the shared volume, its bounding box and centroid. */
+export type Overlap = { volume: number; bbox: { min: Vec3; max: Vec3 }; centroid: Vec3 };
+
+/** Where two parts overlap: the shared volume (box and centroid in world coordinates), meshed in part `a`'s own coordinates. */
+export type Interference = { a: string; b: string; volume: number; bbox?: Overlap["bbox"]; centroid?: Vec3; mesh?: MeshData };
 
 /** A rigid transform from a part's modeled pose: rotation (row-major 3×3) and translation. */
 export type PartPose = { r: number[]; t: Vec3 };
@@ -206,7 +218,8 @@ export class Engine {
   private assemblyCache: AssemblyInfo[] | null = null;
   /** Dragged assembly positions: instance -> transform from its modeled pose. */
   private poses = new Map<string, PartPose>();
-  private interferenceCache = new Map<string, { volume: number; mesh?: MeshData }>();
+  /** Overlaps in part `a`'s own coordinates, by the two shapes and their relative pose. */
+  private interferenceCache = new Map<string, { volume: number; bbox?: Box; centroid?: Vec3; mesh?: MeshData }>();
   /** Parts another engine regenerates (multi-worker engine page): their shapes, for measure, interference and export. */
   private foreign = new Map<string, ForeignShape>();
   /** Shape-derived data survives script reruns; material and provenance remain fresh. */
@@ -214,7 +227,9 @@ export class Engine {
   private meshCache = new Map<string, { rec: OpRecord; mesh: MeshData; bytes: number }>();
   private meshBytes = 0;
   private boxes = new WeakMap<object, Box>();
-  private volumes = new Map<string, number>();
+  private solidVolumes = new WeakMap<object, number>();
+  /** overlap() results in part `a`'s own coordinates (null: none), by the two shapes and their relative pose. */
+  private volumes = new Map<string, Overlap | null>();
 
   setDocument(doc: DocumentState) {
     this.scripts = new Map(Object.entries(doc.scripts));
@@ -484,7 +499,46 @@ export class Engine {
         nb = names.get(r.b);
       if (na && nb) a.relations.push({ kind: r.kind, a: na, ia: r.ia, b: nb, ib: r.ib, ratio: r.ratio, offset: r.offset, scope, source: sourceOf(r.stack) });
     }
+    // copies that overlap on purpose: each must already be here (named by a joint, fix or insert)
+    for (const o of decl.overlaps) {
+      const source = sourceOf(o.stack);
+      const ids = (side: (Body | SubAssembly)[]) =>
+        side.flatMap((h) => {
+          const key = keyOf(h, source);
+          const id = key && `${scope}/${key}`;
+          if (!id) return [];
+          if ("__subassembly" in h ? a.subs.some((s) => s.id === id) : has(id)) return [id];
+          const what = isPartDef(h) ? h.name : `${h.of.name}${h.name === undefined ? "" : ` "${h.name}"`}`;
+          problem(`expectOverlap: "${what}" isn't in this assembly; join, fix or insert it first`, source);
+          return [];
+        });
+      const bs = ids(o.b);
+      for (const x of ids(o.a)) for (const y of bs) if (x !== y) (a.overlaps ??= []).push({ a: x, b: y, scope, ...(o.reason !== undefined && { reason: o.reason }), ...(source && { source }) });
+    }
     return fixed[0] ?? a.joints[firstJoint]?.a ?? a.instances.find((i) => i.id.startsWith(`${scope}/`))?.id;
+  }
+
+  /**
+   * Pairs of these instances a script says overlap on purpose: a joint's `{ overlap: true }`, or
+   * `expectOverlap` (a subassembly copy standing for all its parts).
+   */
+  intendedPairs(parts: string[]): [string, string][] {
+    if (!parts.some((p) => p.includes("/"))) return [];
+    let infos: AssemblyInfo[];
+    try {
+      infos = this.assemblies();
+    } catch {
+      return [];
+    }
+    const out: [string, string][] = [];
+    for (const a of infos) {
+      for (const j of a.joints) if (j.overlap) out.push([j.a, j.b]);
+      for (const o of a.overlaps ?? []) {
+        const ys = parts.filter((p) => withinScope(p, o.b));
+        if (ys.length) for (const x of parts) if (withinScope(x, o.a)) for (const y of ys) if (x !== y) out.push([x, y]);
+      }
+    }
+    return out;
   }
 
   /** Dragged positions of instances (transforms from the modeled pose); those not listed sit where they're modeled. */
@@ -499,12 +553,13 @@ export class Engine {
   }
 
   /**
-   * Where visible parts overlap. Pairs whose (posed) bounding boxes don't meet are skipped; each
-   * overlap comes back meshed in part `a`'s own coordinates, so it rides along with `a`.
+   * Where visible parts overlap. Pairs whose (posed) bounding boxes don't meet are skipped, as are
+   * `ignore` and the pairs a script says overlap on purpose (`intendedPairs`); each overlap comes back
+   * meshed in part `a`'s own coordinates, so it rides along with `a`, with its world box and centroid.
    * Contact (touching faces) isn't overlap: volumes below a hair are dropped.
    */
   interferences(parts: string[], ignore: [string, string][] = []): Interference[] {
-    const skip = new Set(ignore.flatMap(([a, b]) => [`${a}\u0000${b}`, `${b}\u0000${a}`]));
+    const skip = new Set([...ignore, ...this.intendedPairs(parts)].flatMap(([a, b]) => [`${a}\u0000${b}`, `${b}\u0000${a}`]));
     const items = parts.flatMap((p) => {
       // a part whose last run failed shows its last good geometry; the failed run's partial
       // result may already be released by the op cache
@@ -513,7 +568,7 @@ export class Engine {
       try {
         const bb = boundingBox(rec.shape);
         const pose = this.poses.get(p) ?? IDENTITY;
-        return [{ part: p, rec, box: worldBox(bb, pose), pose, volume: massProps(rec.shape).volume }];
+        return [{ part: p, rec, box: worldBox(bb, pose), pose, volume: this.solidVolume(rec) }];
       } catch {
         return [];
       }
@@ -533,24 +588,11 @@ export class Engine {
         if (!hit) {
           hit = { volume: 0 };
           try {
-            const r = kBoolean("intersect", A.rec.shape, placed(B.rec.shape, rel.r, rel.t));
-            r.maker?.delete?.();
-            const v = massProps(r.shape).volume;
-            // touching faces and tangent contact leave numerical slivers: not a collision
-            if (v > Math.max(1e-3, 1e-7 * Math.min(A.volume, B.volume))) {
-              hit.volume = v;
-              scoped(() => {
-                const t = topology(r.shape);
-                const bb = boundingBox(r.shape);
-                const tol = meshTolerances(Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]), "coarse");
-                hit!.mesh = tessellate(r.shape, t.faces, t.edges, tol.tolerance, tol.angular);
-              });
-            }
-            r.shape.delete?.();
+            hit = intersection(A.rec.shape, B.rec.shape, rel, Math.max(1e-3, 1e-7 * Math.min(A.volume, B.volume)), true) ?? hit;
           } catch {}
           this.interferenceCache.set(key, hit);
         }
-        if (hit.volume > 0) out.push({ a: A.part, b: B.part, volume: hit.volume, mesh: hit.mesh && cloneMesh(hit.mesh) });
+        if (hit.volume > 0) out.push({ a: A.part, b: B.part, volume: hit.volume, ...(hit.bbox && { bbox: worldBox(hit.bbox, A.pose), centroid: applyPose(A.pose, hit.centroid!) }), mesh: hit.mesh && cloneMesh(hit.mesh) });
       }
     // keep only what the current layout uses (plus a few recent, for drags back and forth)
     if (this.interferenceCache.size > 64) for (const k of [...this.interferenceCache.keys()].slice(0, this.interferenceCache.size - 64)) if (!live.has(k)) this.interferenceCache.delete(k);
@@ -806,7 +848,7 @@ export class Engine {
       d.neighbors = [...new Set([...nb].map((g) => entityName(rec, "face", g).str))];
     } else if (kind === "edge") {
       const e = edgeOf(rec, index);
-      Object.assign(d, { type: e.curve, length: e.length, radius: e.radius, axis: e.axis ?? e.direction, center: e.mid });
+      Object.assign(d, { type: e.curve, length: e.length, radius: e.radius, axis: e.axis ?? e.direction, center: edgeCenter(e) });
       d.neighbors = (rec.topo.edgeFaces[index] ?? []).map((f) => entityName(rec, "face", f).str);
     } else {
       d.center = vertexOf(rec, index);
@@ -899,62 +941,96 @@ export class Engine {
 
   /** Volume shared by two parts (0 when they don't interfere; contact slivers count as 0, as in `interferences`). */
   interference(a: string, b: string): number {
-    const A = this.body(a),
-      B = this.body(b);
+    return this.overlap(a, b)?.volume ?? 0;
+  }
+
+  /**
+   * Where two parts overlap at their poses: the shared volume, its bounding box and centroid (world);
+   * null when they don't, or can't be measured (contact slivers don't count, as in `interferences`).
+   */
+  overlap(a: string, b: string): Overlap | null {
     try {
-      const box = (rec: typeof A) => {
-        let bb = this.boxes.get(rec);
-        if (!bb) this.boxes.set(rec, bb = scoped(() => boundingBox(rec.shape)));
-        return bb;
-      };
-      const pa = this.poses.get(a) ?? IDENTITY, pb = this.poses.get(b) ?? IDENTITY;
-      const ab = worldBox(box(A), pa), bb = worldBox(box(B), pb);
-      if ([0, 1, 2].some((k) => ab.min[k] > bb.max[k] || bb.min[k] > ab.max[k])) return 0;
+      const A = this.body(a),
+        B = this.body(b);
+      const pa = this.poses.get(a) ?? IDENTITY,
+        pb = this.poses.get(b) ?? IDENTITY;
+      if (!boxesOverlap(worldBox(this.boxOf(A), pa), worldBox(this.boxOf(B), pb))) return null;
       const rel = composePose(invertPose(pa), pb);
       const key = `${A.key}|${B.key}|${[...rel.r, ...rel.t].join(",")}`;
-      const cached = this.volumes.get(key);
-      if (cached !== undefined) return cached;
-      const r = kBoolean("intersect", this.posedShape(a, A.shape), this.posedShape(b, B.shape));
-      r.maker?.delete?.();
-      const raw = massProps(r.shape).volume;
-      r.shape.delete?.();
-      const v = raw > 1e-3 ? raw : 0;
-      if (this.volumes.size >= 512) this.volumes.delete(this.volumes.keys().next().value!);
-      this.volumes.set(key, v);
-      return v;
+      let hit = this.volumes.get(key);
+      if (hit === undefined) {
+        hit = intersection(A.shape, B.shape, rel, Math.max(1e-3, 1e-7 * Math.min(this.solidVolume(A), this.solidVolume(B))), false);
+        if (this.volumes.size >= 512) this.volumes.delete(this.volumes.keys().next().value!);
+        this.volumes.set(key, hit);
+      }
+      return hit && { volume: hit.volume, bbox: worldBox(hit.bbox, pa), centroid: applyPose(pa, hit.centroid) };
     } catch {
-      return 0;
+      return null;
     }
   }
 
   /**
-   * Minimum distance and closest points (world, posed) per pair, or null when the pair is `within` or
-   * farther apart (posed bounding boxes grown by `within` don't meet) or can't be measured.
+   * overlap() per pair. With `budgetMs`, stops once that much time has passed (after at least one
+   * pair): the answer is then shorter than `pairs`, and the caller sends the rest again.
    */
-  distances(pairs: [string, string][], within: number): ({ distance: number; a: Vec3; b: Vec3 } | null)[] {
+  overlaps(pairs: [string, string][], budgetMs = Infinity): (Overlap | null)[] {
+    const end = Date.now() + budgetMs;
+    const out: (Overlap | null)[] = [];
+    for (const [a, b] of pairs) {
+      if (out.length && Date.now() > end) break;
+      out.push(this.overlap(a, b));
+    }
+    return out;
+  }
+
+  /**
+   * Minimum distance and closest points (world, posed) per pair, or null when the pair is `within` or
+   * farther apart (posed bounding boxes grown by `within` don't meet) or can't be measured. With
+   * `budgetMs`, stops once that much time has passed (after at least one pair): the answer is then
+   * shorter than `pairs`.
+   */
+  distances(pairs: [string, string][], within: number, budgetMs = Infinity): ({ distance: number; a: Vec3; b: Vec3 } | null)[] {
+    const end = Date.now() + budgetMs;
     const info = new Map<string, { box: Box; shape?: Shape } | null>();
     const get = (p: string) => {
       if (!info.has(p))
         try {
-          const rec = this.body(p);
-          let bb = this.boxes.get(rec);
-          if (!bb) this.boxes.set(rec, (bb = scoped(() => boundingBox(rec.shape))));
-          info.set(p, { box: worldBox(bb, this.poses.get(p) ?? IDENTITY) });
+          info.set(p, { box: worldBox(this.boxOf(this.body(p)), this.poses.get(p) ?? IDENTITY) });
         } catch {
           info.set(p, null);
         }
       return info.get(p)!;
     };
-    return pairs.map(([a, b]) => {
+    const out: ({ distance: number; a: Vec3; b: Vec3 } | null)[] = [];
+    for (const [a, b] of pairs) {
+      if (out.length && Date.now() > end) break;
       const A = get(a), B = get(b);
-      if (!A || !B || [0, 1, 2].some((k) => A.box.min[k] - within > B.box.max[k] || B.box.min[k] - within > A.box.max[k])) return null;
+      if (!A || !B || [0, 1, 2].some((k) => A.box.min[k] - within > B.box.max[k] || B.box.min[k] - within > A.box.max[k])) {
+        out.push(null);
+        continue;
+      }
       try {
         const d = kDistance((A.shape ??= this.posedShape(a)), (B.shape ??= this.posedShape(b)));
-        return d.distance < within ? d : null;
+        out.push(d.distance < within ? d : null);
       } catch {
-        return null;
+        out.push(null);
       }
-    });
+    }
+    return out;
+  }
+
+  /** A shape's (cached) bounding box, in its own coordinates. */
+  private boxOf(rec: { shape: Shape }): Box {
+    let bb = this.boxes.get(rec);
+    if (!bb) this.boxes.set(rec, (bb = scoped(() => boundingBox(rec.shape))));
+    return bb;
+  }
+
+  /** A shape's (cached) volume. */
+  private solidVolume(rec: { shape: Shape }): number {
+    let v = this.solidVolumes.get(rec);
+    if (v === undefined) this.solidVolumes.set(rec, (v = massProps(rec.shape).volume));
+    return v;
   }
 
   /** Export a part as STEP, STL or 3MF bytes. */
@@ -1144,6 +1220,30 @@ function worldBox(bb: Box, p: PartPose): Box {
     for (let k = 0; k < 3; k++) (min[k] = Math.min(min[k], w[k])), (max[k] = Math.max(max[k], w[k]));
   }
   return { min, max };
+}
+/**
+ * The volume `a` and `b` share (b moved by `rel`), in a's coordinates: its tight box and centroid,
+ * and with `mesh` a coarse mesh of it; null below `tiny` (touching faces and tangent contact leave
+ * numerical slivers: not a collision).
+ */
+function intersection(a: Shape, b: Shape, rel: PartPose, tiny: number, mesh: boolean): { volume: number; bbox: Box; centroid: Vec3; mesh?: MeshData } | null {
+  const r = kBoolean("intersect", a, placed(b, rel.r, rel.t));
+  r.maker?.delete?.();
+  try {
+    const m = massProps(r.shape);
+    if (!(m.volume > tiny)) return null;
+    const bbox = boundingBox(r.shape, { geometric: true });
+    const out: { volume: number; bbox: Box; centroid: Vec3; mesh?: MeshData } = { volume: m.volume, bbox, centroid: m.centroid };
+    if (mesh)
+      scoped(() => {
+        const t = topology(r.shape);
+        const tol = meshTolerances(Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]), "coarse");
+        out.mesh = tessellate(r.shape, t.faces, t.edges, tol.tolerance, tol.angular);
+      });
+    return out;
+  } finally {
+    r.shape.delete?.();
+  }
 }
 const boxesOverlap = (a: Box, b: Box) => [0, 1, 2].every((k) => a.min[k] < b.max[k] - 1e-6 && b.min[k] < a.max[k] - 1e-6);
 const cloneMesh = (m: MeshData): MeshData => ({ positions: m.positions.slice(), normals: m.normals.slice(), indices: m.indices.slice(), faceRanges: m.faceRanges.slice(), edgePositions: m.edgePositions.slice(), edgeRanges: m.edgeRanges.slice() });

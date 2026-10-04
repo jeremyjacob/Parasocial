@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadKernel } from "@parasocial/kernel";
 import { Engine } from "@parasocial/runtime";
-import { mergeOverrides, solveAssemblies, jointValues, scopedJointValues, poseTarget, expandTargets, posedBox, emptyPreview, findAssembly } from "../src/preview";
+import { mergeOverrides, solveAssemblies, jointValues, scopedJointValues, poseTarget, expandTargets, targetNames, closeMatches, posedBox, emptyPreview, findAssembly } from "../src/preview";
 import { posed, type RenderPart } from "@parasocial/engine-pool/render";
 
 const root = join(import.meta.dir, "../../../examples/hinge");
@@ -84,6 +84,19 @@ test("render targets: parts, instances and whole assemblies", () => {
   expect(expandTargets(["mechanism"], parts, infos).ids).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
   expect(expandTargets(["Hinged box", "mechanism/box"], parts, infos).ids).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
   expect(expandTargets(["nope", "mechanism/box:nope"], parts, infos).unknown).toEqual(["nope", "mechanism/box:nope"]);
+});
+
+test("close matches for unknown ids: case, last segment, substring, typos, then parents", () => {
+  const { e, infos } = hinge();
+  const names = targetNames(e.parts(), infos);
+  expect(names).toEqual(["box", "box:lid", "box:drawer", "mechanism", "Hinged box", "mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
+  expect(closeMatches("Box:LID", names)).toEqual(["box:lid", "mechanism/box:lid", "box"]);
+  expect(closeMatches("drawer", names)).toEqual(["box:drawer", "mechanism/box:drawer"]);
+  expect(closeMatches("hinged", names)).toEqual(["Hinged box"]);
+  expect(closeMatches("mechanism/box:lld", names)).toEqual(["mechanism/box:lid", "box:lid", "mechanism/box", "mechanism", "box"]);
+  expect(closeMatches("mechansim", names)).toEqual(["mechanism"]);
+  expect(closeMatches("zz", names)).toEqual([]);
+  expect(closeMatches("box", ["box:a", "box:b", "box:c", "box:d"], 2)).toEqual(["box:a", "box:b"]);
 });
 
 test("instance meshes move with their pose for renders", () => {

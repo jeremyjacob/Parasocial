@@ -8,6 +8,8 @@ import { names, nameIndex, resolveTarget, disambiguate, select, faceOf } from "@
 import { load, engineFor, regen, summarize, type Golden } from "./harness";
 
 const root = join(import.meta.dir, "../..");
+/** Per golden part: heavy studios (winch) regenerate in ~5 s, right at bun's default timeout; this checks shape, not speed. */
+const GOLDEN_TIMEOUT_MS = 30_000;
 const update = !!process.env.UPDATE_GOLDEN;
 beforeAll(load);
 
@@ -32,7 +34,7 @@ describe("golden: examples + corpus parts", () => {
         expect(Math.abs(g.volume - want.volume) / want.volume).toBeLessThan(1e-6);
         expect(Math.abs(g.area - want.area) / want.area).toBeLessThan(1e-6);
         expect(g.faceNames).toEqual(want.faceNames);
-      });
+      }, GOLDEN_TIMEOUT_MS);
     }
   }
 });

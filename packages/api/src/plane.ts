@@ -15,7 +15,8 @@
  * So `sketch(plane.XZ).rect(20, 10, { center: false }).extrude(3)` spans x 0..20, z 0..10, y −3..0;
  * use `extrude(-3)` or `plane.XZ.flipped()` to grow toward +Y. `symmetric: true` extrudes half each
  * way. `revolve()` defaults to the sketch's v axis through its origin (world Z for XZ and YZ).
- * `p.at([u, v])` or `p.at([x, y, z])` moves the origin; `p.rotated(deg, "x" | "y")` tilts about its own
+ * `p.at([u, v])` or `p.at([x, y, z])` moves the origin (`plane.XZ.at([0, 20, 0])` sketches at y = 20,
+ * no `offset(-20)` sign juggling); `p.rotated(deg, "x" | "y")` tilts about its own
  * axes (`plane.XY.rotated(90)` equals `plane.XZ`); `plane.threePoint(a, b, c)` has u along a→b and
  * normal by the right-hand rule. Solid.mirror("XZ") mirrors y → −y regardless of these normals.
  */
@@ -98,7 +99,7 @@ export class Plane {
     return new Plane(add(this.origin, scale(this.normal, d)), this.normal, this.xDir);
   }
 
-  /** Same orientation, new origin: a sketch point `[u, v]` on this plane, or a world point `[x, y, z]`. */
+  /** Same orientation, new origin: a sketch point `[u, v]` on this plane, or a world point `[x, y, z]` (`plane.XZ.at([0, y, 0])`: the XZ plane at world y). */
   at(p: readonly [number, number] | Vec3): Plane {
     const o = p?.length === 2 ? this.toWorld(vec2(p, "plane at")) : vec3(p, "plane at");
     return new Plane(o, this.normal, this.xDir);

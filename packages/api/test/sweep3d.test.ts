@@ -57,7 +57,7 @@ test("thread: triangular profile along a helix stays upright (no twist)", () => 
   console.log(f);
   // one face per profile segment per half turn (helixEdges), sharing the segment's name
   expect(new Set(f.filter((n) => n.startsWith("thread/thread · side · "))).size).toBe(3);
-  expect(f).toContain("thread/thread · side · tooth");
+  expect(f).toContain("thread/thread · side · tooth/side3");
 });
 
 test("sweep along a 3D path with line, arc and spline segments", () => {

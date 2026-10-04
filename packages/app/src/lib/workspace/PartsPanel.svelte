@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle } from '@lucide/svelte';
+	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle, Focus } from '@lucide/svelte';
 	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { ContextMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { toast } from '$lib/components/ui/toast';
@@ -149,16 +149,24 @@
 		ws.mutate(mutators.script.delete({ documentID: ws.documentID, path, baseVersion: sc.version, message: `Delete ${label}` } as any), `Delete ${label}`);
 	}
 
+	/** Isolate the parts (the menu's row selects first), or leave isolation (Shift+H). */
+	const isolateItem = (ids: () => string[]): MenuEntry =>
+		ws.isolated ? { label: 'Exit isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.exitIsolate() } : { label: 'Isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.isolate(ids()) };
+
 	function menuFor(id: string, name: string, file: string, siblings: number): MenuEntry[] {
 		// an instance is removed by editing its assembly, not by deleting a studio
 		const instance = sourcePart(id) !== id;
 		if (ws.readOnly)
 			return [
+				isolateItem(() => [...selectedPart]),
+				{ type: 'separator' },
 				{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
 				{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
 				{ label: 'Open code', icon: Code2, onSelect: () => openScript(ws.scriptOf(sourcePart(id))) }
 			];
 		return [
+			isolateItem(() => [...selectedPart]),
+			{ type: 'separator' },
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote([id]) },
 			{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
 			{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
@@ -190,6 +198,7 @@
 	}
 	function groupMenu(r: Row): MenuEntry[] {
 		return [
+			...(r.ids.length ? [isolateItem(() => r.ids), { type: 'separator' } as MenuEntry] : []),
 			...(!ws.readOnly && r.ids.length ? [{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote(r.ids) }] : []),
 			...(r.ids.length ? [{ label: 'Export…', icon: Download, onSelect: () => onExport(r.ids) }] : []),
 			{ label: 'Open assembly code', icon: Code2, onSelect: () => openScript(ws.asm.assemblies.find((a) => a.id === r.definition)?.file ?? `studios/${r.definition?.split(':')[0]}.ts`) },
@@ -262,7 +271,7 @@
 		{@const group = r.kind !== 'part'}
 		{@const open = expanded.has(r.id) || !!filter.trim()}
 		{@const selected = group ? r.ids.length > 0 && r.ids.every((id) => selectedPart.has(id)) : selectedPart.has(r.id)}
-		{@const visible = r.ids.some((id) => !ws.hidden.includes(id))}
+		{@const visible = r.ids.some((id) => ws.isShown(id))}
 		<li role="treeitem" aria-selected={selected} aria-expanded={group ? open : undefined} data-part={group ? undefined : r.id} data-subassembly={r.kind === 'subassembly' ? r.id : undefined} data-assembly={r.kind === 'assembly' ? r.id : undefined}>
 			<div style:padding-left="{(depth - 1) * 16}px">
 				<ContextMenu items={group ? groupMenu(r) : menuFor(r.id, r.name, file, siblings)} onOpen={() => group ? selectGroup(file, r) : ctxSelect(file, r.id)}>

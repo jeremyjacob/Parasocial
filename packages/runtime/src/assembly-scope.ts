@@ -37,3 +37,13 @@ export function findAssemblyScope(assemblies: AssemblyInfo[], id: string): Assem
     relations: assembly.relations.filter((r) => withinScope(r.scope, id)),
   };
 }
+
+/**
+ * Why two instances may overlap: "joint" (a joint between them says `{ overlap: true }`) or
+ * "expected" (`expectOverlap`, either side may be a subassembly copy holding them); else undefined.
+ */
+export function overlapIntended(a: Pick<AssemblyInfo, "joints" | "overlaps">, x: string, y: string): "joint" | "expected" | undefined {
+  if (a.joints.some((j) => j.overlap && ((j.a === x && j.b === y) || (j.a === y && j.b === x)))) return "joint";
+  const w = withinScope;
+  if (a.overlaps?.some((o) => (w(x, o.a) && w(y, o.b)) || (w(x, o.b) && w(y, o.a)))) return "expected";
+}

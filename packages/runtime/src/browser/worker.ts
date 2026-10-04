@@ -123,8 +123,10 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       return { value: engine.interference(req.a, req.b) };
     case "interferencePairs":
       return { value: req.pairs.map(([a, b]) => engine.interference(a, b)) };
+    case "overlapPairs":
+      return { value: engine.overlaps(req.pairs, req.budgetMs) };
     case "distancePairs":
-      return { value: engine.distances(req.pairs, req.within) };
+      return { value: engine.distances(req.pairs, req.within, req.budgetMs) };
     case "export": {
       const bytes = engine.exportParts(req.parts ?? (req.part ? [req.part] : []), req.format);
       // base64 so it survives JSON (pool) and structured clone alike

@@ -58,8 +58,8 @@ function timeoutMessage(req: any, limitMs: number): string {
   const where = what === "loading the scripts" ? "a script may loop forever at its top level" : what === "evaluation" ? "the expression or the code it calls may loop forever" : "the script may loop forever";
   return `${head}: no geometry operation was running, so ${where}${done}`;
 }
-const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
-const POSED_READS = new Set(["measure", "interference", "interferencePairs", "distancePairs", "interferences", "export"]);
+const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "overlapPairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
+const POSED_READS = new Set(["measure", "interference", "interferencePairs", "overlapPairs", "distancePairs", "interferences", "export"]);
 const readCache = new Map<string, { value: any; bytes: number }>();
 let readBytes = 0, readRevision = 0, poses = "";
 function clearReads() {
@@ -249,7 +249,7 @@ async function call(req: any): Promise<any> {
       if (cacheKey && v.ok && mesh && startedRevision === revision) regenerations.set(cacheKey, v);
       return { ok: true, value: meta };
     }
-    // overlap volumes only: their meshes are for the viewer
+    // overlap volumes, boxes and centroids only: their meshes are for the viewer
     if (req.op === "interferences" && Array.isArray(v)) {
       const value = v.map(({ mesh, ...x }: any) => x);
       if (readKey && startedReadRevision === readRevision) rememberRead(readKey, value);

@@ -826,15 +826,15 @@ export function split(shape: Shape, tools: Shape[]): Built {
   }));
 }
 
-/** Offset a planar face's outline by `d` (positive grows); inner loops become holes. */
-export function offsetFace(face: Shape, d: number): Built {
+/**
+ * Offset planar faces' outlines by `d` (positive grows); inner loops become holes. A compound of
+ * faces offsets each. `join`: "round" arcs round convex corners (default), "sharp" extends the edges
+ * to meet (GeomAbs_Intersection).
+ */
+export function offsetFace(shape: Shape, d: number, opts: { join?: "round" | "sharp" } = {}): Built {
   const O = oc();
+  const J = O.GeomAbs_JoinType;
   return guard("offset", () => scoped(() => {
-    const mk = tmp(new O.BRepOffsetAPI_MakeOffset(O.TopoDS.Face(face), O.GeomAbs_JoinType.GeomAbs_Arc, false));
-    mk.Perform(d, 0);
-    if (!mk.IsDone()) throw new KernelError("offset failed");
-    const wires = explore(mk.Shape(), "wire").items;
-    if (!wires.length) throw new KernelError(`offset ${d} collapsed the profile`);
     const area = (w: Shape) => {
       const f = faceFromWires(w);
       f.maker?.delete?.();
@@ -842,8 +842,19 @@ export function offsetFace(face: Shape, d: number): Built {
       O.BRepGProp.SurfaceProperties(f.shape, p, false, false);
       return p.Mass();
     };
-    const sorted = [...wires].sort((a, b) => area(b) - area(a));
-    return faceFromWires(sorted[0], sorted.slice(1));
+    const faces = explore(shape, "face").items.map((face) => {
+      const mk = tmp(new O.BRepOffsetAPI_MakeOffset(O.TopoDS.Face(face), opts.join === "sharp" ? J.GeomAbs_Intersection : J.GeomAbs_Arc, false));
+      mk.Perform(d, 0);
+      if (!mk.IsDone()) throw new KernelError("offset failed");
+      const wires = explore(mk.Shape(), "wire").items;
+      if (!wires.length) throw new KernelError(`offset ${d} collapsed the profile`);
+      const sorted = [...wires].sort((a, b) => area(b) - area(a));
+      const f = faceFromWires(sorted[0], sorted.slice(1));
+      f.maker?.delete?.();
+      return f.shape;
+    });
+    if (!faces.length) throw new KernelError("offset needs a planar face");
+    return { shape: faces.length === 1 ? faces[0] : compound(faces), maker: null };
   }));
 }
 

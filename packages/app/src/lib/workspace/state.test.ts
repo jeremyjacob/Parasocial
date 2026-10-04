@@ -86,6 +86,72 @@ describe('visibility undo', () => {
 	});
 });
 
+describe('isolate', () => {
+	let ws: WorkspaceState;
+	const shown = new Map<string, boolean>();
+
+	beforeEach(() => {
+		localStorage.clear();
+		shown.clear();
+		ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: { run: vi.fn(), mutate: vi.fn() } as unknown as ParasocialZero });
+		ws.viewer = { setVisible: (id: string, v: boolean) => shown.set(id, v), setSelection: vi.fn() } as unknown as Viewer;
+		vi.spyOn(ws, 'publishPresence').mockImplementation(() => {});
+		vi.spyOn(ws.asm, 'check').mockImplementation(() => {});
+		vi.spyOn(ws, 'partTree', 'get').mockReturnValue([{ file: 'studios/model.ts', name: 'Model', parts: [], assemblies: [], instances: [], ids: ['base', 'lid', 'handle', 'knob'] }] as any);
+	});
+	const part = (p: string) => ({ part: p, kind: 'part' as any, index: 0 });
+
+	it('shows only the selection and restores the visibility from before, hidden parts included', () => {
+		ws.setHidden('knob', true);
+		ws.select([part('base'), { part: 'base', kind: 'face', index: 2 }, part('lid')]);
+		expect(ws.toggleIsolate()).toBe(true);
+		expect(ws.isolated).toEqual(['base', 'lid']);
+		expect(Object.fromEntries(shown)).toEqual({ base: true, lid: true, handle: false, knob: false });
+		expect(ws.hidden).toEqual(['knob']);
+		expect(ws.undoStack).toHaveLength(1);
+		expect(ws.toggleIsolate()).toBe(true);
+		expect(ws.isolated).toBeNull();
+		expect(Object.fromEntries(shown)).toEqual({ base: true, lid: true, handle: true, knob: false });
+	});
+
+	it('does nothing without a selection, and isolating a hidden part shows it until exit', () => {
+		expect(ws.toggleIsolate()).toBe(false);
+		expect(ws.isolated).toBeNull();
+		ws.setHidden('knob', true);
+		ws.select([part('knob')]);
+		ws.toggleIsolate();
+		expect(ws.isShown('knob')).toBe(true);
+		ws.exitIsolate();
+		expect(ws.isShown('knob')).toBe(false);
+		expect(shown.get('knob')).toBe(false);
+	});
+
+	it('hiding and showing while isolated change the isolation, not the visibility restored on exit', () => {
+		ws.setHidden('knob', true);
+		ws.isolate(['base', 'lid']);
+		ws.setVisibility([{ part: 'lid', hidden: true }, { part: 'handle', hidden: false }]);
+		expect(new Set(ws.isolated)).toEqual(new Set(['base', 'handle']));
+		expect(shown.get('lid')).toBe(false);
+		expect(shown.get('handle')).toBe(true);
+		expect(ws.undoStack).toHaveLength(1);
+		ws.exitIsolate();
+		expect(ws.hidden).toEqual(['knob']);
+		expect(Object.fromEntries(shown)).toEqual({ base: true, lid: true, handle: true, knob: false });
+	});
+
+	it('leaves isolation when switching studios', () => {
+		vi.spyOn(ws, 'partTree', 'get').mockReturnValue([
+			{ file: 'studios/a.ts', name: 'A', parts: [], assemblies: [], instances: [], ids: ['base'] },
+			{ file: 'studios/b.ts', name: 'B', parts: [], assemblies: [], instances: [], ids: ['other'] }
+		] as any);
+		ws.viewer = { setVisible: (id: string, v: boolean) => shown.set(id, v), setSelection: vi.fn(), partIds: () => [], removePart: vi.fn() } as unknown as Viewer;
+		ws.isolate(['base', 'other']);
+		expect(ws.isolated).toEqual(['base']);
+		ws.setActiveStudio('studios/b.ts');
+		expect(ws.isolated).toBeNull();
+	});
+});
+
 it('toggles subassemblies as whole groups and drops scope properties for a part selection', () => {
 	localStorage.clear();
 	const ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: {} as ParasocialZero });

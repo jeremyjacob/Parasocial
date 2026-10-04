@@ -306,8 +306,8 @@ function send(m: { id: number; req: any }) {
     else waiting.set(part, [m]);
     dispatch();
   } else if (op === "affected") affected(m);
-  else if (op === "measure" || op === "interference" || op === "interferencePairs" || op === "distancePairs" || op === "interferences" || op === "export") {
-    const parts: string[] = op === "measure" ? [req.a.part, req.b.part] : op === "interference" ? [req.a, req.b] : op === "interferencePairs" || op === "distancePairs" ? [...new Set<string>(req.pairs.flat())] : op === "interferences" ? req.parts : (req.parts ?? (req.part ? [req.part] : []));
+  else if (op === "measure" || op === "interference" || op === "interferencePairs" || op === "overlapPairs" || op === "distancePairs" || op === "interferences" || op === "export") {
+    const parts: string[] = op === "measure" ? [req.a.part, req.b.part] : op === "interference" ? [req.a, req.b] : op === "interferencePairs" || op === "overlapPairs" || op === "distancePairs" ? [...new Set<string>(req.pairs.flat())] : op === "interferences" ? req.parts : (req.parts ?? (req.part ? [req.part] : []));
     crossChain = crossChain.then(() => cross(m, parts)).catch(() => {});
   } else post(slots[0], m.id, req);
 }

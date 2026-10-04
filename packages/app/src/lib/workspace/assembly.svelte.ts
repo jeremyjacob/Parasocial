@@ -253,7 +253,7 @@ export class AssemblyController {
 		const seq = ++this.seq;
 		// only the shown assembly's instances: in a studio, overlapping parts are just how things are modeled
 		const members = this.members;
-		const parts = ws.shownParts.filter((p) => members.has(p) && ws.results[p] && !ws.results[p].empty && !ws.hidden.includes(p));
+		const parts = ws.shownParts.filter((p) => members.has(p) && ws.results[p] && !ws.results[p].empty && ws.isShown(p));
 		if (!this.showInterference || parts.length < 2) {
 			this.shownSeq = seq;
 			if (this.overlaps.length) (this.overlaps = []), ws.viewer?.setInterferences([]);

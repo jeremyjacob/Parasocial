@@ -132,8 +132,8 @@ export function jointValues(info: AssemblyInfo, joints: Record<string, number | 
     const j = movable.find((x) => x.name === name);
     if (!j) {
       // a subassembly's joints are named under where it's inserted: "<assembly id>@<insert name>/<joint>"
-      const scoped = movable.filter((x) => x.name.endsWith(`/${name}`) || x.name.split("/").pop() === name.split("/").pop());
-      const hint = scoped.length ? ` Did you mean ${scoped.map((x) => `"${x.name}"`).join(" or ")}? Joints in an inserted assembly are named "<its assembly id>@<insert name>/<joint>".` : "";
+      const near = closeMatches(name, movable.map((x) => x.name), 4);
+      const hint = near.length ? ` Did you mean ${near.map((x) => `"${x}"`).join(" or ")}?${near.some((x) => x.includes("/")) ? ' Joints in an inserted assembly are named "<its assembly id>@<insert name>/<joint>".' : ""}` : "";
       throw new Error(`No movable joint "${name}" in assembly ${info.id}.${hint} Joints: ${list()}`);
     }
     const q = Array.isArray(v) ? v : [v];
@@ -159,6 +159,43 @@ export function expandTargets(ids: string[], parts: string[], infos: AssemblyInf
     else unknown.push(id);
   }
   return { ids: [...new Set(out)], unknown };
+}
+
+/** Every id (and assembly name) expandTargets accepts: parts, assemblies, subassembly copies, instances. */
+export const targetNames = (parts: string[], infos: AssemblyInfo[]) => [...parts, ...infos.flatMap((a) => [a.id, a.name, ...a.subs.map((s) => s.id), ...a.instances.map((i) => i.id)])];
+
+const tail = (s: string) => s.split(/[/:@]/).pop()!;
+/** How many typos a name of this length may carry and still count as close (none below 3 chars). */
+const typos = (n: number) => (n < 3 ? 0 : Math.max(1, Math.floor(n / 4)));
+/** Levenshtein distance. */
+function editDistance(a: string, b: string) {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length]!;
+}
+
+/**
+ * Up to `max` of `names` that `key` probably meant, best first. Case-insensitive, in tiers: the
+ * same name; the same last segment ("lid" for "mechanism/box:lid", "Drum rotation" for
+ * "winch_assembly:drive@upright/Drum rotation"); containing the key; a few typos in the whole
+ * name, then in its last segment; contained in the key (a parent: "mechanism" for
+ * "mechanism/box:nope"). Closest spelling first within a tier.
+ */
+export function closeMatches(key: string, names: Iterable<string>, max = 6): string[] {
+  const k = key.toLowerCase(), kt = tail(k);
+  const scored: [number, number, string][] = [];
+  for (const n of new Set(names)) {
+    if (n === key) continue;
+    const l = n.toLowerCase(), t = tail(l);
+    const dist = editDistance(k, l);
+    const tier = l === k ? 0 : t === kt ? 1 : k.length >= 3 && l.includes(k) ? 2 : dist <= typos(Math.min(k.length, l.length)) ? 3 : editDistance(kt, t) <= typos(Math.min(kt.length, t.length)) ? 4 : l.length >= 3 && k.includes(l) ? 5 : -1;
+    if (tier >= 0) scored.push([tier, dist, n]);
+  }
+  return scored.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2].localeCompare(b[2])).slice(0, max).map((x) => x[2]);
 }
 
 /** Where a part-space bounding box ends up under a pose (the box around its eight corners). */

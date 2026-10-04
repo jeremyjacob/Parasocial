@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { dev } from '$app/environment';
-	import { Copy, EyeOff, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed } from '@lucide/svelte';
+	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
@@ -697,6 +697,9 @@
 			items.push({ label: 'Section view', icon: Scissors, disabled: !plane, onSelect: () => plane && ws.sectionFromFace(plane) });
 		}
 		if (items.length) items.push({ type: 'separator' });
+		// isolate the selection (a right-click selects what it lands on first)
+		if (ws.isolated) items.push({ label: 'Exit isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.exitIsolate() });
+		else if (sel.length) items.push({ label: 'Isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.isolate(sel.map((s) => s.part)) });
 		if (target) {
 			items.push({ label: 'Hide part', icon: EyeOff, onSelect: () => ws.setHidden(target.part, true) });
 		}
@@ -739,6 +742,11 @@
 		{#if ws.dirty.length}
 			<div data-testid="unsaved-preview" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
 				<StatusPill tone="preview" title="Unsaved preview" detail="⌘S to save" />
+			</div>
+		{/if}
+		{#if ws.isolated}
+			<div data-testid="isolated" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
+				<StatusPill tone="preview" title="Isolated" detail="Esc to exit" onClick={() => ws.exitIsolate()} />
 			</div>
 		{/if}
 		{#if pill}

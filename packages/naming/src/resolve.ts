@@ -4,7 +4,7 @@ import { pointDistance, type EntityKind, type Vec3 } from "@parasocial/kernel";
 import { entityCount, entityShape, type OpRecord } from "./record";
 import { nameIndex } from "./names";
 import { select } from "./query";
-import { centerOf, dist } from "./info";
+import { pointOn, dist } from "./info";
 
 export type AnchorTargetRef = {
   kind: EntityKind | "part" | "point";
@@ -34,10 +34,10 @@ export function resolveTarget(r: OpRecord, t: AnchorTargetRef, tolerance = 0.5):
   return { status: "orphaned", indices: [] };
 }
 
-/** Nearest entity of `kind` to `p` within `tolerance` (exact B-rep distance, prefiltered by center distance). */
+/** Nearest entity of `kind` to `p` within `tolerance` (exact B-rep distance, prefiltered by distance to a point on each). */
 export function nearest(r: OpRecord, kind: EntityKind, p: Vec3, tolerance: number): { index: number; distance: number } | null {
   const n = entityCount(r, kind);
-  const order = [...Array(n).keys()].map((i) => ({ i, d: dist(centerOf(r, kind, i), p) })).sort((a, b) => a.d - b.d);
+  const order = [...Array(n).keys()].map((i) => ({ i, d: dist(pointOn(r, kind, i), p) })).sort((a, b) => a.d - b.d);
   let best: { index: number; distance: number } | null = null;
   for (const { i } of order.slice(0, 24)) {
     const d = pointDistance(entityShape(r, kind, i), p).distance;

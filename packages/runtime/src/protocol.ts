@@ -4,7 +4,7 @@
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
 import type { DrawingOptions } from "./drawing";
-import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, ConnectorAt, Interference, PartPose } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose } from "./engine";
 
 export type EngineRequest =
   /** `quiet`: only restore state (a replay into a replacement worker); answers true instead of the part list. */
@@ -36,8 +36,13 @@ export type EngineRequest =
   | { op: "interference"; a: string; b: string }
   /** Volume-only collision batch; one worker round trip for a document's part pairs. */
   | { op: "interferencePairs"; pairs: [string, string][] }
-  /** Minimum distance + closest points per pair (null when `within` or farther; bbox-prefiltered). */
-  | { op: "distancePairs"; pairs: [string, string][]; within: number }
+  /**
+   * Where each pair overlaps (null: it doesn't): volume, world box and centroid. `budgetMs`: stop
+   * after about that long; the answer then covers only the first pairs (send the rest again).
+   */
+  | { op: "overlapPairs"; pairs: [string, string][]; budgetMs?: number }
+  /** Minimum distance + closest points per pair (null when `within` or farther; bbox-prefiltered). `budgetMs` as for overlapPairs. */
+  | { op: "distancePairs"; pairs: [string, string][]; within: number; budgetMs?: number }
   /** The assemblies the studios export (joints resolved to part ids). */
   | { op: "assemblies" }
   /** Dragged assembly positions (part -> transform from its modeled pose); measure, interference and export use them. */
@@ -79,7 +84,7 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, ConnectorAt, Interference, PartPose };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose };
 
 /**
  * The part an id's geometry comes from: itself, or an instance's source part. Instance ids are
@@ -150,6 +155,7 @@ export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
     if (!Array.isArray(a.relations)) return null;
     for (const r of a.relations)
       if (!isObj(r) || !RELATION_KINDS.includes(r.kind as string) || !isStr(r.a) || !isStr(r.b) || !isStr(r.scope) || !Number.isInteger(r.ia) || !Number.isInteger(r.ib) || !isNum(r.ratio) || !isNum(r.offset)) return null;
+    if (a.overlaps !== undefined && (!Array.isArray(a.overlaps) || !a.overlaps.every((o: unknown) => isObj(o) && isStr(o.a) && isStr(o.b) && isStr(o.scope) && optStr(o.reason)))) return null;
   }
   return v as AssemblyInfo[];
 }
@@ -169,10 +175,11 @@ function validMesh(m: unknown, faces?: number, edges?: number): boolean {
   return true;
 }
 
-/** Overlaps between parts: part ids, a volume, and a well-formed mesh. */
+/** Overlaps between parts: part ids, a volume, a box and centroid, and a well-formed mesh. */
 export function validateInterferences(v: unknown): Interference[] | null {
   if (!Array.isArray(v)) return null;
   for (const x of v) if (!isObj(x) || !isStr(x.a) || !isStr(x.b) || !isNum(x.volume) || (x.mesh !== undefined && !validMesh(x.mesh))) return null;
+  for (const x of v) if ((x.bbox !== undefined && !(isObj(x.bbox) && isVec3(x.bbox.min) && isVec3(x.bbox.max))) || (x.centroid !== undefined && !isVec3(x.centroid))) return null;
   return v as Interference[];
 }
 
