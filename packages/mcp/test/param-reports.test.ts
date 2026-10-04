@@ -19,7 +19,7 @@ import { registerTools, type Session } from "../src/tools";
 const root = join(import.meta.dir, "../../../examples/hinge");
 // body and lid share one document-wide "height"; the drawer doesn't declare it
 const box = readFileSync(join(root, "studios/box.ts"), "utf8").replaceAll('param("height", 40, { min: 30, max: 80, unit: mm })', 'param("height", 40, { min: 30, max: 80, unit: mm, shared: true })');
-const SCRIPTS = { "studios/box.ts": box, "studios/mechanism.ts": readFileSync(join(root, "studios/mechanism.ts"), "utf8") };
+const SCRIPTS = { "studios/box.ts": `${box}\nexport const description = "Box with a lid and drawer";\n`, "studios/mechanism.ts": readFileSync(join(root, "studios/mechanism.ts"), "utf8") };
 
 beforeAll(async () => {
   await loadKernel();
@@ -91,8 +91,10 @@ test("set_param reports compactly; describe_model lists params once", async () =
     expect(Object.keys(all.params).sort()).toEqual(["box", "box:drawer", "box:lid"]);
     expect(all.params.box.height).toBeUndefined();
     expect(all.parts.every((p: any) => p.params === undefined)).toBe(true);
+    expect(all.studios).toEqual([{ file: "studios/box.ts", name: "Box", description: "Box with a lid and drawer" }, { file: "studios/mechanism.ts", name: "Mechanism" }]);
     const asm = await call("describe_model", { part: "mechanism", entities: false });
     expect(asm.parts.map((p: any) => p.part)).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
+    expect(asm.studios).toBeUndefined();
     expect(Object.keys(asm.params).sort()).toEqual(["box", "box:drawer", "box:lid"]);
     const bare = await call("describe_model", { entities: false, params: false });
     expect(bare.params).toBeUndefined();

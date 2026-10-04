@@ -123,15 +123,39 @@ async function need<T>(tx: Tx, row: T | undefined, what: string, details: Record
   return row;
 }
 
-/** Search/replace edits (edit_script). Each `search` must match exactly once unless `all` is set. */
-export type ScriptEdit = { search: string; replace: string; all?: boolean };
+/**
+ * Script edits (edit_script). Search/replace: each `search` must match exactly once unless `all` is
+ * set. Line ranges: `lines: [first, last]` (1-based, inclusive) replaced by `replace`'s lines ("" deletes
+ * them; [n, n - 1] inserts before line n), numbered as in the content the edits apply to (the
+ * caller's baseVersion), so they go first, bottom-up, and must not overlap.
+ */
+export type ScriptEdit = { search: string; replace: string; all?: boolean | undefined } | { lines: readonly number[]; replace: string };
+export const scriptEditSchema = z.union([
+  z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() }),
+  z.object({ lines: z.array(z.number().int()).length(2), replace: z.string() }),
+]);
 export function applyEdits(
   content: string,
   edits: readonly ScriptEdit[],
 ): { ok: true; content: string } | { ok: false; index: number; reason: string } {
   let out = content;
+  const ranges = edits.flatMap((e, index) => ("lines" in e ? [{ first: e.lines[0]!, last: e.lines[1]!, replace: e.replace, index }] : []));
+  if (ranges.length) {
+    const lines = content.split("\n");
+    const n = lines.length;
+    let above = Infinity; // first line of the range below this one (ranges go bottom-up)
+    for (const r of ranges.sort((a, b) => b.first - a.first || b.last - a.last)) {
+      if (r.first < 1 || r.first > n + 1 || r.last < r.first - 1 || r.last > n) return { ok: false, index: r.index, reason: `lines [${r.first}, ${r.last}] are outside the file (lines 1–${n}; [k, k - 1] inserts before line k)` };
+      if (r.last >= above) return { ok: false, index: r.index, reason: "line ranges overlap" };
+      lines.splice(r.first - 1, r.last - r.first + 1, ...(r.replace === "" ? [] : r.replace.replace(/\n$/, "").split("\n")));
+      above = r.first;
+    }
+    out = lines.join("\n");
+  }
   for (let i = 0; i < edits.length; i++) {
-    const { search, replace, all } = edits[i]!;
+    const e = edits[i]!;
+    if ("lines" in e) continue;
+    const { search, replace, all } = e;
     if (search.length === 0) return { ok: false, index: i, reason: "search text is empty" };
     const first = out.indexOf(search);
     if (first === -1) return { ok: false, index: i, reason: "search text not found" };
@@ -449,7 +473,10 @@ async function writeScriptsImpl(
         const replay = base === undefined ? undefined : applyEdits(base, f.edits);
         if (replay?.ok && replay.content === current.content) continue;
       }
-      fail("stale", `${f.path} changed since version ${f.baseVersion} (now ${current.version}); re-read and retry`, staleDetails(current));
+      // Search/replace edits don't depend on line numbers: when each still matches, they apply on top
+      // of the newer content (a rebase). Line edits and full writes can't tell, so they're stale.
+      const rebases = f.edits && !f.edits.some((e) => "lines" in e) && applyEdits(current.content, f.edits).ok;
+      if (!rebases) fail("stale", `${f.path} changed since version ${f.baseVersion} (now ${current.version}); re-read and retry`, staleDetails(current));
     }
 
     let content = f.content;
@@ -965,7 +992,7 @@ export const mutators = defineMutators({
       z.object({
         documentID: id,
         path: z.string(),
-        edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1).max(200),
+        edits: z.array(scriptEditSchema).min(1).max(200),
         baseVersion: z.number().int(),
         message: z.string().max(500).optional(),
         noteID: id.optional(),
@@ -999,7 +1026,7 @@ export const mutators = defineMutators({
             z.object({
               path: z.string(),
               content: z.string().max(1_000_000).optional(),
-              edits: z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1).max(200).optional(),
+              edits: z.array(scriptEditSchema).min(1).max(200).optional(),
               delete: z.boolean().optional(),
               baseVersion: z.number().int().nullable(),
             }),

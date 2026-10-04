@@ -3,7 +3,7 @@
  * baseVersion, atomic multi-file writes, and retry safety.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mutators } from "../src/mutators.ts";
+import { applyEdits, mutators } from "../src/mutators.ts";
 import { runMutator } from "../src/server/zero.ts";
 import { zql } from "../src/schema.ts";
 import { createAgentSession, createTestDb, createUser, newDoc, run, type TestDb } from "./helpers.ts";
@@ -163,10 +163,11 @@ describe("retries", () => {
     await run(db, edit, { userID: ada });
     expect((await runMutator(db, edit, { userID: ada })).ok).toBe(true);
     expect(await versionCount(doc)).toBe(2);
-    // but an edit against base 1 that would produce something else is still stale
-    const other = await runMutator(db, mutators.script.edit({ documentID: doc, path: "lib/a.ts", edits: [{ search: "const", replace: "let" }], baseVersion: 1 }), { userID: ada });
+    // but a line edit against base 1 that would produce something else is still stale
+    const other = await runMutator(db, mutators.script.edit({ documentID: doc, path: "lib/a.ts", edits: [{ lines: [1, 1], replace: "let r = 3;" }], baseVersion: 1 }), { userID: ada });
     expect(other).toMatchObject({ ok: false, details: { code: "stale" } });
   });
+
 
   test("the same versionID twice commits once", async () => {
     const doc = await newDoc(db, ada);
@@ -184,5 +185,30 @@ describe("retries", () => {
     await run(db, mutators.script.delete({ documentID: doc, path: "lib/a.ts", baseVersion: 1 }), { userID: ada });
     expect((await runMutator(db, mutators.script.delete({ documentID: doc, path: "lib/a.ts", baseVersion: 1 }), { userID: ada })).ok).toBe(true);
     expect(await versionCount(doc)).toBe(2);
+  });
+});
+
+describe("line edits and rebasing", () => {
+  test("line ranges number the lines as given, apply bottom-up, and reject overlaps and bad ranges", () => {
+    const src = "a\nb\nc\nd\n";
+    expect(applyEdits(src, [{ lines: [2, 3], replace: "B\nC" }])).toEqual({ ok: true, content: "a\nB\nC\nd\n" });
+    // several ranges and a search: numbers refer to the original lines, searches run after
+    expect(applyEdits(src, [{ lines: [1, 1], replace: "A\nA2\n" }, { lines: [3, 3], replace: "" }, { search: "d", replace: "D" }])).toEqual({ ok: true, content: "A\nA2\nb\nD\n" });
+    // [k, k - 1] inserts before line k
+    expect(applyEdits(src, [{ lines: [2, 1], replace: "x" }])).toEqual({ ok: true, content: "a\nx\nb\nc\nd\n" });
+    expect(applyEdits(src, [{ lines: [1, 2], replace: "" }, { lines: [2, 3], replace: "" }])).toMatchObject({ ok: false, reason: "line ranges overlap" });
+    expect(applyEdits(src, [{ lines: [9, 9], replace: "" }])).toMatchObject({ ok: false, index: 0 });
+  });
+
+  test("search edits on a stale base apply on top of the newer content when they still match", async () => {
+    const doc = await newDoc(db, ada);
+    await run(db, mutators.script.write({ documentID: doc, path: "lib/a.ts", content: "const a = 1;\nconst b = 2;\n", baseVersion: null }), { userID: ada });
+    await run(db, mutators.script.edit({ documentID: doc, path: "lib/a.ts", edits: [{ search: "a = 1", replace: "a = 10" }], baseVersion: 1 }), { userID: ada });
+    expect((await runMutator(db, mutators.script.edit({ documentID: doc, path: "lib/a.ts", edits: [{ search: "b = 2", replace: "b = 20" }], baseVersion: 1 }), { userID: ada })).ok).toBe(true);
+    const [row] = await db.sql`SELECT content FROM scripts WHERE document_id = ${doc} AND path = 'lib/a.ts'`;
+    expect(row.content).toBe("const a = 10;\nconst b = 20;\n");
+    // a search the newer content no longer has is stale, not edit_failed
+    const gone = await runMutator(db, mutators.script.edit({ documentID: doc, path: "lib/a.ts", edits: [{ search: "a = 1;", replace: "a = 5;" }], baseVersion: 1 }), { userID: ada });
+    expect(gone).toMatchObject({ ok: false, details: { code: "stale" } });
   });
 });

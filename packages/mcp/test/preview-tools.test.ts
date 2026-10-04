@@ -187,7 +187,7 @@ export default assembly("Rack", ({ insert, fix }) => {
     expect(leftDescription.parts.find((p: any) => p.part.endsWith('/box:lid')).posed).toBe(true);
     expect((await A.call('describe_model', { entities: false })).assemblies.find((a: any) => a.id === 'rack').subassemblies.map((s: any) => s.id)).toEqual([left, right]);
     expect((await A.call('bom', { assembly: left })).rows.every((r: any) => r.instances.every((id: string) => id.startsWith(`${left}/`)))).toBe(true);
-    expect((await A.call('check', { part: left })).valid).toEqual(leftMembers);
+    expect((await A.call('check', { part: left })).valid).toBe(leftMembers.length);
     expect((await A.call('export', { part: left, format: 'stl' })).bytes).toBeGreaterThan(0);
 
     // Reset and commit only this copy; its sibling's preview stays private.

@@ -17,6 +17,7 @@ import { createNoteEvents } from "../src/note-events";
 import { registerTools, type Session } from "../src/tools";
 import { registerApiReference } from "../src/api-reference";
 import { FakePool } from "./fake-pool";
+import { parseListing } from "./listing";
 
 const example = join(import.meta.dir, "../../../examples/stage");
 const SCRIPTS = Object.fromEntries(readdirSync(join(example, "studios")).map((f) => [`studios/${f}`, readFileSync(join(example, "studios", f), "utf8")]));
@@ -83,7 +84,7 @@ test("common tool results stay small", async () => {
   await call("list_documents");
   await call("open_document", { document: doc });
   await call("list_scripts");
-  const script = await call("read_script", { path: "studios/parts.ts" });
+  const script = parseListing(await call("read_script", { path: "studios/parts.ts" }));
   await call("edit_script", { path: "studios/parts.ts", baseVersion: script.version, edits: [{ search: "// A small linear stage", replace: "// A compact linear stage" }] }, "edit_script (result)");
   await call("list_problems");
   await call("list_notes");

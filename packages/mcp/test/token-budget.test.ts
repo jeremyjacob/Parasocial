@@ -6,8 +6,9 @@ import { measureToolList } from "../src/token-budget";
 test("tool definitions and instructions stay within their budget", async () => {
   const m = await measureToolList();
   // was 32.1k chars (44 tools) and 6.6k of instructions before the token-efficiency pass
-  expect(m.total).toBeLessThan(23_000); // +evaluate, +search_scripts tools
-  expect(m.instructions.total).toBeLessThan(4_500);
+  expect(m.total).toBeLessThan(24_000); // +evaluate, +search_scripts tools; +outline, line edits, views
+  // the guide grew to say how to keep context small: it pays for itself with one full-file read saved
+  expect(m.instructions.total).toBeLessThan(6_000);
   expect(m.tools.filter((t) => t.total > 2_000).map((t) => `${t.name}: ${t.total}`)).toEqual([]);
 });
 

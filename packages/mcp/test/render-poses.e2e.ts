@@ -25,6 +25,8 @@ const shots: [string, any][] = [
   ["lid-instance-front-z", { view: "front", parts: ["mechanism/box:lid"], poses }],
   ["assembly-posed-front-y", { view: "front", up: "y", parts: ids, poses }],
   ["assembly-posed-iso-y", { view: "iso", up: "y", parts: ids, poses }],
+  // several views tiled into one image (3: the fourth cell is background)
+  ["assembly-posed-views", { views: ["iso", "front", "top"], parts: ids, poses }],
 ];
 const res = await job([...ids.map((part: string) => ({ op: "regenerate", part })), ...shots.map(([, o]) => ({ op: "render", width: 640, height: 480, ...o }))]);
 shots.forEach(([name], i) => {

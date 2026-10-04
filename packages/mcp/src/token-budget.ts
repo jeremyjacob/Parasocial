@@ -7,8 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerTools, type Session, type ToolDeps } from "./tools";
 import { registerApiReference } from "./api-reference";
-import { ESSENTIALS, DETAILS } from "./instructions";
-import { DOCUMENT_GUIDANCE } from "./document-context";
+import { ESSENTIALS, GUIDE } from "./instructions";
 
 /** Rough token estimate (English prose and JSON average ~4 chars per token). */
 export const approxTokens = (chars: number) => Math.round(chars / 4);
@@ -16,7 +15,7 @@ export const approxTokens = (chars: number) => Math.round(chars / 4);
 export type ToolCost = { name: string; description: number; schema: number; total: number };
 
 /** Every tool's definition, measured as compact JSON (what tools/list sends). */
-export async function measureToolList(): Promise<{ tools: ToolCost[]; total: number; instructions: { essentials: number; total: number }; definitions: { name: string }[] }> {
+export async function measureToolList(): Promise<{ tools: ToolCost[]; total: number; instructions: { essentials: number; guide: number; total: number }; definitions: { name: string }[] }> {
   const session: Session = { id: "budget", userID: "u", clientID: "c", clientName: "budget", activeConfig: new Map(), lastVersion: new Map(), calls: [], noteCursors: new Map(), startedAt: 0 };
   const server = new McpServer({ name: "parasocial", version: "1" });
   // registration touches none of the dependencies
@@ -32,9 +31,9 @@ export async function measureToolList(): Promise<{ tools: ToolCost[]; total: num
       const description = (t.description ?? "").length;
       return { name: t.name, description, schema: total - description, total };
     });
-    // the dynamic tail (session default, browser activity) is left out: it depends on the user
-    const instructions = `${ESSENTIALS}\n\n${DOCUMENT_GUIDANCE}\n\n${DETAILS}`;
-    return { tools: out, total: out.reduce((s, t) => s + t.total, 0), instructions: { essentials: ESSENTIALS.length, total: instructions.length }, definitions: tools };
+    // each session gets the essentials and the guide once (instructions.ts); the dynamic tail
+    // (session default, browser activity) is left out: it depends on the user
+    return { tools: out, total: out.reduce((s, t) => s + t.total, 0), instructions: { essentials: ESSENTIALS.length, guide: GUIDE.length, total: ESSENTIALS.length + 2 + GUIDE.length }, definitions: tools };
   } finally {
     await client.close();
     await server.close();

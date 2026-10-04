@@ -10,6 +10,7 @@ import { EngineUnavailable, type PoolClient } from "@parasocial/engine-pool/clie
 import { loadDoc, overridesFor, scriptMap, requireMember, AccessError, type DocState } from "./docs";
 import { NoteCursor, type NoteEvents } from "./note-events";
 import { documentContext } from "./document-context";
+import { GUIDE, sessionContext } from "./instructions";
 import { trace } from "./trace";
 import { recordTouch, othersOn, changedUnderYou } from "./awareness";
 import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, poseTarget, scopedJointValues, expandTargets, posedBox, posedPoint, posedDir, type Preview } from "./preview";
@@ -34,6 +35,8 @@ export type Session = {
   startedAt: number;
   /** Session-local param overrides and assembly joint values per document (set_param / set_pose scope "session"): seen only by this session, never saved. */
   preview?: Map<string, Preview>;
+  /** The guide (instructions.ts) was delivered: in the instructions, or with this session's first tool result. */
+  guided?: boolean;
 };
 
 export type ToolDeps = { db: Db; pool: PoolClient; store: BlobStore; noteEvents: NoteEvents; config: { appOrigin: string; secret: string } };
@@ -55,6 +58,29 @@ class ToolError extends Error {
 // Results are compact JSON: agents read every character of them, and indentation is ~a third of
 // a pretty-printed result. Coordinates are mm, rounded to µm (3 decimals).
 const text = (v: unknown): ToolResult => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }] });
+/** Outline lines: imports, top-level declarations, params and tags. */
+const OUTLINE = /^(import|export)\b|^(async\s+)?(function|const|let|var|class|type|interface|enum)\b|\bparam\(|\btag:\s*["'`]/;
+/**
+ * A script to read: a header line (path, version, line count, range, other sessions), then
+ * numbered lines ("12\t…", the numbers line edits take): all of them, a range, or an outline.
+ * Plain text, not JSON: escaped source costs more tokens and is harder to read.
+ */
+function sourceListing(sc: { path: string; version: number; content: string }, others?: unknown, o: { offset?: number | undefined; limit?: number | undefined; outline?: boolean | undefined } = {}) {
+  const lines = sc.content.split("\n");
+  const from = Math.min(o.offset ?? 1, lines.length);
+  const to = o.limit ? Math.min(from + o.limit - 1, lines.length) : lines.length;
+  const range = o.outline ? "outline" : from > 1 || to < lines.length ? `lines ${from}–${to}` : "";
+  const header = [sc.path, `version ${sc.version}`, `${lines.length} lines`, range, others ? `otherSessions ${JSON.stringify(others)}` : ""].filter(Boolean).join(" · ");
+  const shown: string[] = [];
+  let inImport = false; // a multi-line import: its names, up to the line with `from`
+  for (let i = from - 1; i < to; i++) {
+    const line = lines[i]!;
+    const keep = !o.outline || inImport || OUTLINE.test(line);
+    if (o.outline) inImport = (inImport || /^import\b/.test(line)) && !/\bfrom\s*["'`]|^import\s*["'`]/.test(line);
+    if (keep) shown.push(`${i + 1}\t${line}`);
+  }
+  return `${header}\n${shown.join("\n")}`;
+}
 const round = (x: number, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
 const vec = (v?: number[]) => v?.map((x) => round(x, 3));
 /** An object without its undefined, null and empty-array fields. */
@@ -165,8 +191,19 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
    * or several (named exports, ids `<file>:<export>`).
    */
   async function partsOf(d: DocState): Promise<string[]> {
+    return (await partInfosOf(d)).map((p) => p.id);
+  }
+
+  async function partInfosOf(d: DocState): Promise<PartInfo[]> {
     const [infos] = await engine(d, [{ op: "parts" }]);
-    return (infos as { id: string }[]).map((p) => p.id);
+    return infos as PartInfo[];
+  }
+
+  /** Each studio's display name and description export, in path order. */
+  function studiosOf(parts: readonly PartInfo[], assemblies: readonly AssemblyInfo[]) {
+    const byFile = new Map<string, { file: string; name: string; description?: string }>();
+    for (const x of [...parts, ...assemblies]) if (!byFile.has(x.file)) byFile.set(x.file, { file: x.file, name: x.studio, ...(x.studioDescription ? { description: x.studioDescription } : {}) });
+    return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
   }
 
   /**
@@ -428,6 +465,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         else if (!known) console.error(`mcp: ${name} failed (document ${s.defaultDocument?.slice(0, 8) ?? "?"})`, e);
         result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data)}` : msg }] };
       }
+      // the guide rides on the session's first result, once (instructions.ts), whatever the tool
+      if (!s.guided) {
+        s.guided = true;
+        const context = await documentContext(db, s.userID, deps.config.appOrigin).catch(() => null);
+        result = { ...result, content: [...result.content, { type: "text", text: `${GUIDE}\n\n${sessionContext(s.defaultDocument, context)}` }] };
+      }
       traceCall({ session: s.id, client: s.clientName, label: s.label, document: s.defaultDocument, tool: name, args, ms: Date.now() - now, isError: !!result.isError, result: result.content, ...(thrown && !(thrown instanceof ToolError) ? { exception: thrown } : {}) });
       return result;
     }) as any);
@@ -627,24 +670,32 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   }, { readOnlyHint: true });
 
   // ---------------- scripts ----------------
-  tool("list_scripts", "Script paths with version (baseVersion for writes) and line count; content: true includes every script's source (read_script reads one).", { document, content: z.boolean().optional() }, async ({ document: dd, content }) => {
+  tool("list_scripts", "Script paths with version (baseVersion for writes) and line count; content: true includes every script's source like read_script (costly on big documents: prefer read_script outlines).", { document, content: z.boolean().optional() }, async ({ document: dd, content }) => {
     const documentID = docID(dd);
     const d = await loadDoc(db, s.userID, documentID);
     // only content counts as read (changedByOthers compares against what this session has seen)
     if (content) for (const x of d.scripts) recordTouch(s, documentID, x.path, "read", x.version);
     const others = await othersOn(db, s, documentID, d.scripts.map((x) => x.path));
-    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, ...(content ? { content: x.content } : { lines: x.content.split("\n").length }), ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
+    if (content) return text(d.scripts.map((x) => sourceListing(x, others[x.path])).join("\n\n"));
+    return text({ scripts: d.scripts.map((x) => ({ path: x.path, version: x.version, lines: x.content.split("\n").length, ...(others[x.path] ? { otherSessions: others[x.path] } : {}) })) });
   }, { readOnlyHint: true });
 
-  tool("read_script", "A script's source and version (its own write counter, not the document version: pass it as baseVersion when writing), and other sessions recently on it.", { document, path: z.string() }, async ({ document: dd, path }) => {
-    const documentID = docID(dd);
-    const d = await loadDoc(db, s.userID, documentID);
-    const sc = d.scripts.find((x) => x.path === path);
-    if (!sc) throw new ToolError(`No script at ${path}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
-    recordTouch(s, documentID, path, "read", sc.version);
-    const others = (await othersOn(db, s, documentID, [path]))[path];
-    return text({ path, version: sc.version, content: sc.content, ...(others ? { otherSessions: others } : {}) });
-  }, { readOnlyHint: true });
+  tool(
+    "read_script",
+    "A script as numbered lines (line edits use the numbers) under a header with its version (its own write counter, not the document's: baseVersion for writes) and other sessions on it. offset (1-based) and limit read a range; outline: true shows only imports, top-level declarations, params and tags.",
+    { document, path: z.string(), offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).optional(), outline: z.boolean().optional() },
+    async ({ document: dd, path, offset, limit, outline }) => {
+      const documentID = docID(dd);
+      const d = await loadDoc(db, s.userID, documentID);
+      const sc = d.scripts.find((x) => x.path === path);
+      if (!sc) throw new ToolError(`No script at ${path}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
+      // an outline isn't a read of the content: changedByOthers still warns about edits made since
+      if (!outline) recordTouch(s, documentID, path, "read", sc.version);
+      const others = (await othersOn(db, s, documentID, [path]))[path];
+      return text(sourceListing(sc, others, { offset, limit, outline }));
+    },
+    { readOnlyHint: true },
+  );
 
   tool(
     "search_scripts",
@@ -761,7 +812,27 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   // the write tools share these; write_script's description says what they mean
   const writeId = z.string().min(8).max(200).optional();
   const verbose = z.boolean().optional();
-  const edits = z.array(z.object({ search: z.string(), replace: z.string(), all: z.boolean().optional() })).min(1);
+  // one object shape (search or lines) keeps the schema small; checkEdits enforces the choice
+  const edits = z.array(z.object({ search: z.string().optional(), lines: z.array(z.number().int()).length(2).optional(), replace: z.string(), all: z.boolean().optional() })).min(1);
+  const checkEdits = (es: { search?: string | undefined; lines?: number[] | undefined }[], path: string) => {
+    const bad = es.findIndex((e) => (e.search === undefined) === (e.lines === undefined));
+    if (bad >= 0) throw new ToolError(`Edit ${bad + 1} on ${path}: give either search or lines.`);
+  };
+
+  /** Files whose edits target an older version than the current one: if the write lands, they were rebased. */
+  async function rebasing(documentID: string, files: { path: string; edits?: unknown[] | undefined; baseVersion: number | null }[]) {
+    const stale = files.filter((f) => f.edits && f.baseVersion !== null);
+    if (!stale.length) return {};
+    const rows = await db.sql`SELECT path, version FROM scripts WHERE document_id = ${documentID} AND path = ANY(${stale.map((f) => f.path)})`;
+    const out: Record<string, string> = {};
+    for (const f of stale) {
+      const r = rows.find((x: any) => x.path === f.path);
+      if (r && Number(r.version) !== f.baseVersion) out[f.path] = `edits applied on top of version ${Number(r.version)} (yours was ${f.baseVersion}); changedByOthers or read_script shows what else changed`;
+    }
+    return out;
+  }
+  /** afterWrite plus the files that were rebased, when the write made a version. */
+  const withRebased = (out: Record<string, unknown>, rebased: Record<string, string>) => (out.version && Object.keys(rebased).length ? { ...out, rebased } : out);
 
   tool(
     "write_script",
@@ -779,15 +850,17 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "edit_script",
-    "Search/replace edits on a script; each search must match exactly once unless all: true. Otherwise like write_script. Dependent changes across files (an export and its users): write_scripts with edits.",
+    "Edits to a script, each { search, replace, all? } (search matches exactly once unless all) or { lines: [first, last], replace } (numbered as read_script showed them at baseVersion; \"\" deletes, [k, k - 1] inserts before line k). Search edits on a stale baseVersion still apply if they match (rebased); line edits need it current. Otherwise like write_script. Dependent changes across files: write_scripts with edits.",
     { document, path: z.string(), edits, baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, edits, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
       await requireMember(db, s.userID, documentID, "editor");
       await setStatus("writing", documentID, { path });
       const versionID = writeId ?? newID();
+      checkEdits(edits, path);
+      const rebased = await rebasing(documentID, [{ path, edits, baseVersion }]);
       await mutate(mutators.script.edit({ documentID, path, edits, baseVersion, message, noteID: note, versionID } as any));
-      return text(await afterWrite(documentID, `edit ${path}`, { versionID, paths: [path], verbose }));
+      return text(withRebased(await afterWrite(documentID, `edit ${path}`, { versionID, paths: [path], verbose }), rebased));
     },
   );
 
@@ -818,8 +891,10 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       await requireMember(db, s.userID, documentID, "editor");
       await setStatus("writing", documentID, { path: files[0]!.path });
       const versionID = writeId ?? newID();
+      for (const f of files) if (f.edits) checkEdits(f.edits, f.path);
+      const rebased = await rebasing(documentID, files);
       await mutate(mutators.script.writeMany({ documentID, files, message, noteID: note, versionID } as any));
-      return text(await afterWrite(documentID, `write ${files.map((f) => f.path).join(", ")}`, { versionID, paths: files.map((f) => f.path), verbose }));
+      return text(withRebased(await afterWrite(documentID, `write ${files.map((f) => f.path).join(", ")}`, { versionID, paths: files.map((f) => f.path), verbose }), rebased));
     },
   );
 
@@ -827,10 +902,11 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right", "section"] as const;
   tool(
     "render",
-    'PNG (default 800×600). view: iso (default), top, bottom, front, back, left, right, section, or "note:<id>" (its camera and targets); or a camera. Z up (top looks down −Z, front along +Y); up: "y" for Y-up. parts: part/instance/assembly/subassembly copy ids (default all parts), posed as in your session, with your set_param previews. hide: ids to leave out (part id: all its instances). frame: ids to fit in view (others still drawn, camera direction kept). camera.width: mm across the image. highlight: names/selectors shown orange. section: cut this image only, removing dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5); view "section" (default with it) faces the cut.',
+    'PNG (default 800×600). view: iso (default), top, bottom, front, back, left, right, section, or "note:<id>" (its camera and targets); views: 2–4 named views tiled in one image; or a camera. top looks down −Z, front along +Y; up: "y" for Y-up. parts: part, instance or assembly ids (default: all), posed and previewed as in your session. hide: ids to omit (part id: all its instances). frame: ids to fit in view (others still drawn). camera.width: mm across the image. highlight: names/selectors in orange. section: cut this image only, removing dot(p − origin, normal) > 0; view "section" (default with it) faces the cut.',
     {
       document,
       view: z.string().optional(),
+      views: z.array(z.string()).min(2).max(4).optional(),
       up: z.enum(["z", "y"]).optional(),
       camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional(), width: z.number().optional() }).optional(),
       section: z.object({
@@ -848,8 +924,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       width: z.number().int().min(128).max(2048).optional(),
       height: z.number().int().min(128).max(2048).optional(),
     },
-    async ({ document: dd, view, up, camera, section, highlight, parts, hide, frame, style, width, height }) => {
+    async ({ document: dd, view, views, up, camera, section, highlight, parts, hide, frame, style, width, height }) => {
       const documentID = docID(dd);
+      if (views && (view || camera)) throw new ToolError("views replaces view and camera: give one of them.");
+      const unknownView = views?.find((x) => !VIEWS.includes(x as any));
+      if (unknownView) throw new ToolError(`Unknown view "${unknownView}" in views. Use ${VIEWS.join(", ")}.`);
+      if (views?.includes("section") && !section) throw new ToolError('view "section" needs section.');
       const d = await loadDoc(db, s.userID, documentID);
       const asm = await assemblyState(d, [...(parts ?? []), ...(frame ?? [])]);
       const all = await partsOf(d);
@@ -894,8 +974,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         } catch {}
       }
       const poses = Object.fromEntries(ids.filter((p) => asm.poses[p]).map((p) => [p, asm.poses[p]]));
-      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, frame: framed, poses, style, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
-      await activity(documentID, `render ${view ?? v ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
+      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, frame: framed, poses, style, views, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
+      await activity(documentID, `render ${views?.join("+") ?? view ?? v ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
       return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
     },
     { readOnlyHint: true },
@@ -903,7 +983,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "describe_model",
-    "Parts with bounding box, mass properties and material. entities (default when part is given): every face and edge with name, type, area/length, normal/axis, center and `by` (the operation and source line that made it); neighbors: true adds faces' adjacent faces. part: part, instance, assembly or subassembly copy id (world coordinates at the session pose). Params once per source part (`params`), shared in `sharedParams`; params: false omits them. Without part, also lists assemblies and joint values. assemblies: true: only assemblies (instance count, joints, problems).",
+    "Parts with bounding box, mass properties and material. entities (default when part is given): every face and edge with name, type, area/length, normal/axis, center and `by` (the operation and source line that made it); neighbors: true adds faces' adjacent faces. part: part, instance, assembly or subassembly copy id (world coordinates at the session pose). Params once per source part (`params`), shared in `sharedParams`; params: false omits them. Without part, also lists studios (file, name, description) and assemblies with joint values. assemblies: true: only assemblies (instance count, joints, problems).",
     { document, part: z.string().optional(), entities: z.boolean().optional(), neighbors: z.boolean().optional(), params: z.boolean().optional(), assemblies: z.boolean().optional() },
     async ({ document: dd, part, entities, neighbors, params: withParams, assemblies: onlyAssemblies }) => {
       const documentID = docID(dd);
@@ -918,7 +998,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         const poses = s.preview?.get(documentID)?.poses;
         return text({ ...head, sessionPoses: poses && Object.keys(poses).length ? poses : undefined, assemblies: asm.assemblies.map((a) => lean({ id: a.id, name: a.name !== a.id ? a.name : undefined, instances: a.instances.length, subassemblies: a.subassemblies.length || undefined, joints: a.joints.length ? Object.fromEntries(a.joints.map((j) => [j.name, joint(j)])) : undefined, problems: a.problems })) });
       }
-      let parts = await partsOf(d);
+      const infos = await partInfosOf(d);
+      let parts = infos.map((p) => p.id);
       if (part) {
         const t = expandTargets([part], parts, asm.infos);
         if (t.unknown.length) throw new ToolError(`No part, instance or assembly "${part}". Parts: ${parts.join(", ") || "none"}${asm.infos.length ? `. Assemblies: ${asm.infos.map((a) => a.id).join(", ")}` : ""}`);
@@ -964,6 +1045,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       return text({
         ...head,
         sessionPreview: session && (Object.keys(session.params).length || Object.keys(session.poses).length) ? session : undefined,
+        studios: part ? undefined : studiosOf(infos, asm.infos),
         sharedParams: Object.keys(sharedParams).length ? sharedParams : undefined,
         params: Object.keys(params).length ? params : undefined,
         parts: out,
@@ -1286,7 +1368,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const checks = await engine(d, parts.map((p) => ({ op: "check", part: p })));
     // valid parts by id; invalid ones with their problems
     const invalid = parts.map((p, i) => ({ part: p, problems: checks[i] as any[] })).filter((x) => x.problems.length);
-    const out: any = { valid: parts.filter((_, i) => !(checks[i] as any[]).length), ...(invalid.length ? { invalid } : {}) };
+    // valid parts as a count: a big assembly would list a hundred names on every check
+    const out: any = { valid: parts.length - invalid.length, ...(invalid.length ? { invalid } : {}) };
     const pairs: any[] = [];
     for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (!part || all[i] === part || all[j] === part) pairs.push([all[i], all[j]]);
     const [, vols] = await engine(d, [{ op: "setPoses", poses: {} }, { op: "interferencePairs", pairs }]);

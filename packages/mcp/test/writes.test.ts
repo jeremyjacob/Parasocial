@@ -10,6 +10,8 @@ import { createTestDb, createUser, createAgentSession, newDoc, type TestDb } fro
 import { createNoteEvents } from "../src/note-events";
 import { registerTools, type Session } from "../src/tools";
 import { EngineUnavailable, PoolClient } from "@parasocial/engine-pool/client";
+import { parseListing } from "./listing";
+import { GUIDE } from "../src/instructions";
 
 /** A stand-in engine pool: one part per studio; `mode` makes regeneration report a problem or blow up. `regenerated`: the parts the last job regenerated. */
 const engine = {
@@ -51,7 +53,8 @@ async function connect(userID: string, clientName: string, pool: unknown = engin
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r = await raw(name, args);
     if (r.isError) throw new Error(r.content[0]!.text);
-    return { ...JSON.parse(r.content[0]!.text), _chars: r.content[0]!.text.length };
+    const t = r.content[0]!.text;
+    return { ...(name === "read_script" ? parseListing(t) : JSON.parse(t)), _chars: t.length };
   };
   return { session, call, raw };
 }
@@ -89,7 +92,8 @@ test("write_scripts lands a lib change and its studio as one version with a comp
   const stale = await claude.raw("write_scripts", {
     files: [
       { path: "lib/size.ts", content: "export const width = 10;\n", baseVersion: 1 },
-      { path: "studios/a.ts", edits: [{ search: "{ w }", replace: "{ width as w }" }], baseVersion: 0 },
+      // a line edit can't be rebased (a search edit that still matches would be)
+      { path: "studios/a.ts", edits: [{ lines: [1, 1], replace: "import { width as w } from '../lib/size';" }], baseVersion: 0 },
     ],
   });
   expect(stale.isError).toBe(true);
@@ -180,7 +184,7 @@ test("a stale baseVersion says what changed since, not the whole file", async ()
   const d = await claude.call("write_script", { path: "studios/d.ts", content: `${body}\nexport default 1;\n`, baseVersion: null });
   const base = d.scripts["studios/d.ts"];
   await codex.call("edit_script", { path: "studios/d.ts", edits: [{ search: "const line50 = 50;", replace: "const line50 = 51;" }], baseVersion: base });
-  const r = await claude.raw("edit_script", { path: "studios/d.ts", edits: [{ search: "export default 1", replace: "export default 2" }], baseVersion: base });
+  const r = await claude.raw("edit_script", { path: "studios/d.ts", edits: [{ lines: [201, 201], replace: "export default 2;" }], baseVersion: base });
   expect(r.isError).toBe(true);
   const t = r.content[0]!.text;
   expect(t).toContain(`studios/d.ts changed since version ${base} (now ${base + 1})`);
@@ -305,9 +309,51 @@ test("a database connection that can't be opened is retried once, then reported 
   clients.push(client);
   const ok = (await client.callTool({ name: "read_script", arguments: { path: "lib/size.ts" } })) as any;
   expect(ok.isError).toBeFalsy();
-  expect(JSON.parse(ok.content[0].text).path).toBe("lib/size.ts");
+  expect(parseListing(ok.content[0].text).path).toBe("lib/size.ts");
   failures = 2;
   const down = (await client.callTool({ name: "read_script", arguments: { path: "lib/size.ts" } })) as any;
   expect(down.isError).toBe(true);
   expect(down.content[0].text).toBe("The database didn't answer (CONNECT_TIMEOUT); nothing was changed. Retry shortly.");
+});
+
+test("read_script: numbered lines, ranges and outlines; line edits use the numbers; stale search edits rebase", async () => {
+  engine.mode = "ok";
+  const content = 'import { w } from "../lib/size";\nimport {\n  part,\n} from "parasocial";\n\nconst h = param("height", 5);\n\nexport default part("E", () => box(w, w, h, { tag: "body" }));\n';
+  const e = await claude.call("write_script", { path: "studios/e.ts", content, baseVersion: null });
+  const v = e.scripts["studios/e.ts"];
+  const full = (await claude.raw("read_script", { path: "studios/e.ts" })).content[0]!.text;
+  expect(full.split("\n")[0]).toBe(`studios/e.ts · version ${v} · 9 lines`);
+  expect(full).toContain('6\tconst h = param("height", 5);');
+  const range = (await claude.raw("read_script", { path: "studios/e.ts", offset: 6, limit: 1 })).content[0]!.text;
+  expect(range).toBe(`studios/e.ts · version ${v} · 9 lines · lines 6–6\n6\tconst h = param("height", 5);`);
+  const outline = (await claude.raw("read_script", { path: "studios/e.ts", outline: true })).content[0]!.text;
+  expect(outline.split("\n").slice(1).map((l) => Number(l.split("\t")[0]))).toEqual([1, 2, 3, 4, 6, 8]);
+
+  const lined = await claude.call("edit_script", { path: "studios/e.ts", edits: [{ lines: [6, 6], replace: 'const h = param("height", 6);' }], baseVersion: v });
+  expect(lined.rebased).toBeUndefined();
+  // Codex changes another line; Claude's search edit on the old base still lands, and says so
+  const other = await codex.call("edit_script", { path: "studios/e.ts", edits: [{ search: '"E"', replace: '"Box"' }], baseVersion: lined.scripts["studios/e.ts"] });
+  const r = await claude.call("edit_script", { path: "studios/e.ts", edits: [{ search: "height\", 6", replace: "height\", 7" }], baseVersion: lined.scripts["studios/e.ts"] });
+  expect(Object.keys(r.rebased)).toEqual(["studios/e.ts"]);
+  expect(r.scripts["studios/e.ts"]).toBeGreaterThan(other.scripts["studios/e.ts"]);
+  const bad = await claude.raw("edit_script", { path: "studios/e.ts", edits: [{ search: "x", lines: [1, 1], replace: "" }], baseVersion: r.scripts["studios/e.ts"] });
+  expect(bad.content[0]!.text).toContain("give either search or lines");
+});
+
+test("the guide comes once, with the session's first tool result", async () => {
+  const userID = claude.session.userID;
+  const session: Session = { id: await createAgentSession(db, userID, "guided"), userID, clientID: "g", clientName: "guided", defaultDocument: documentID, activeConfig: new Map(), lastVersion: new Map(), calls: [], noteCursors: new Map(), startedAt: Date.now() };
+  const server = new McpServer({ name: "test", version: "1" });
+  registerTools(server, session, { db, pool: engine as any, store: new FsBlobStore(tmpdir()), noteEvents: createNoteEvents(db), config: { appOrigin: "http://localhost", secret: "test" } });
+  const client = new Client({ name: "guided", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b);
+  await client.connect(a);
+  clients.push(client);
+  const first = (await client.callTool({ name: "list_scripts", arguments: {} })) as any;
+  expect(first.content).toHaveLength(2);
+  expect(first.content[1].text).toStartWith(GUIDE);
+  expect(first.content[1].text).toContain(`Session default document: "${documentID}"`);
+  const second = (await client.callTool({ name: "list_scripts", arguments: {} })) as any;
+  expect(second.content).toHaveLength(1);
 });

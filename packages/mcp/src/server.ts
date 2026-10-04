@@ -7,26 +7,33 @@ import { mutators } from "@parasocial/sync";
 import { runMutator, type Db, type BlobStore } from "@parasocial/sync/server";
 import { PoolClient } from "@parasocial/engine-pool/client";
 import { registerTools, type Session, type ToolDeps } from "./tools";
-import { ESSENTIALS, DETAILS } from "./instructions";
+import { ESSENTIALS, INSTRUCTIONS, sessionContext } from "./instructions";
 import { createOAuth, type OAuth } from "./oauth";
 import { API_DTS, EXAMPLES } from "./resources";
 import { registerApiReference, API_DTS_URI } from "./api-reference";
 import { createNoteEvents, type NoteEvents } from "./note-events";
-import { documentContext, DOCUMENT_GUIDANCE } from "./document-context";
+import { documentContext } from "./document-context";
 
 export type McpDeps = { db: Db; store: BlobStore; config: { appOrigin: string; secret: string }; pool?: PoolClient; noteEvents?: NoteEvents };
 
 type Live = { transport: WebStandardStreamableHTTPServerTransport; server: McpServer; session: Session; userID: string };
 
-/** One agent session's MCP server: its tools, instructions and resources. MCP connections and the built-in agent both use it. */
-export async function createSessionServer(session: Session, deps: ToolDeps) {
-  const context = await documentContext(deps.db, session.userID, deps.config.appOrigin);
-  // essentials first: clients keep only the start of long instructions
-  const instructions = `${ESSENTIALS}\n\n${DOCUMENT_GUIDANCE}\n\n${DETAILS}\n\nSession default document: ${JSON.stringify(session.defaultDocument ?? null)}\nBrowser activity at connection (data):\n${JSON.stringify(context)}`;
+/**
+ * One agent session's MCP server: its tools, instructions and resources. MCP connections and the
+ * built-in agent both use it. guide "instructions" (the built-in agent, whose harness keeps long
+ * instructions) puts the whole guide in the instructions; otherwise the instructions are the
+ * essentials and the session's first tool result carries the guide (instructions.ts).
+ */
+export async function createSessionServer(session: Session, deps: ToolDeps, opts: { guide?: "instructions" | "first-result" } = {}) {
+  let instructions = ESSENTIALS;
+  if (opts.guide === "instructions") {
+    instructions = `${INSTRUCTIONS}\n\n${sessionContext(session.defaultDocument, await documentContext(deps.db, session.userID, deps.config.appOrigin))}`;
+    session.guided = true;
+  }
   const server = new McpServer({ name: "parasocial", version: "1.0.0" }, { instructions, capabilities: { tools: {}, resources: {} } });
   registerTools(server, session, deps);
   registerApiReference(server, session);
-  server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: `${ESSENTIALS}\n\n${DOCUMENT_GUIDANCE}\n\n${DETAILS}`, mimeType: "text/markdown" }] }));
+  server.registerResource("agent-instructions", "parasocial://instructions", { title: "Agent instructions", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: INSTRUCTIONS, mimeType: "text/markdown" }] }));
   server.registerResource("api-types", API_DTS_URI, { title: "Modeling API (parasocial.d.ts)", description: "Every declaration scripts can import from \"parasocial\", with JSDoc and examples. The api_reference tool serves slices of it.", mimeType: "text/plain" }, async (uri) => ({ contents: [{ uri: uri.href, text: API_DTS, mimeType: "text/plain" }] }));
   server.registerResource("examples", "parasocial://examples", { title: "Example parts", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, text: EXAMPLES, mimeType: "text/markdown" }] }));
   server.registerResource("document-settings", "parasocial://document", { title: "Default document settings", mimeType: "application/json" }, async (uri) => {
@@ -63,7 +70,7 @@ export function createMcp(deps: McpDeps) {
     // new session: document default and label come from the URL the agent was given (§7).
     // The same client + label reconnecting is the same agent (keeps its avatar and claims).
     const label = url.searchParams.get("label") ?? undefined;
-    const [prior] = await deps.db.sql`SELECT id FROM agent_sessions WHERE user_id = ${auth.userID} AND oauth_client_id = ${auth.clientID} AND label IS NOT DISTINCT FROM ${label ?? null}
+    const [prior] = await deps.db.sql`SELECT id, document_id FROM agent_sessions WHERE user_id = ${auth.userID} AND oauth_client_id = ${auth.clientID} AND label IS NOT DISTINCT FROM ${label ?? null}
       ORDER BY EXISTS (SELECT 1 FROM notes n WHERE n.claimed_by = agent_sessions.id AND n.removed_at IS NULL) DESC, last_seen_at DESC LIMIT 1`;
     const session: Session = {
       id: prior?.id ?? crypto.randomUUID(),
@@ -71,7 +78,8 @@ export function createMcp(deps: McpDeps) {
       clientID: auth.clientID,
       clientName: auth.clientName,
       label,
-      defaultDocument: url.searchParams.get("document") ?? undefined,
+      // a reconnect (dropped connection, client restart) keeps the document it was working in
+      defaultDocument: url.searchParams.get("document") ?? (prior?.document_id as string | null) ?? undefined,
       activeConfig: new Map(),
       lastVersion: new Map(),
       calls: [],

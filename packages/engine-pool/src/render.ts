@@ -456,8 +456,38 @@ function trimGeometry() {
   }
 }
 
-/** Render parts to a PNG; returns it base64-encoded. */
-export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions): Promise<string> {
+/**
+ * Render parts to a PNG; returns it base64-encoded. With `views`, one image tiled with a view per
+ * cell (row-major, in the order given; 2 views side by side, 3–4 in a 2×2 grid), each the rest of
+ * the options with that view: several angles for the image cost of one.
+ */
+export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions & { views?: string[] }): Promise<string> {
+  const W = o.width ?? 1024,
+    H = o.height ?? 768;
+  if (!o.views?.length) return base64(png(W, H, await renderRGB(all, o)));
+  const cols = o.views.length === 1 ? 1 : 2,
+    rows = Math.ceil(o.views.length / cols);
+  const GAP = 2; // a divider in the theme's edge colour between cells
+  const w = Math.floor((W - GAP * (cols - 1)) / cols),
+    h = Math.floor((H - GAP * (rows - 1)) / rows);
+  const out = new Uint8Array(W * H * 3);
+  const edge = parseInt(LIGHT.edge.slice(1), 16);
+  for (let i = 0; i < out.length; i += 3) (out[i] = edge >> 16), (out[i + 1] = (edge >> 8) & 255), (out[i + 2] = edge & 255);
+  let bg: Uint8Array | undefined; // a cell's corner pixel: the background
+  for (const [k, view] of o.views.entries()) {
+    const cell = await renderRGB(all, { ...o, view, width: w, height: h });
+    bg ??= cell.slice(0, 3);
+    const x0 = (k % cols) * (w + GAP),
+      y0 = Math.floor(k / cols) * (h + GAP);
+    for (let y = 0; y < h; y++) out.set(cell.subarray(y * w * 3, (y + 1) * w * 3), ((y0 + y) * W + x0) * 3);
+  }
+  // 3 views leave the last cell empty: background there, not divider
+  if (o.views.length % cols && bg) for (let y = (rows - 1) * (h + GAP); y < H; y++) for (let x = w; x < W; x++) out.set(bg, (y * W + x) * 3);
+  return base64(png(W, H, out));
+}
+
+/** Render parts to tightly packed RGB pixels (o.width × o.height). */
+async function renderRGB(all: Map<string, RenderPart>, o: RenderOptions): Promise<Uint8Array> {
   const { dev, pipes } = await device();
   dev.pushErrorScope("validation");
   const W = o.width ?? 1024,
@@ -693,21 +723,19 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   const MAP_READ = (globalThis as any).GPUMapMode?.READ ?? 1;
   await read.mapAsync(MAP_READ);
   const px = new Uint8Array(read.getMappedRange());
-  const raw = new Uint8Array((W * 3 + 1) * H);
-  for (let y = 0; y < H; y++) {
-    raw[y * (W * 3 + 1)] = 0;
+  const rgb = new Uint8Array(W * 3 * H);
+  for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const s = y * bytesPerRow + x * 4,
-        d = y * (W * 3 + 1) + 1 + x * 3;
-      raw[d] = px[s];
-      raw[d + 1] = px[s + 1];
-      raw[d + 2] = px[s + 2];
+        d = (y * W + x) * 3;
+      rgb[d] = px[s];
+      rgb[d + 1] = px[s + 1];
+      rgb[d + 2] = px[s + 2];
     }
-  }
   read.unmap();
   for (const d of destroy) d.destroy();
   trimGeometry();
-  return base64(png(W, H, raw));
+  return rgb;
 }
 
 // ---------- PNG ----------
@@ -721,8 +749,11 @@ const CRC = (() => {
   return t;
 })();
 
-/** RGB PNG from filtered scanlines (a 0 filter byte before each row). */
-function png(w: number, h: number, raw: Uint8Array) {
+/** RGB PNG from packed pixels (no row filter: Up made these renders ~50% bigger, the grid and antialiasing defeat it). */
+function png(w: number, h: number, rgb: Uint8Array) {
+  const stride = w * 3;
+  const raw = new Uint8Array((stride + 1) * h);
+  for (let y = 0; y < h; y++) raw.set(rgb.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
   const chunk = (type: string, data: Uint8Array) => {
     const out = new Uint8Array(12 + data.length);
     const dv = new DataView(out.buffer);

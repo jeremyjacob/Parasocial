@@ -118,7 +118,8 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
     startedAt: Date.now(),
   };
   t({ event: "session", session: sessionID, provider: creds?.provider ?? "test", model: modelName, baseURL: creds?.baseURL });
-  const server = await createSessionServer(session, deps);
+  // the whole guide goes in the instructions (our harness keeps them whole), not in a tool result
+  const server = await createSessionServer(session, deps, { guide: "instructions" });
   const client = new Client({ name: "parasocial-builtin", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);

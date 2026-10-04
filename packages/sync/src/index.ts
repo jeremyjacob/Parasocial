@@ -5,7 +5,7 @@
  */
 export * from "./schema.ts";
 export * from "./types.ts";
-export { mutators, applyEdits, paramsMessage, fail, scriptID, PARAMS_COALESCE_MS, NOTE_EVENTS_CHANNEL, MAX_NOTE_IMAGES, type NoteEvent, type Mutators, type MutationErrorCode, type ScriptEdit } from "./mutators.ts";
+export { mutators, applyEdits, scriptEditSchema, paramsMessage, fail, scriptID, PARAMS_COALESCE_MS, NOTE_EVENTS_CHANNEL, MAX_NOTE_IMAGES, type NoteEvent, type Mutators, type MutationErrorCode, type ScriptEdit } from "./mutators.ts";
 export { queries, type Queries } from "./queries.ts";
 export { captureInverse, captureInverseAll, isUndoable, UNDOABLE, type AnyMR, type Reader } from "./undo.ts";
 export { isValidScriptPath, validateScriptPath, sha256Hex, newID, newShareToken, SHARE_TOKEN_RE } from "./util.ts";
