@@ -1,5 +1,5 @@
 // Entrypoint for the Fly image (deploy/fly.Dockerfile): runs the whole stack on one machine, in the
-// order deploy/coolify.yml's depends_on gives it. Caddy (the only public port) starts first and holds
+// order deploy/docker-compose.yml's depends_on gives it. Caddy (the only public port) starts first and holds
 // cold-start requests until their upstream answers (deploy/fly.Caddyfile); a closed port would make
 // Fly's proxy back off for ~15 s. If any service exits, everything stops and the machine exits (Fly
 // restarts it). On SIGINT/SIGTERM (Fly's auto-stop) Caddy stops first, then the rest in reverse, Postgres last.
