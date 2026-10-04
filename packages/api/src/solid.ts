@@ -323,7 +323,8 @@ export class Solid {
       // local plane containing the axis: x ⟂ dir, y = −dir
       const x = Math.abs(dir[2]) < 0.9 ? vec.unit(vec.cross(dir, [0, 0, 1])) : vec.unit(vec.cross(dir, [1, 0, 0]));
       const pl = new Plane(p, vec.cross(x, vec.scale(dir, -1)), x);
-      const sk = sketch(pl, { tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}-profile` : undefined }).polyline(prof, { tag: "wall" });
+      // a path, not a polyline: the hole's faces keep their `<tag>-profile/line<n>` names
+      const sk = prof.slice(1).reduce((s, q) => s.lineTo(q), sketch(pl, { tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}-profile` : undefined }).moveTo(prof[0])).close({ tag: "wall" });
       tools.push(sk.revolve(360, { axis: { origin: p, direction: vec.scale(dir, -1) as Vec3 }, tag: tag ? `${tag}${pts.length > 1 ? k + 1 : ""}` : undefined }));
     });
     result = booleanOp("subtract", this, tools, { tag: tag ? `${tag}-cut` : undefined });

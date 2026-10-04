@@ -48,8 +48,10 @@
  * `gear(a, b, ratio)` (b turns ratio degrees per degree of a; meshing gears turn opposite ways, so -na/nb),
  * `rackPinion(pinion, rack, pitchRadius)`, `screw(leadScrew, carriage, leadMmPerTurn)` or `screw(cylindricalNut, lead)`,
  * `linear(a, b, ratio, { offset })`; `{ reverse: true }` flips the follower, and a limit on either joint stops both.
- * People drag free instances in the viewport; overlapping instances show red (pass
- * `{ overlap: true }` on a joint for intended overlaps like press fits). The workspace shows one
+ * People drag free instances in the viewport; overlapping instances show red. Intended overlaps
+ * (press fits, modeled threads, a screw in its tapped hole): `{ overlap: true }` on their joint, or
+ * `expectOverlap(screws, frame, { reason: "modeled threads" })` for any two copies, subassemblies
+ * or arrays of them; check counts them as expected instead of flagging them. The workspace shows one
  * studio at a time.
  */
 import type { Vec3 } from "@parasocial/kernel";
@@ -75,6 +77,12 @@ export type JointOpts = {
   name?: string;
   /** The two parts overlap on purpose (press fit, modeled threads): don't flag it as a collision. */
   overlap?: boolean;
+};
+
+/** Options of `expectOverlap`. */
+export type OverlapOpts = {
+  /** Why they overlap ("press fit", "modeled threads"). */
+  reason?: string;
 };
 
 /** Options of a connector-to-connector joint. */
@@ -133,6 +141,9 @@ export type SubAssembly = {
 /** A part (its one copy where it's modeled) or a copy from `insert`. */
 export type Body = PartDef | Instance;
 
+/** One side of `expectOverlap`: a part or copy, a subassembly, or an array of them. */
+export type OverlapSide = Body | SubAssembly | readonly (Body | SubAssembly)[];
+
 export type AssemblyTools = {
   /**
    * Another copy of a part, or a copy of another assembly (a subassembly, its joints included):
@@ -147,6 +158,13 @@ export type AssemblyTools = {
    * joints still move; to hold another of its parts, `fix(sub.part(gearbox))`.
    */
   fix(...parts: (Body | SubAssembly)[]): void;
+  /**
+   * These overlap on purpose (press fit, modeled threads, a screw in its tapped hole): the viewport
+   * doesn't show it red and check counts it as expected. Each side is a part, a copy, a subassembly
+   * (all its parts) or an array of them, `expectOverlap(screws, frame, { reason: "modeled threads" })`;
+   * every copy on one side may overlap every copy on the other. A joint's `{ overlap: true }` does the same for its two parts.
+   */
+  expectOverlap(a: OverlapSide, b: OverlapSide, opts?: OverlapOpts): void;
   /** Rigidly joined: where they are, or connector to connector. */
   fastened(a: Body, b: Body, opts?: JointOpts): Joint;
   fastened(a: ConnectorRef, b: ConnectorRef, opts?: JointOpts & MateOpts): Joint;
@@ -288,8 +306,11 @@ export type RelationDecl = { kind: RelationKind; a: Joint; ia: number; b: Joint;
 /** @internal A copy made with insert(). */
 export type InsertDecl = { handle: Instance | SubAssembly; place?: PlacePose; stack: string };
 
+/** @internal Copies (or subassemblies) that overlap on purpose, from expectOverlap(): every one in `a` with every one in `b`. */
+export type OverlapDecl = { a: (Body | SubAssembly)[]; b: (Body | SubAssembly)[]; reason?: string; stack: string };
+
 /** @internal `order`: inserts and the parts named, in the order the script makes or first names them. */
-export type AssemblyDecl = { fixed: (Body | SubAssembly)[]; joints: JointDecl[]; relations: RelationDecl[]; inserts: InsertDecl[]; order: ({ insert: InsertDecl } | { body: Body })[] };
+export type AssemblyDecl = { fixed: (Body | SubAssembly)[]; joints: JointDecl[]; relations: RelationDecl[]; inserts: InsertDecl[]; overlaps: OverlapDecl[]; order: ({ insert: InsertDecl } | { body: Body })[] };
 
 const isPart = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;
 const isAssembly = (v: unknown): v is AssemblyDef => !!v && typeof v === "object" && (v as any).__assembly === true;
@@ -365,7 +386,7 @@ function placement(p: Placement): PlacePose {
 
 /** @internal Run an assembly body and collect its copies and joints. Throws (with the call's stack) on misuse. */
 export function declareAssembly(def: AssemblyDef): AssemblyDecl {
-  const out: AssemblyDecl = { fixed: [], joints: [], relations: [], inserts: [], order: [] };
+  const out: AssemblyDecl = { fixed: [], joints: [], relations: [], inserts: [], overlaps: [], order: [] };
   const inserted = new Map<unknown, Set<string | undefined>>();
   const where = (type: string, a: unknown, b: unknown) => {
     if (!isBody(a) || !isBody(b)) throw new Error(`${type}(a, b, ...): a and b must be parts (import them from their studios) or copies from insert()`);
@@ -467,6 +488,20 @@ export function declareAssembly(def: AssemblyDef): AssemblyDecl {
       for (const p of parts) if (!isBody(p) && !isSub(p)) throw new Error("fix(...parts): pass parts imported from their studios, or copies from insert()");
       out.fixed.push(...parts);
       for (const p of parts) if (!isSub(p)) out.order.push({ body: p });
+    },
+    expectOverlap: (a: unknown, b: unknown, opts?: unknown) => {
+      const fn = "expectOverlap(a, b, { reason? })";
+      const side = (x: unknown, which: string) => {
+        const list = Array.isArray(x) ? x : [x];
+        if (!list.length || !list.every((p) => isBody(p) || isSub(p))) throw new Error(`${fn}: ${which} must be a part, a copy from insert(), a subassembly, or an array of them`);
+        return list as (Body | SubAssembly)[];
+      };
+      const sa = side(a, "a"),
+        sb = side(b, "b");
+      if (opts !== undefined && (typeof opts !== "object" || opts === null || Array.isArray(opts))) throw new Error(`${fn}: options are { reason?: string }`);
+      const reason = (opts as OverlapOpts | undefined)?.reason;
+      if (reason !== undefined && typeof reason !== "string") throw new Error(`${fn}: reason must be a string`);
+      out.overlaps.push({ a: sa, b: sb, ...(reason?.trim() && { reason: reason.trim() }), stack: new Error().stack ?? "" });
     },
     fastened: (a: unknown, b: unknown, opts?: unknown) => joint("fastened", a, b, opts, undefined, () => []),
     revolute: (a: unknown, b: unknown, at?: unknown, opts?: unknown) => joint("revolute", a, b, at, opts, (o) => [o]),

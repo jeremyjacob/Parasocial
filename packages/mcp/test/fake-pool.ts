@@ -47,8 +47,10 @@ export class FakePool {
         return e.interference(op.a, op.b);
       case "interferencePairs":
         return op.pairs.map(([a, b]: [string, string]) => e.interference(a, b));
+      case "overlapPairs":
+        return e.overlaps(op.pairs, op.budgetMs);
       case "distancePairs":
-        return e.distances(op.pairs, op.within);
+        return e.distances(op.pairs, op.within, op.budgetMs);
       case "measure":
         return e.measure(op.a, op.b);
       case "check":
@@ -59,6 +61,8 @@ export class FakePool {
         return e.describeAll(op.part);
       case "query":
         return e.query(op.part, op.expr, op.kind);
+      case "names":
+        return e.names(op.part);
       case "indexOfName":
         return e.indexOfName(op.part, op.kind, op.name);
       case "resolve":

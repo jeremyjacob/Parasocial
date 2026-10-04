@@ -107,7 +107,11 @@ test("sweep, loft, shell, draft, thicken, split, offset", async () => {
   expect(k.explore(sp.shape, "solid").size).toBe(2);
   // offset a face outline
   const off = k.offsetFace(rectFace(10, 10).face, 2);
-  expect(k.faceInfo(off.shape).area).toBeGreaterThan(14 * 14 - 4);
+  expect(k.faceInfo(off.shape).area).toBeCloseTo(14 * 14 - 16 + 4 * Math.PI, 6);
+  // sharp join: the corners extend to meet; a compound offsets each face
+  expect(k.faceInfo(k.offsetFace(rectFace(10, 10).face, 2, { join: "sharp" }).shape).area).toBeCloseTo(14 * 14, 6);
+  const two = k.offsetFace(k.compound([rectFace(10, 10).face, rectFace(10, 10).face]), -1);
+  expect(k.explore(two.shape, "face").size).toBe(2);
   // thicken a face
   const th = k.thicken(rectFace(10, 10).face, 2);
   expect(k.massProps(th.shape).volume).toBeCloseTo(200, 0);

@@ -98,7 +98,7 @@ test("write_scripts lands a lib change and its studio as one version with a comp
   });
   expect(stale.isError).toBe(true);
   expect(stale.content[0]!.text).toContain("studios/a.ts changed since version 0");
-  expect(stale.content[0]!.text).toContain("baseVersion is this script's own version");
+  expect(stale.content[0]!.text).toContain("baseVersion is the document version that last changed this script");
   expect((await claude.call("read_script", { path: "lib/size.ts" })).content).toBe("export const w = 10;\n");
 });
 

@@ -10,14 +10,15 @@
  *
  * Planes: sketch point [u, v] → world; positive extrude/offset goes along the normal.
  *   plane.XY (top)    [u, v] → [x, y]   normal +Z
- *   plane.XZ (front)  [u, v] → [x, z]   normal −Y   (plane.XZ.offset(5) is y = −5)
+ *   plane.XZ (front)  [u, v] → [x, z]   normal −Y   (plane.XZ.offset(5) is y = −5; plane.XZ.at([0, 5, 0]) is y = 5)
  *   plane.YZ (right)  [u, v] → [y, z]   normal +X
  *   plane.at(origin, normal, xDir?), p.offset(d), p.at([u, v]), p.flipped(), p.rotated(deg, "x" | "y")
  *
  * Sketch → solid: sketch(plane.XY, { tag }) .rect(w, h, { center, at, fillet, tag }) .circle([u, v], r)
- *   .slot .polygon .polyline(pts) .moveTo .lineTo .line .hLine .vLine .threePointArc .tangentArcTo
- *   .splineTo .spline .close .offset(d) .mirror("y") → .extrude(d, { tag, symmetric, mode, target })
- *   .revolve(deg, { axis }) .sweep(path3d | helix | sketch) · loft([a, b]) · thicken(faces, t)
+ *   .slot .polygon .polyline(pts, { fillet: r | { [i]: r } }) .moveTo .lineTo .line .hLine .vLine
+ *   .threePointArc .tangentArcTo .splineTo .spline .close .offset(d, { join: "sharp" }) (d < 0 insets)
+ *   .mirror("y") → .extrude(d, { tag, symmetric, mode, target }) .revolve(deg, { axis: "Z" | { origin,
+ *   direction } }) .sweep(path3d | helix | sketch) · loft([a, b]) · thicken(faces, t)
  * Primitives: box(w, d, h, { center: true | "xy" }) (corner at the origin by default), cylinder(r, h, { at, axis, center }).
  * Booleans: a.union(b, c), a.subtract(b) (alias cut), a.intersect(b), then optional { tag }.
  * Finishing: s.fillet(edges, r), s.chamfer(edges, d), s.shell(openFaces, t), s.draft(faces, deg),
@@ -27,14 +28,15 @@
  * Selection: s.faces(sel) / s.edges(sel) / s.vertices(sel) → EntitySet. Selectors: ">Z" "<X" ">Z[1]"
  *   (extremes) · "|Z" straight edges along Z, faces facing ±Z (and cylinders about Z) · "#Z" perpendicular
  *   to Z (side walls) · "+Z" "-Z" planar faces facing that way · "%plane" "%cylinder" "%line" "%circle" ·
- *   names "base.side" "bore" · combine with & | - not. Filters: .filter(fn | sel) .planar() .ofType(t)
+ *   names "base.side" "bore" · combine with & | - not; edges("bore & plate.cap.end") is the edge where two
+ *   named faces meet (qualify with the op tag). Filters: .filter(fn | sel) .planar() .ofType(t)
  *   .parallelTo(ax) .perpendicularTo(ax) .sortBy(key, dir) .largest(n) .smallest(n) .first .last .at(i)
  *   .nearest([x, y, z]) .and .or .minus .names() .list().
  * Names: tag what a person might point at ({ tag: "base" }). Faces are `part/base · side · outline/right`,
  *   `base · cap.start` / `cap.end`, `corners · fillet · (…)`; edges are named by their two faces. Untagged
  *   ops get ids (`sketch1`, `fillet2`) that shift when you insert ops of the same type earlier.
  * Appearance: s.color("#4a7bd0"), s.opacity(0.4), s.appearance({ roughness }), s.material("pla").
- * Assemblies: see topic "assembly".
+ * Assemblies: see topic "assembly"; intended overlaps (press fits, threads): expectOverlap(a, b, { reason }).
  * @example
  * import { part, param, sketch, plane } from "parasocial";
  * export default part("Plate", () => {
@@ -47,7 +49,7 @@
 export { part, param } from "./part";
 export type { PartDef, PartTools, PartOptions, ParamOptions, ConnectorRef } from "./part";
 export { assembly } from "./assembly";
-export type { AssemblyDef, AssemblyOptions, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement, Joint, RelationOpts } from "./assembly";
+export type { AssemblyDef, AssemblyOptions, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement, Joint, RelationOpts, OverlapOpts, OverlapSide } from "./assembly";
 export type { FrameSpec } from "./connector";
 export { sketch, Sketch, loft, pipe } from "./sketch";
 export type { P2, ExtrudeOpts, RevolveOpts } from "./sketch";

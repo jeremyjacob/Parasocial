@@ -108,6 +108,13 @@ test("previews are per session; shared scope writes the document", async () => {
     await A.call("render").catch(() => {});
     expect(pool.renders.at(-1).parts).toEqual(["box", "box:lid", "box:drawer"]);
     await expect(A.call("render", { parts: ["mechanism/box:nope"] })).rejects.toThrow(/Unknown part, instance or assembly: mechanism\/box:nope/);
+    // unknown ids: a few close ones, not every part and instance
+    await expect(A.call("render", { parts: ["mechanism/box:lld"] })).rejects.toThrow(/^Unknown part, instance or assembly: mechanism\/box:lld\. Did you mean "mechanism\/box:lid"(, "[^"]+"){0,5}\?$/);
+    await expect(A.call("render", { parts: ["LID", "zzzz"] })).rejects.toThrow(/LID \(did you mean "box:lid", "mechanism\/box:lid"\?\), zzzz\. Known: .*describe_model/);
+    await expect(A.call("describe_model", { part: "drawr" })).rejects.toThrow(/Did you mean "box:drawer"/);
+    // highlight names that don't resolve are said, not dropped
+    const lit = await A.call("render", { parts: ["box"], highlight: [{ part: "box", name: "nope-face" }, { part: "boxx", name: "top" }] });
+    expect(lit.content.at(-1).text).toMatch(/^Not highlighted: Unknown name on box: nope-face\..* Unknown part to highlight: boxx\. Did you mean "box"/);
     // hide: instance or part ids drop out of the set; the rest keep their poses
     await A.call("render", { parts: ["mechanism"], hide: ["mechanism/box:drawer"] }).catch(() => {});
     r = pool.renders.at(-1);
@@ -161,6 +168,11 @@ test("previews are per session; shared scope writes the document", async () => {
     expect(saved.scope).toBe("shared");
     expect(await configurations()).toBe(1);
     expect(await versions()).toBe(v0 + 1);
+    // ---- configurations: rename and delete for everyone, never Default
+    expect((await A.call("list_configurations", { activate: "claude", rename: "Tall" })).configurations.map((c: any) => c.name)).toEqual(["Default", "Tall"]);
+    await expect(A.call("list_configurations", { delete: "Default" })).rejects.toThrow(/Default is the code itself/);
+    expect(await A.call("list_configurations", { delete: "tall" })).toEqual({ active: "Default", configurations: [{ name: "Default" }] });
+    expect(await configurations()).toBe(0);
 
     // ---- subassembly ids select one inserted copy, with relative joint names
     await run(db, mutators.script.write({ documentID: doc, path: 'studios/rack.ts', baseVersion: null, content: `
