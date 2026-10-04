@@ -35,7 +35,7 @@
 import type { OpRecord } from "@parasocial/naming";
 import { noteKernelFault } from "@parasocial/kernel";
 import { ctx, withContext, PartContext, shortLoc } from "./context";
-import { OpError, userError } from "./op";
+import { OpError, userError, type OpTiming } from "./op";
 import { Solid } from "./solid";
 import type { Appearance, ColorSpec, Material, PartMeta, ParamDecl, Problem } from "./types";
 import { MATERIALS } from "./solid";
@@ -277,7 +277,8 @@ export type PartRun = {
   params: ParamDecl[];
   problems: Problem[];
   ops: OpRecord[];
-  timings: { total: number; ops: number; cacheHits: number; cacheMisses: number };
+  /** ops: time in geometry operations; opCount: operations that ran (not cached); slowest: those taking longest, slowest first. */
+  timings: { total: number; ops: number; opCount: number; slowest: OpTiming[]; cacheHits: number; cacheMisses: number };
 };
 
 const tools: PartTools = Object.freeze({
@@ -326,7 +327,7 @@ function runOnce(def: PartDef, c: PartContext): PartRun {
     params: c.params,
     problems: c.problems,
     ops: c.ops,
-    timings: { total: performance.now() - t0, ops: c.opTime, cacheHits: c.cache.hits, cacheMisses: c.cache.misses },
+    timings: { total: performance.now() - t0, ops: c.opTime, opCount: c.opCount, slowest: c.slowest, cacheHits: c.cache.hits, cacheMisses: c.cache.misses },
   };
 }
 

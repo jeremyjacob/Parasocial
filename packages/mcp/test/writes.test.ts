@@ -13,7 +13,7 @@ import { EngineUnavailable, PoolClient } from "@parasocial/engine-pool/client";
 
 /** A stand-in engine pool: one part per studio; `mode` makes regeneration report a problem or blow up. `regenerated`: the parts the last job regenerated. */
 const engine = {
-  mode: "ok" as "ok" | "problem" | "throw",
+  mode: "ok" as "ok" | "problem" | "throw" | "slow",
   regenerated: [] as string[],
   assemblies: [] as unknown[],
   async run(job: { scripts: Record<string, string>; ops: { op: string; part?: string }[] }) {
@@ -24,7 +24,7 @@ const engine = {
       if (o.op === "parts") return { ok: true, value: studios.map((id) => ({ id, file: `studios/${id}.ts` })) };
       if (o.op === "assemblies") return { ok: true, value: engine.assemblies };
       const problems = engine.mode === "problem" ? [{ severity: "error", kind: "operation", message: "fillet radius 5 exceeds adjacent face width 3.2; use a value below 3.2 (a.ts:18)", source: { file: "studios/a.ts", line: 18 }, highlight: { kind: "edge", names: Array(500).fill("x") } }] : [];
-      return { ok: true, value: { part: o.part, name: o.part, ok: !problems.length, problems, faces: Array(200).fill({}), edges: Array(400).fill({}), bbox: { min: [0, 0, 0], max: [1, 1, 1] }, timings: { total: 1, ops: 1 }, params: [] } };
+      return { ok: true, value: { part: o.part, name: o.part, ok: !problems.length, problems, faces: Array(200).fill({}), edges: Array(400).fill({}), bbox: { min: [0, 0, 0], max: [1, 1, 1] }, timings: engine.mode === "slow" ? { total: 4200, script: 4100, ops: 3900, opCount: 140, mesh: 60, slowest: [{ type: "intersect", tag: "slots", source: { file: "studios/a.ts", line: 12 }, ms: 1840 }, { type: "fillet", source: { file: "lib/size.ts", line: 3 }, ms: 610 }] } : { total: 1, ops: 1 }, params: [] } };
     });
   },
 };
@@ -234,4 +234,80 @@ test("assembly problems reach list_problems and write reports, warnings included
   } finally {
     engine.assemblies = [];
   }
+});
+
+/** Set a script's content (whatever earlier tests left), returning its new version. */
+async function put(path: string, content: string) {
+  const { version } = await claude.call("read_script", { path });
+  return (await claude.call("write_script", { path, content, baseVersion: version })).scripts[path] as number;
+}
+
+test("search_scripts finds usages as path:line lines, with context and limits", async () => {
+  engine.mode = "ok";
+  await put("lib/size.ts", "export const w = 10;\n");
+  await put("studios/a.ts", "import { w } from '../lib/size';\nexport default w;\n");
+  const r = await claude.call("search_scripts", { pattern: "\\bw\\b" });
+  expect(r.matches).toContain("lib/size.ts:1: export const w = 10;");
+  expect(r.matches.some((m: string) => m.startsWith("studios/a.ts:1: import { w }"))).toBe(true);
+  expect(Object.keys(r.versions).sort()).toEqual(["lib/size.ts", "studios/a.ts"]);
+  const lib = await claude.call("search_scripts", { pattern: "W", path: "lib/", ignoreCase: true });
+  expect(lib.matches).toEqual(["lib/size.ts:1: export const w = 10;"]);
+  const ctx = await claude.call("search_scripts", { pattern: "^import", context: 1 });
+  expect(ctx.matches[0]).toBe("studios/a.ts:1: import { w } from '../lib/size';");
+  expect(ctx.matches[1]).toStartWith("studios/a.ts:2- ");
+  const capped = await claude.call("search_scripts", { pattern: "w", limit: 1 });
+  expect(capped.matches.length).toBe(1);
+  expect(capped.truncated).toContain(`of ${capped.count}`);
+  const bad = await claude.raw("search_scripts", { pattern: "(" });
+  expect(bad.isError).toBe(true);
+  expect(bad.content[0]!.text).toStartWith("Invalid regular expression");
+});
+
+test("write results say where a slow regeneration spent its time", async () => {
+  const version = await put("lib/size.ts", "export const w = 10;\n");
+  engine.mode = "slow";
+  const r = await claude.call("edit_script", { path: "lib/size.ts", edits: [{ search: "= 10", replace: "= 11" }], baseVersion: version });
+  expect(r.slow.a).toBe('4.2 s (geometry 3.9 s in 140 operations); slowest: intersect "slots" at studios/a.ts:12 1840 ms, fillet at lib/size.ts:3 610 ms');
+  const v = await claude.call("edit_script", { path: "lib/size.ts", edits: [{ search: "= 11", replace: "= 12" }], baseVersion: r.scripts["lib/size.ts"], verbose: true });
+  expect(v.regeneration[0].timingsMs).toMatchObject({ total: 4200, ops: 3900, opsRun: 140, slowest: ['intersect "slots" at studios/a.ts:12 1840 ms', "fillet at lib/size.ts:3 610 ms"] });
+  engine.mode = "ok";
+});
+
+test("editing one file that breaks files depending on it suggests write_scripts", async () => {
+  engine.mode = "ok";
+  const version = await put("lib/size.ts", "export const w = 12;\n");
+  engine.mode = "problem";
+  const r = await claude.call("edit_script", { path: "lib/size.ts", edits: [{ search: "= 12", replace: "= 13" }], baseVersion: version });
+  expect(r.problems.a).toBeDefined();
+  expect(r.hint).toContain("write_scripts");
+  // the studio's own problem after editing that studio is no hint
+  const { version: av } = await claude.call("read_script", { path: "studios/a.ts" });
+  const own = await claude.call("edit_script", { path: "studios/a.ts", edits: [{ search: "export default w", replace: "export default w + 0" }], baseVersion: av });
+  expect(own.hint).toBeUndefined();
+  engine.mode = "ok";
+});
+
+test("a database connection that can't be opened is retried once, then reported plainly", async () => {
+  let failures = 1;
+  const flaky = new Proxy(db.sql, {
+    apply(target, self, args) {
+      if (failures-- > 0) return Promise.reject(Object.assign(new Error("write CONNECT_TIMEOUT postgres:5432"), { code: "CONNECT_TIMEOUT" }));
+      return Reflect.apply(target as any, self, args);
+    },
+  });
+  const session: Session = { id: claude.session.id, userID: claude.session.userID, clientID: "flaky", clientName: "flaky", defaultDocument: documentID, activeConfig: new Map(), lastVersion: new Map(), calls: [], noteCursors: new Map(), startedAt: Date.now() };
+  const server = new McpServer({ name: "test", version: "1" });
+  registerTools(server, session, { db: { ...db, sql: flaky } as any, pool: engine as any, store: new FsBlobStore(tmpdir()), noteEvents: createNoteEvents(db), config: { appOrigin: "http://localhost", secret: "test" } });
+  const client = new Client({ name: "flaky", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b);
+  await client.connect(a);
+  clients.push(client);
+  const ok = (await client.callTool({ name: "read_script", arguments: { path: "lib/size.ts" } })) as any;
+  expect(ok.isError).toBeFalsy();
+  expect(JSON.parse(ok.content[0].text).path).toBe("lib/size.ts");
+  failures = 2;
+  const down = (await client.callTool({ name: "read_script", arguments: { path: "lib/size.ts" } })) as any;
+  expect(down.isError).toBe(true);
+  expect(down.content[0].text).toBe("The database didn't answer (CONNECT_TIMEOUT); nothing was changed. Retry shortly.");
 });

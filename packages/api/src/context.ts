@@ -1,6 +1,7 @@
 // The per-part regeneration context: op cache, params, provenance, counters.
 import { OpCache, type OpRecord } from "@parasocial/naming";
 import type { ParamDecl, Problem } from "./types";
+import type { OpTiming } from "./op";
 import { SI_DEFAULT, type DocUnits } from "./units";
 
 export type Frame = { file: string; line: number; col: number; fn?: string };
@@ -24,6 +25,8 @@ export type ContextOptions = {
   paramHints?: Record<string, number>;
 };
 
+const SLOWEST_KEPT = 5;
+
 export class PartContext {
   readonly part: string;
   readonly file: string;
@@ -42,6 +45,10 @@ export class PartContext {
   private mapFrame: (f: Frame) => Frame | null;
   private isUserFile: (file: string) => boolean;
   opTime = 0;
+  /** Operations that ran (cache misses). */
+  opCount = 0;
+  /** The slowest operations that ran, slowest first (at most SLOWEST_KEPT). */
+  readonly slowest: OpTiming[] = [];
   readonly options: ContextOptions;
 
   constructor(o: ContextOptions) {
@@ -54,6 +61,17 @@ export class PartContext {
     this.units = o.units ?? SI_DEFAULT;
     this.mapFrame = o.mapFrame ?? ((f) => f);
     this.isUserFile = o.isUserFile ?? ((f) => /(^|\/)(studios|lib)\/[^/]+/.test(f));
+  }
+
+  /** Count a finished operation's time. */
+  noteOp(t: OpTiming) {
+    const ms = t.ms ?? 0;
+    this.opTime += ms;
+    this.opCount++;
+    if (this.slowest.length >= SLOWEST_KEPT && ms <= this.slowest[this.slowest.length - 1].ms!) return;
+    const at = this.slowest.findIndex((x) => ms > x.ms!);
+    this.slowest.splice(at < 0 ? this.slowest.length : at, 0, t);
+    if (this.slowest.length > SLOWEST_KEPT) this.slowest.pop();
   }
 
   /** User frames, innermost first. */

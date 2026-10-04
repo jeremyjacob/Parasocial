@@ -30,6 +30,34 @@ const meshes = new Map<string, any>(); // last regeneration result per part (wit
 // regeneration is deterministic: reuse its metadata and the mesh already held by this host.
 const regenerations = new Map<string, any>();
 let revision = 0;
+
+/** What the worker is computing (from its "op" messages), for timeout messages. */
+type OpInfo = { part: string; type: string; tag?: string; source?: { file: string; line: number }; ms?: number };
+let progress = { current: null as null | { op: OpInfo; at: number }, slowest: null as OpInfo | null, opsMs: 0, count: 0 };
+function track(phase: "start" | "end", op: OpInfo) {
+  if (phase === "start") return void (progress.current = { op, at: Date.now() });
+  progress.current = null;
+  progress.count++;
+  progress.opsMs += op.ms ?? 0;
+  if (!progress.slowest || (op.ms ?? 0) > (progress.slowest.ms ?? 0)) progress.slowest = op;
+}
+
+/**
+ * Why a request ran out of time: the geometry operation that was running (with its source line),
+ * or, when none was, that script code may loop forever.
+ */
+function timeoutMessage(req: any, limitMs: number): string {
+  const what = req.op === "regenerate" || req.op === "regenerateSnapshot" ? `regeneration${req.part ? ` of ${req.part}` : ""}` : req.op === "evaluate" ? "evaluation" : "loading the scripts";
+  const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+  const name = (op: OpInfo) => `${op.type}${op.tag ? ` "${op.tag}"` : ""}${op.source ? ` at ${op.source.file}:${op.source.line}` : ""}`;
+  const head = `${what} timed out after ${limitMs / 1000} s (the time limit)`;
+  const { current, slowest, opsMs, count } = progress;
+  const done = count ? `; ${count} geometry operation${count === 1 ? "" : "s"} finished before it in ${s(opsMs)}${slowest && (slowest.ms ?? 0) >= 100 ? ` (slowest: ${name(slowest)}, ${s(slowest.ms!)})` : ""}` : "";
+  if (current) return `${head} while ${name(current.op)} was running (${s(Date.now() - current.at)} so far)${done}. The geometry is too heavy, not looping: simplify that operation (fewer or smaller tools per boolean, smaller fillets) or split the work`;
+  if (count && opsMs >= limitMs / 2) return `${head}: geometry operations took ${s(opsMs)} of it${done}. Reduce the number or size of operations`;
+  const where = what === "loading the scripts" ? "a script may loop forever at its top level" : what === "evaluation" ? "the expression or the code it calls may loop forever" : "the script may loop forever";
+  return `${head}: no geometry operation was running, so ${where}${done}`;
+}
 const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
 const POSED_READS = new Set(["measure", "interference", "interferencePairs", "distancePairs", "interferences", "export"]);
 const readCache = new Map<string, { value: any; bytes: number }>();
@@ -71,6 +99,7 @@ function spawn() {
         return restart(e, false);
       }
       if (m?.type === "started") return arm(m.id);
+      if (m?.type === "op") return track(m.phase, m.op);
       if (m?.type === "poisoned") return restart(new Error(`the geometry kernel crashed (${m.error})`), true);
       if (m?.type === "result") {
         const p = pending.get(m.id);
@@ -146,11 +175,10 @@ function restart(error: Error, resend: boolean) {
 function arm(id: number) {
   const p = pending.get(id);
   if (!p || p.timer !== null || !WATCHED.has(p.req.op)) return;
+  progress = { current: null, slowest: null, opsMs: 0, count: 0 };
   p.timer = setTimeout(() => {
-    const what = p.req.op === "regenerate" || p.req.op === "regenerateSnapshot" ? "regeneration" : p.req.op === "evaluate" ? "evaluation" : "loading the scripts";
-    const where = what === "loading the scripts" ? "a script may loop forever at its top level" : what === "evaluation" ? "the expression or the code it calls may loop forever" : "the script may loop forever";
     // Every pending call belongs to the terminated worker, including queued calls.
-    restart(Object.assign(new Error(`${what} timed out after ${cfg.timeoutMs / 1000} s: ${where}`), { timeout: true }), false);
+    restart(Object.assign(new Error(timeoutMessage(p.req, cfg.timeoutMs)), { timeout: true }), false);
   }, cfg.timeoutMs);
 }
 

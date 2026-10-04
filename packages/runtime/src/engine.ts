@@ -4,7 +4,7 @@
 import { noteKernelFault, faultMessage, boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
 import { evaluateExpression, type EvaluateResult } from "./evaluate";
@@ -136,7 +136,8 @@ export type PartResult = {
   faceEdges: number[][];
   bbox?: { min: Vec3; max: Vec3 };
   mass?: { volume: number; area: number; mass: number; centroid: Vec3 };
-  timings: { total: number; script: number; ops: number; mesh: number; cacheHits: number; cacheMisses: number };
+  /** ms; ops: time in geometry operations, opCount of them ran (cache misses), slowest: the longest of them, slowest first. */
+  timings: { total: number; script: number; ops: number; mesh: number; cacheHits: number; cacheMisses: number; opCount?: number; slowest?: OpTiming[] };
   /** hash of the final op (derived-data cache key component) */
   key?: string;
   /**
@@ -652,7 +653,7 @@ export class Engine {
       edges: [],
       vertices: [],
       faceEdges: [],
-      timings: { total: 0, script: scriptMs, ops: run?.timings.ops ?? 0, mesh: 0, cacheHits: run?.timings.cacheHits ?? 0, cacheMisses: run?.timings.cacheMisses ?? 0 },
+      timings: { total: 0, script: scriptMs, ops: run?.timings.ops ?? 0, mesh: 0, cacheHits: run?.timings.cacheHits ?? 0, cacheMisses: run?.timings.cacheMisses ?? 0, opCount: run?.timings.opCount ?? 0, slowest: run?.timings.slowest ?? [] },
       key: rec?.key,
     };
     if (rec && known !== undefined && rec.key === known) result.unchanged = true;

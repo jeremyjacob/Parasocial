@@ -92,6 +92,10 @@ export function compactToolList(server: McpServer) {
   handlers.set("tools/list", compact);
 }
 
+/** postgres.js errors raised while opening a connection, before any query was sent. */
+const CONNECT_ERRORS = new Set(["CONNECT_TIMEOUT", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+const unreachableDb = (e: unknown) => !!e && typeof e === "object" && CONNECT_ERRORS.has((e as { code?: string }).code ?? "");
+
 const LIMIT_PER_MIN = 240;
 /** Default render size. Image input is billed by pixels (~w·h/750 tokens): 800×600 is ~640, 1024×768 was ~1050. */
 const RENDER_SIZE = [800, 600] as const;
@@ -227,9 +231,21 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       edges: r.edges.length,
       bbox: r.bbox ? { min: vec(r.bbox.min), max: vec(r.bbox.max) } : undefined,
       volume: r.mass ? round(r.mass.volume, 2) : undefined,
-      timingsMs: full ? { total: round(r.timings.total, 1), ops: round(r.timings.ops, 1) } : undefined,
+      timingsMs: full ? lean({ total: round(r.timings.total, 1), script: r.timings.script !== undefined ? round(r.timings.script, 1) : undefined, ops: round(r.timings.ops, 1), opsRun: r.timings.opCount, mesh: r.timings.mesh !== undefined ? round(r.timings.mesh, 1) : undefined, slowest: r.timings.slowest?.map(opTime) }) : undefined,
     });
   }
+
+  /** `intersect "slots" at studios/grille.ts:12 1840 ms` */
+  const opTime = (o: { type: string; tag?: string; source?: { file: string; line: number }; ms?: number }) => `${o.type}${o.tag ? ` "${o.tag}"` : ""}${o.source ? ` at ${o.source.file}:${o.source.line}` : ""} ${Math.round(o.ms ?? 0)} ms`;
+
+  /** A regeneration slow enough to matter against the engine's time limit: where its time went. */
+  const SLOW_MS = 1000;
+  const slowLine = (r: any) => {
+    const t = r?.timings;
+    if (!t || t.total < SLOW_MS) return undefined;
+    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    return `${sec(t.total)} (geometry ${sec(t.ops)} in ${t.opCount ?? "?"} operations${t.mesh >= 100 ? `, meshing ${sec(t.mesh)}` : ""}); slowest: ${(t.slowest ?? []).slice(0, 3).map(opTime).join(", ") || "none"}`;
+  };
 
   /**
    * An entity, compactly: name, type, measurements, and `by`, the operation that made it with its
@@ -394,14 +410,21 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       let result: ToolResult;
       let thrown: unknown;
       try {
-        result = await fn(args, extra);
+        try {
+          result = await fn(args, extra);
+        } catch (e) {
+          // the database connection couldn't be opened: no query got through, so one retry is safe
+          if (!unreachableDb(e) || extra.signal?.aborted) throw e;
+          await new Promise((r) => setTimeout(r, 300));
+          result = await fn(args, extra);
+        }
       } catch (e) {
         thrown = e;
         const known = e instanceof ToolError || e instanceof AccessError || e instanceof EngineUnavailable;
-        const msg = known ? e.message : `Internal error: ${(e as Error).message}`;
+        const msg = known ? e.message : unreachableDb(e) ? `The database didn't answer (${(e as any).code}); nothing was changed. Retry shortly.` : `Internal error: ${(e as Error).message}`;
         const data = e instanceof ToolError ? e.data : undefined;
         // traces are dev-only: internal errors (and the engine being down) must also reach the server log
-        if (e instanceof EngineUnavailable) console.warn(`mcp: ${name}: ${e.message}`);
+        if (e instanceof EngineUnavailable || unreachableDb(e)) console.warn(`mcp: ${name}: ${(e as Error).message}`);
         else if (!known) console.error(`mcp: ${name} failed (document ${s.defaultDocument?.slice(0, 8) ?? "?"})`, e);
         result = { isError: true, content: [{ type: "text", text: data ? `${msg}\n${JSON.stringify(data)}` : msg }] };
       }
@@ -623,6 +646,46 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return text({ path, version: sc.version, content: sc.content, ...(others ? { otherSessions: others } : {}) });
   }, { readOnlyHint: true });
 
+  tool(
+    "search_scripts",
+    "Regex search (JavaScript syntax) over every script: \"path:line: text\" per match and the matching scripts' versions. Find usages without reading whole files. path: prefix filter (\"lib/\"); context: lines around; limit: default 100.",
+    { document, pattern: z.string().min(1).max(500), path: z.string().optional(), ignoreCase: z.boolean().optional(), context: z.number().int().min(0).max(10).optional(), limit: z.number().int().min(1).max(1000).optional() },
+    async ({ document: dd, pattern, path, ignoreCase, context, limit }) => {
+      const d = await loadDoc(db, s.userID, docID(dd));
+      let re: RegExp;
+      try {
+        re = new RegExp(pattern, ignoreCase ? "i" : "");
+      } catch (e) {
+        throw new ToolError(`Invalid regular expression: ${(e as Error).message}`);
+      }
+      const max = limit ?? 100;
+      const around = context ?? 0;
+      const matches: string[] = [];
+      const versions: Record<string, number> = {};
+      let count = 0;
+      for (const sc of d.scripts) {
+        if (path && !sc.path.startsWith(path)) continue;
+        const lines = sc.content.split("\n");
+        let shownTo = -1;
+        lines.forEach((line, i) => {
+          if (!re.test(line)) return;
+          count++;
+          versions[sc.path] = sc.version;
+          if (count > max) return;
+          // matches with context: the lines around, each line once; "-" marks context, ":" a match
+          const from = Math.max(i - around, shownTo + 1);
+          if (around && matches.length && from > shownTo + 1) matches.push("--");
+          for (let k = from; k <= Math.min(i + around, lines.length - 1); k++) {
+            matches.push(`${sc.path}:${k + 1}${k === i ? ":" : "-"} ${lines[k].length > 300 ? `${lines[k].slice(0, 300)}…` : lines[k]}`);
+            shownTo = k;
+          }
+        });
+      }
+      return text(lean({ count, matches, truncated: count > max ? `first ${max} of ${count}; pass limit or a narrower pattern/path` : undefined, versions: Object.keys(versions).length ? versions : undefined }));
+    },
+    { readOnlyHint: true },
+  );
+
   tool("evaluate", "Evaluate an expression in a script's module scope, e.g. expr \"winch().drumFront\". Params: defaults and shared overrides, or part's (with previews) if given.", { document, script: z.string(), expr: z.string().min(1).max(4000), part: z.string().optional() }, async ({ document: dd, script, expr, part }) => {
     const d = await loadDoc(db, s.userID, docID(dd));
     if (!d.scripts.some((x) => x.path === script)) throw new ToolError(`No script at ${script}. Scripts: ${d.scripts.map((x) => x.path).join(", ") || "none"}`);
@@ -671,6 +734,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       for (const [file, gone] of missing) if (!reported.has(file)) (problems[file] ??= []).push(...gone.map((g) => `warning ${file} imports ${g}, which doesn't exist`));
       out.parts = lean({ regenerated: raw.length, ok: raw.length - bad.length, unaffected: infos.length - parts.length || undefined });
       if (Object.keys(problems).length) out.problems = problems;
+      // regenerations getting close to the time limit: where the time went (verbose has every part's)
+      const slow = Object.fromEntries(raw.map((r: any) => [r.part, slowLine(r)]).filter(([, l]) => l));
+      if (Object.keys(slow).length) out.slow = slow;
+      // one file edited and other files broke: the change probably needed them too, in the same version
+      if (w.paths.length === 1 && Object.keys(problems).some((id) => { const f = infos.find((p) => p.id === id)?.file ?? asms.find((a) => a.id === id)?.file ?? (d.scripts.some((x) => x.path === id) ? id : undefined); return f !== undefined && f !== w.paths[0]; }))
+        out.hint = "Other files have problems after this change. If they depend on what you changed, make the remaining edits with write_scripts (edits per file, one version) rather than one file at a time.";
       if (w.verbose) out.regeneration = raw.map((r: any) => summarize(r, true));
       const names = nameHints(infos, asms, new Set(w.paths));
       if (names.length) out.names = names;
@@ -710,7 +779,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "edit_script",
-    "Search/replace edits on a script; each search must match exactly once unless all: true. Otherwise like write_script.",
+    "Search/replace edits on a script; each search must match exactly once unless all: true. Otherwise like write_script. Dependent changes across files (an export and its users): write_scripts with edits.",
     { document, path: z.string(), edits, baseVersion: z.number().int(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, edits, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
@@ -724,7 +793,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_scripts",
-    "Change, create or delete several scripts in one version (or none), e.g. a lib file and the studios using it. Each file gives content, edits or delete: true, and its baseVersion (null to create); any stale baseVersion rejects the whole write. Otherwise like write_script.",
+    "Change, create or delete several scripts in one version (or none), one regeneration: e.g. rename an export and its users. Each file gives edits (search/replace like edit_script), content or delete: true, and its baseVersion (null to create); any stale baseVersion or failed edit rejects the whole write. Otherwise like write_script.",
     {
       document,
       files: z
@@ -758,12 +827,12 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   const VIEWS = ["iso", "top", "bottom", "front", "back", "left", "right", "section"] as const;
   tool(
     "render",
-    'PNG of the model (800×600 unless width/height). view: iso (default), top, bottom, front, back, left, right, section, or "note:<id>" (the note\'s camera and targets); or a camera. Z up like the workspace (top looks down −Z, front along +Y); up: "y" for Y-up views. parts: part, instance, assembly or subassembly copy ids, default every part; instances are where this session poses them, and your set_param previews apply. hide: ids to leave out (a part id hides all its instances); the rest stays posed. highlight: names or selectors to mark orange. section: cut this image only, removing where dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5); view "section" (default with section) faces the cut.',
+    'PNG (default 800×600). view: iso (default), top, bottom, front, back, left, right, section, or "note:<id>" (its camera and targets); or a camera. Z up (top looks down −Z, front along +Y); up: "y" for Y-up. parts: part/instance/assembly/subassembly copy ids (default all parts), posed as in your session, with your set_param previews. hide: ids to leave out (part id: all its instances). frame: ids to fit in view (others still drawn, camera direction kept). camera.width: mm across the image. highlight: names/selectors shown orange. section: cut this image only, removing dot(p − origin, normal) > 0 (origin [0,0,5], normal [0,0,1] keeps z ≤ 5); view "section" (default with it) faces the cut.',
     {
       document,
       view: z.string().optional(),
       up: z.enum(["z", "y"]).optional(),
-      camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional() }).optional(),
+      camera: z.object({ position: z.array(z.number()).length(3), target: z.array(z.number()).length(3), up: z.array(z.number()).length(3).optional(), ortho: z.boolean().optional(), width: z.number().optional() }).optional(),
       section: z.object({
         origin: z.array(z.number().finite()).length(3),
         normal: z.array(z.number().finite()).length(3).refine((n) => {
@@ -774,14 +843,15 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       highlight: z.array(z.object({ part: z.string(), name: z.string() })).optional(),
       parts: z.array(z.string()).optional(),
       hide: z.array(z.string()).optional(),
+      frame: z.array(z.string()).optional(),
       style: z.enum(["shaded", "shadedEdges", "wireframe", "hiddenLine"]).optional(),
       width: z.number().int().min(128).max(2048).optional(),
       height: z.number().int().min(128).max(2048).optional(),
     },
-    async ({ document: dd, view, up, camera, section, highlight, parts, hide, style, width, height }) => {
+    async ({ document: dd, view, up, camera, section, highlight, parts, hide, frame, style, width, height }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const asm = await assemblyState(d, parts ?? []);
+      const asm = await assemblyState(d, [...(parts ?? []), ...(frame ?? [])]);
       const all = await partsOf(d);
       let ids = all;
       if (parts) {
@@ -796,7 +866,16 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         ids = ids.filter((id) => !gone.has(id) && !gone.has(sourcePart(id)));
         if (!ids.length) throw new ToolError("hide leaves nothing to render.");
       }
+      let framed: string[] | undefined;
+      if (frame?.length) {
+        const t = expandTargets(frame, all, asm.infos);
+        if (t.unknown.length) throw new ToolError(`Unknown part, instance or assembly to frame: ${t.unknown.join(", ")}. Parts: ${all.join(", ") || "none"}${asm.infos.length ? `. Assemblies: ${asm.infos.map((a) => `${a.id} (${a.instances.map((i) => i.id).join(", ")})`).join("; ")}` : ""}`);
+        // a part id frames its instances too (render({ parts: ["pack"], frame: ["battery"] }))
+        framed = ids.filter((id) => t.ids.includes(id) || t.ids.includes(sourcePart(id)));
+        if (!framed.length) throw new ToolError(`Nothing to frame: ${frame.join(", ")} isn't among the parts rendered${parts ? "" : " (instances show only when parts names their assembly: parts: [\"<assembly>\"])"}${hide ? " or is hidden" : ""}.`);
+      }
       await regen(d, ids);
+      if (camera?.width !== undefined && !(camera.width > 0)) throw new ToolError("camera.width must be a positive number of mm.");
       let cam = camera as any;
       if (view === "section" && !section) throw new ToolError('view "section" needs section.');
       let v: string | undefined = view ?? (section && !camera ? "section" : "iso");
@@ -815,7 +894,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         } catch {}
       }
       const poses = Object.fromEntries(ids.filter((p) => asm.poses[p]).map((p) => [p, asm.poses[p]]));
-      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, poses, style, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
+      const [img] = await engine(d, [{ op: "render", view: v, up: up ?? "z", camera: cam && { ...cam, up: cam.up ?? (up === "y" ? [0, 1, 0] : [0, 0, 1]) }, section, highlight: refs, parts: ids, frame: framed, poses, style, width: width ?? RENDER_SIZE[0], height: height ?? RENDER_SIZE[1] }]);
       await activity(documentID, `render ${view ?? v ?? "iso"}${refs.length ? ` (${refs.length} highlighted)` : ""}`);
       return { content: [{ type: "image", data: (img as any).png, mimeType: "image/png" }] };
     },

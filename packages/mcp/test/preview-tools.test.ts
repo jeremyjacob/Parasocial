@@ -119,6 +119,16 @@ test("previews are per session; shared scope writes the document", async () => {
     expect(pool.renders.at(-1).parts).toEqual(["box:lid", "box:drawer"]);
     await expect(A.call("render", { parts: ["mechanism"], hide: ["nope"] })).rejects.toThrow(/Unknown part, instance or assembly to hide: nope/);
     await expect(A.call("render", { parts: ["mechanism"], hide: ["mechanism"] })).rejects.toThrow(/nothing to render/);
+    // frame: fit the view to some of what's drawn; a part id frames its instances
+    await A.call("render", { parts: ["mechanism"], frame: ["mechanism/box:lid"] }).catch(() => {});
+    r = pool.renders.at(-1);
+    expect(r.parts).toEqual(["mechanism/box", "mechanism/box:lid", "mechanism/box:drawer"]);
+    expect(r.frame).toEqual(["mechanism/box:lid"]);
+    await A.call("render", { parts: ["mechanism"], frame: ["box:drawer"], camera: { position: [0, -100, 0], target: [0, 0, 0], ortho: true, width: 40 } }).catch(() => {});
+    expect(pool.renders.at(-1)).toMatchObject({ frame: ["mechanism/box:drawer"], camera: { ortho: true, width: 40 } });
+    await expect(A.call("render", { frame: ["mechanism/box:lid"] })).rejects.toThrow(/Nothing to frame.*parts: \["<assembly>"\]/);
+    await expect(A.call("render", { parts: ["mechanism"], frame: ["nope"] })).rejects.toThrow(/Unknown part, instance or assembly to frame: nope/);
+    await expect(A.call("render", { camera: { position: [1, 1, 1], target: [0, 0, 0], width: 0 } })).rejects.toThrow(/camera.width must be a positive number/);
     // section: defaults to the section view unless a view or camera is given; view "section" needs one
     await A.call("render", { parts: ["box"], section: { origin: [0, 0, 5], normal: [0, 0, 1] } }).catch(() => {});
     expect(pool.renders.at(-1)).toMatchObject({ view: "section", section: { origin: [0, 0, 5], normal: [0, 0, 1] } });

@@ -13,7 +13,14 @@ export type EntityRef = { part: string; kind: "face" | "edge" | "vertex" | "part
 export type RenderOptions = {
   parts?: string[];
   view?: string;
-  camera?: { position: number[]; target: number[]; up: number[]; ortho?: boolean };
+  /**
+   * position/target/up, or only a direction to look along (`target − position`) when `frame` gives
+   * what to fit. ortho: parallel projection. width: mm visible across the image at the target
+   * (instead of the scale following the camera's distance).
+   */
+  camera?: { position?: number[]; target?: number[]; up: number[]; ortho?: boolean; width?: number };
+  /** Ids of the parts to fit the view around (others still drawn): the default is all of them. */
+  frame?: string[];
   section?: { origin: number[]; normal: number[] };
   highlight?: EntityRef[];
   width?: number;
@@ -291,7 +298,8 @@ function pipelines(dev: any) {
 
 // ---------- scene ----------
 /** Box around the meshes; with a cut, around what it keeps (dot(p, n) ≤ d, plus where triangle edges cross the plane). */
-function bounds(parts: RenderPart[], cut?: { n: Vec3; d: number }) {
+/** @internal exported for tests */
+export function bounds(parts: RenderPart[], cut?: { n: Vec3; d: number }) {
   const min: Vec3 = [Infinity, Infinity, Infinity],
     max: Vec3 = [-Infinity, -Infinity, -Infinity];
   const grow = (x: number, y: number, z: number) => {
@@ -324,28 +332,32 @@ function bounds(parts: RenderPart[], cut?: { n: Vec3; d: number }) {
   return { center: add(min, sub(max, min), 0.5), radius: Math.max(Math.hypot(...sub(max, min)) / 2, 1e-3), min, max, empty: false };
 }
 
-function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) {
+/** `b`: what to fit on screen; `scene`: everything drawn (sets the clipping planes). */
+export function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number, framed = false, scene = b) {
   let eye: Vec3, target: Vec3, up: Vec3, ortho: boolean, orthoHeight: number;
-  if (o.camera) {
-    eye = o.camera.position as Vec3;
-    target = o.camera.target as Vec3;
-    up = norm(o.camera.up);
-    ortho = !!o.camera.ortho;
+  const cam = o.camera;
+  if (cam?.position && cam.target && !framed) {
+    eye = cam.position as Vec3;
+    target = cam.target as Vec3;
+    up = norm(cam.up);
+    ortho = !!cam.ortho;
     orthoHeight = 2 * Math.hypot(...sub(eye, target)) * Math.tan(FOV / 2);
   } else {
     // Viewer.fit: keep the view direction, back off until the bounding sphere fits
     const dirs = o.up === "y" ? VIEW_DIRS_Y : VIEW_DIRS;
-    // "section": from the removed (+normal) side, facing the cut
-    const d = o.view === "section" && o.section ? norm(o.section.normal) : (dirs[o.view ?? "iso"] ?? dirs.iso);
+    // "section": from the removed (+normal) side, facing the cut; a camera given with `frame` keeps its direction
+    const given = cam?.position && cam.target ? sub(cam.position, cam.target) : undefined;
+    const d = given && Math.hypot(...given) > 1e-9 ? norm(given) : o.view === "section" && o.section ? norm(o.section.normal) : (dirs[o.view ?? "iso"] ?? dirs.iso);
     // looking straight along the up axis, the screen's up is the next axis round (+Y for top in Z-up, -Z in Y-up)
-    if (o.up === "y") up = Math.abs(d[1]) > 0.999 ? [0, 0, d[1] > 0 ? -1 : 1] : [0, 1, 0];
+    if (cam) up = norm(cam.up);
+    else if (o.up === "y") up = Math.abs(d[1]) > 0.999 ? [0, 0, d[1] > 0 ? -1 : 1] : [0, 1, 0];
     else up = Math.abs(d[2]) > 0.999 ? [0, d[2] > 0 ? 1 : -1, 0] : [0, 0, 1];
     const fitH = b.radius / Math.sin(FOV / 2);
     const fitW = b.radius / Math.sin(Math.atan(Math.tan(FOV / 2) * aspect));
     let dist = Math.max(fitH, fitW) * 1.12;
-    if (o.view === "section") {
-      // facing a cut, fit the box's corners on screen rather than its sphere (a thin slice would look tiny)
-      const sx = norm(cross(up, d)),
+    if (o.view === "section" || framed) {
+      // facing a cut (or framing a part among others), fit the box's corners on screen rather than its sphere
+      const sx = norm(cross(Math.hypot(...cross(up, d)) < 1e-9 ? (Math.abs(d[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0]) : up, d)),
         sy = cross(d, sx),
         t = Math.tan(FOV / 2);
       dist = 0;
@@ -356,8 +368,14 @@ function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) 
     }
     eye = add(b.center, d, dist);
     target = b.center;
-    ortho = false;
-    orthoHeight = b.radius * 2.3 * Math.max(1, 1 / aspect);
+    ortho = !!cam?.ortho;
+    // an ortho view of the same framing: what the perspective view shows at the target
+    orthoHeight = framed || o.view === "section" ? 2 * dist * Math.tan(FOV / 2) : b.radius * 2.3 * Math.max(1, 1 / aspect);
+  }
+  if (cam?.width) {
+    // an explicit scale: `width` mm across the image at the target
+    orthoHeight = cam.width / aspect;
+    if (!ortho) eye = add(target, norm(sub(eye, target)), orthoHeight / 2 / Math.tan(FOV / 2));
   }
   const z = norm(sub(eye, target));
   let x = cross(up, z);
@@ -365,8 +383,8 @@ function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) 
   x = norm(x);
   const y = cross(z, x);
   const view = new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]);
-  const dist = dot(sub(eye, b.center), z);
-  const reach = Math.max(dist, b.radius) * 6;
+  const dist = dot(sub(eye, scene.center), z);
+  const reach = Math.max(dist, scene.radius) * 6;
   let proj: Float32Array;
   if (ortho) {
     const near = dist - reach,
@@ -375,7 +393,7 @@ function camera(o: RenderOptions, b: ReturnType<typeof bounds>, aspect: number) 
       w = h * aspect;
     proj = new Float32Array([2 / w, 0, 0, 0, 0, 2 / h, 0, 0, 0, 0, 1 / (near - far), 0, 0, 0, near / (near - far), 1]);
   } else {
-    const near = Math.max(dist - b.radius * 1.2, b.radius * 0.01),
+    const near = Math.max(dist - scene.radius * 1.2, Math.min(b.radius, scene.radius) * 0.01),
       far = dist + reach;
     const f = 1 / Math.tan(FOV / 2);
     proj = new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, far / (near - far), -1, 0, 0, (near * far) / (near - far), 0]);
@@ -461,8 +479,10 @@ export async function renderPNG(all: Map<string, RenderPart>, o: RenderOptions):
   const b = bounds(parts);
   const section = o.section ? { n: norm(o.section.normal), d: dot(norm(o.section.normal), o.section.origin) } : null;
   // a section view frames what the cut keeps (everything when it keeps nothing)
-  const kept = o.view === "section" && section ? bounds(parts, section) : b;
-  const c = camera(o, kept.empty ? b : kept, W / H);
+  // `frame`: fit the view around those parts (the rest still drawn)
+  const framed = o.frame?.length ? bounds(entries.filter(([id]) => o.frame!.includes(id)).map(([, r]) => r), o.view === "section" ? section ?? undefined : undefined) : null;
+  const kept = framed && !framed.empty ? framed : o.view === "section" && section ? bounds(parts, section) : b;
+  const c = camera(o, kept.empty ? b : kept, W / H, !!framed && !framed.empty, b);
   const bias = b.radius * 0.003;
   const yUp = o.up === "y";
   const gridSize = Math.max(b.max[0] - b.min[0], yUp ? b.max[2] - b.min[2] : b.max[1] - b.min[1]) * 1.6;
