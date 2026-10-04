@@ -253,13 +253,25 @@ export function createPool(o: PoolOptions) {
   function runJob(job: JobRequest): Promise<OpResult[]> {
     const prev = queues.get(job.document) ?? Promise.resolve();
     const run = prev.then(() => execute(job));
-    const tail = run.catch(() => {});
+    // idle time counts from the end of the last job, so a long job isn't already "idle" when it finishes
+    const tail = run.catch(() => {}).then(() => {
+      const s = slots.get(job.document);
+      if (s) s.lastUsed = Date.now();
+    });
     queues.set(job.document, tail);
     tail.then(() => queues.get(job.document) === tail && queues.delete(job.document));
     return run;
   }
 
+  // Idle hosts are closed on a timer, not only when another document needs a slot: the last
+  // document's host (often ~1 GB) would otherwise stay resident until the next document opens.
+  const sweep = setInterval(() => {
+    for (const [id, s] of slots) if (!queues.has(id) && Date.now() - s.lastUsed > idleMs) close(id).catch(() => {});
+  }, Math.max(1000, Math.min(30_000, idleMs / 4)));
+  (sweep as any).unref?.();
+
   async function closeAll() {
+    clearInterval(sweep);
     for (const id of [...slots.keys()]) await close(id);
   }
 

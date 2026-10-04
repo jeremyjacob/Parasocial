@@ -18,7 +18,9 @@ export type EngineAssets = {
 
 const short = (buf: Uint8Array) => new Bun.CryptoHasher("sha256").update(buf).digest("hex").slice(0, 16);
 
-export async function buildEngine(outDir = join(here, "../../dist/engine"), opts: { minify?: boolean } = {}): Promise<EngineAssets> {
+/** `browser: false` (the engine pool) skips what only browsers load: the threaded build and the brotli copies. */
+export async function buildEngine(outDir = join(here, "../../dist/engine"), opts: { minify?: boolean; browser?: boolean } = {}): Promise<EngineAssets> {
+  const browser = opts.browser ?? true;
   if (existsSync(outDir)) rmSync(outDir, { recursive: true });
   mkdirSync(join(outDir, "occt"), { recursive: true });
   const res = await Bun.build({
@@ -36,7 +38,7 @@ export async function buildEngine(outDir = join(here, "../../dist/engine"), opts
   if (!res.success) throw new AggregateError(res.logs, "engine build failed");
   const assets: Record<string, string> = {};
   let wasmBytes = 0;
-  for (const v of ["single", "multi"]) {
+  for (const v of browser ? ["single", "multi"] : ["single"]) {
     const js = readFileSync(join(occtDist, `replicad_${v}.js`));
     const wasm = readFileSync(join(occtDist, `replicad_${v}.wasm`));
     const h = short(wasm);
@@ -45,8 +47,10 @@ export async function buildEngine(outDir = join(here, "../../dist/engine"), opts
     writeFileSync(join(outDir, jsName), js);
     copyFileSync(join(occtDist, `replicad_${v}.wasm`), join(outDir, wasmName));
     // precompressed for transfer (~5.7 MB brotli vs 23 MB raw)
-    const { brotliCompressSync, constants } = await import("node:zlib");
-    writeFileSync(join(outDir, wasmName + ".br"), brotliCompressSync(wasm, { params: { [constants.BROTLI_PARAM_QUALITY]: 9 } }));
+    if (browser) {
+      const { brotliCompressSync, constants } = await import("node:zlib");
+      writeFileSync(join(outDir, wasmName + ".br"), brotliCompressSync(wasm, { params: { [constants.BROTLI_PARAM_QUALITY]: 9 } }));
+    }
     assets[v] = jsName;
     assets[v + "Wasm"] = wasmName;
     if (v === "single") wasmBytes = wasm.byteLength;
@@ -56,5 +60,5 @@ export async function buildEngine(outDir = join(here, "../../dist/engine"), opts
     join(outDir, "index.html"),
     `<!doctype html><html><head><meta charset="utf-8"><title>Parasocial engine</title><script src="/config.js"></script><script type="module" src="/page.js?v=${build}"></script></head><body></body></html>`,
   );
-  return { dir: outDir, build, glueSingle: "/" + assets.single, glueMulti: "/" + assets.multi, wasmSingle: "/" + assets.singleWasm, wasmMulti: "/" + assets.multiWasm, wasmBytes };
+  return { dir: outDir, build, glueSingle: "/" + assets.single, glueMulti: assets.multi ? "/" + assets.multi : "", wasmSingle: "/" + assets.singleWasm, wasmMulti: assets.multiWasm ? "/" + assets.multiWasm : "", wasmBytes };
 }

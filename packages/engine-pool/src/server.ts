@@ -13,13 +13,15 @@ const MAX_DOCS = Number(process.env.POOL_MAX_DOCS ?? 4);
 const IDLE_MS = Number(process.env.POOL_IDLE_MS ?? 10 * 60_000);
 const TIMEOUT_MS = Number(process.env.POOL_REGEN_TIMEOUT_MS ?? 10_000);
 const DENO = process.env.DENO_BIN ?? "deno";
+/** V8 heap cap per host, in MB. OCCT's WASM memory sits outside it; this bounds runaway JS. */
+const HEAP_MB = Number(process.env.POOL_HOST_HEAP_MB ?? 512);
 /** A host that hasn't answered one request in this long is wedged: killed and replaced. */
 const REQUEST_TIMEOUT_MS = Number(process.env.POOL_REQUEST_TIMEOUT_MS ?? Math.max(60_000, TIMEOUT_MS * 3));
 
 let assets: EngineAssets;
 
 async function build() {
-  assets = await buildEngine(join(here, "../dist/engine"));
+  assets = await buildEngine(join(here, "../dist/engine"), { browser: false });
   // the host sits next to the engine build: its read permission covers both
   const res = await Bun.build({ entrypoints: [join(here, "host.ts")], outdir: assets.dir, target: "browser", format: "esm", minify: true, naming: "host.js" });
   if (!res.success) throw new AggregateError(res.logs, "pool host build failed");
@@ -28,9 +30,10 @@ async function build() {
 function spawnHost(): HostProc {
   const config = { assets: { glueSingle: assets.glueSingle, wasmSingle: assets.wasmSingle, build: assets.build }, timeoutMs: TIMEOUT_MS };
   return Bun.spawn(
-    [DENO, "run", "--no-prompt", "--no-config", "--no-lock", "--no-remote", "--no-npm", `--allow-read=${assets.dir}`, "--v8-flags=--max-old-space-size=2048", join(assets.dir, "host.js"), JSON.stringify(config)],
-    // nothing from the server's environment (secrets) reaches the host
-    { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", NO_COLOR: "1", DENO_NO_UPDATE_CHECK: "1" } },
+    [DENO, "run", "--no-prompt", "--no-config", "--no-lock", "--no-remote", "--no-npm", `--allow-read=${assets.dir}`, `--v8-flags=--max-old-space-size=${HEAP_MB}`, join(assets.dir, "host.js"), JSON.stringify(config)],
+    // nothing from the server's environment (secrets) reaches the host. MALLOC_ARENA_MAX: glibc otherwise
+    // keeps a 64 MB malloc arena per thread (Deno's runtime + lavapipe's), roughly doubling RSS.
+    { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", NO_COLOR: "1", DENO_NO_UPDATE_CHECK: "1", MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX ?? "2" } },
   );
 }
 

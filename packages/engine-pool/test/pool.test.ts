@@ -12,7 +12,7 @@ afterEach(async () => {
   pools = [];
 });
 
-function pool(opts: { requestTimeoutMs?: number } = {}) {
+function pool(opts: { requestTimeoutMs?: number; idleMs?: number } = {}) {
   let spawned = 0;
   const logs: string[] = [];
   const p = createPool({
@@ -21,6 +21,7 @@ function pool(opts: { requestTimeoutMs?: number } = {}) {
       return Bun.spawn(["bun", FAKE], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
     },
     requestTimeoutMs: opts.requestTimeoutMs ?? 5000,
+    idleMs: opts.idleMs,
     log: (m) => logs.push(m),
   });
   pools.push(p);
@@ -83,4 +84,14 @@ test("jobs for one document run one at a time, across host replacements", async 
   const [a, b] = await Promise.all([p.runJob(job([regen("crash")])), p.runJob(job([regen("x")]))]);
   expect(a[0].ok).toBe(false);
   expect(b[0]).toMatchObject({ ok: true });
+});
+
+test("an idle host is closed without another document asking for a slot", async () => {
+  const { p } = pool({ idleMs: 300 });
+  await p.runJob(job([regen("a")]));
+  expect(p.slots.size).toBe(1);
+  await new Promise((r) => setTimeout(r, 1600));
+  expect(p.slots.size).toBe(0);
+  // and the document comes back on its next job
+  expect((await p.runJob(job([regen("b")])))[0]).toMatchObject({ ok: true });
 });
