@@ -51,10 +51,11 @@ test("a studio exports several parts; the Parts tab nests them under their studi
   await row("Stack").click();
   expect(await wsEval(page, "ws.selection.length")).toBe(0);
 
-  // context menu: Export… (no Hide / Isolate); ⌘E exports the selection
+  // context menu: Isolate and Export… (no Hide); ⌘E exports the selection
   await row("Lid").click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Export…" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: /^(Hide|Isolate|Open code)$/ })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: /^Isolate/ })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /^(Hide|Open code)$/ })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Export…" }).click();
   await expect(page.getByTestId("export-dialog")).toContainText("Lid");
   await page.keyboard.press("Escape");

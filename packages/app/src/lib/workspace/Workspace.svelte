@@ -2,7 +2,7 @@
 	import { cn } from '$lib/utils';
 	import { onMount } from 'svelte';
 	import {
-		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Scissors, ArrowLeft, Link2, LogIn
+		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Focus, Scissors, ArrowLeft, Link2, LogIn
 	} from '@lucide/svelte';
 	import { useQuery } from '@parasocial/sync/svelte';
 	import { queries, mutators, type ParasocialZero } from '@parasocial/sync';
@@ -323,10 +323,11 @@
 		{ id: 'display.edges', label: 'Display: shaded with edges', group: 'View', keys: ['alt', '2'], icon: Boxes, run: () => (ws.display = 'shaded-edges') },
 		{ id: 'display.wire', label: 'Display: wireframe', group: 'View', keys: ['alt', '3'], icon: Grid3x3, run: () => (ws.display = 'wireframe') },
 		{ id: 'display.hidden', label: 'Display: hidden line', group: 'View', keys: ['alt', '4'], icon: SquareDashed, run: () => (ws.display = 'hidden-line') },
-		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (nc.draft ? nc.discard() : ws.tool !== 'select' ? (ws.tool = 'select') : ws.clearSelection()) },
+		{ id: 'sel.clear', label: 'Clear selection', group: 'Selection', keys: ['Escape'], run: () => (nc.draft ? nc.discard() : ws.tool !== 'select' ? (ws.tool = 'select') : ws.isolated ? ws.exitIsolate() : ws.clearSelection()) },
 		{ id: 'sel.none', label: 'Deselect all', group: 'Selection', keys: ['Space'], run: () => ws.clearSelection() },
-		{ id: 'sel.visibility', label: 'Toggle selected parts visibility', group: 'Selection', keys: ['H'], icon: Eye, run: () => ws.setVisibility(ws.selection.map((r) => ({ part: r.part, hidden: !ws.hidden.includes(r.part) }))) },
-		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => ws.setVisibility(ws.hidden.map((part) => ({ part, hidden: false }))) },
+		{ id: 'sel.visibility', label: 'Toggle selected parts visibility', group: 'Selection', keys: ['H'], icon: Eye, run: () => ws.setVisibility(ws.selection.map((r) => ({ part: r.part, hidden: ws.isShown(r.part) }))) },
+		{ id: 'sel.isolate', label: 'Isolate selected parts', group: 'Selection', keys: ['shift', 'H'], icon: Focus, keywords: ['solo', 'show only', 'unisolate'], run: () => ws.toggleIsolate() || toast('Select a part to isolate') },
+		{ id: 'sel.showAll', label: 'Show all parts', group: 'Selection', keys: ['alt', 'H'], icon: Eye, run: () => (ws.exitIsolate(), ws.setVisibility(ws.hidden.map((part) => ({ part, hidden: false })))) },
 		{ id: 'edit.undo', label: 'Undo', group: 'Edit', keys: ['mod', 'Z'], icon: Undo2, run: doUndo },
 		{ id: 'edit.redo', label: 'Redo', group: 'Edit', keys: ['mod', 'shift', 'Z'], icon: Redo2, run: doRedo },
 		{ id: 'mode.code', label: 'Toggle Code mode', group: 'Document', icon: Code2, run: () => (ws.mode = ws.mode === 'code' ? 'model' : 'code') },
