@@ -1,0 +1,38 @@
+# Parasocial on Fly.io: the whole stack on one machine (deploy/fly.Dockerfile, deploy/fly-start.ts)
+# that stops when idle and starts on the next request. Data lives on the `data` volume at /data.
+# Secrets (fly secrets): POSTGRES_PASSWORD, APP_SECRET, ZERO_API_KEY, ZERO_ADMIN_PASSWORD, POOL_TOKEN.
+app = "parasocial"
+primary_region = "lax"
+kill_signal = "SIGTERM"
+kill_timeout = 60
+swap_size_mb = 2048
+
+[build]
+  dockerfile = "deploy/fly.Dockerfile"
+  ignorefile = "deploy/fly.Dockerfile.dockerignore"
+
+[env]
+  # DOMAIN is permanent: passkeys are bound to it.
+  DOMAIN = "parasocial.jjacob.dev"
+  ENGINE_HOST = "engine.parasocial.jjacob.dev"
+
+[[mounts]]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  # No health check: Caddy holds cold-start requests until the services answer (deploy/fly-start.ts).
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+
+[[vm]]
+  size = "shared-cpu-4x"
+  memory = "8gb"

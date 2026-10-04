@@ -1,124 +1,46 @@
-# Builds the production images in CI and deploys them to Coolify (see deploy/coolify.yml).
-# The production box is too small to build (vite build swaps it and OOM-kills the engine pool),
-# so Coolify's auto-deploy on push is off and this workflow is the only thing that deploys.
+# Deploys to Fly.io (see fly.toml): Fly's remote builder builds deploy/fly.Dockerfile and rolls the
+# single machine. A stopped (scaled-to-zero) machine is updated in place and stays stopped until the
+# next request.
 #
-# Secrets: COOLIFY_URL, COOLIFY_TOKEN (Coolify API token: read/write/deploy), COOLIFY_APP_UUID.
-# Rollback: "Run workflow" on an older commit/ref (workflow_dispatch), or set IMAGE_TAG in Coolify
-# to an older sha and redeploy there.
-name: Build & deploy
+# Secrets: FLY_API_TOKEN (`fly tokens create deploy -a parasocial`).
+# Rollback: "Run workflow" on an older commit/ref (workflow_dispatch), or `fly releases` +
+# `fly deploy --image registry.fly.io/parasocial:<older deployment tag>`.
+name: Deploy
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# One build+deploy at a time; a newer push supersedes a queued (not yet started) one.
+# One deploy at a time; a newer push supersedes a queued (not yet started) one.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/jeremyjacob/parasocial
 
 jobs:
-  build:
-    name: build ${{ matrix.service }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        service: [app, engine-pool, migrate]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/${{ matrix.service }}.Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
       name: production
       url: https://parasocial.jjacob.dev
-    env:
-      COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
-      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-      APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
     steps:
-      - name: Point Coolify at this commit's images (IMAGE_TAG)
-        run: |
-          set -euo pipefail
-          api() { curl -sS -H "Authorization: Bearer $COOLIFY_TOKEN" -H "Content-Type: application/json" "$@"; }
-          body=$(jq -nc --arg v "$GITHUB_SHA" '{key:"IMAGE_TAG", value:$v, is_literal:true}')
-          code=$(api -o /tmp/env.json -w '%{http_code}' -X PATCH "$COOLIFY_URL/api/v1/applications/$APP_UUID/envs" -d "$body")
-          if [ "$code" = 404 ]; then
-            code=$(api -o /tmp/env.json -w '%{http_code}' -X POST "$COOLIFY_URL/api/v1/applications/$APP_UUID/envs" -d "$body")
-          fi
-          echo "IMAGE_TAG update: HTTP $code"
-          case "$code" in 2*) ;; *) cat /tmp/env.json; exit 1 ;; esac
+      - uses: actions/checkout@v4
 
-      - name: Trigger Coolify deployment
-        id: trigger
-        run: |
-          set -euo pipefail
-          res=$(curl -sS -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" "$COOLIFY_URL/api/v1/deploy?uuid=$APP_UUID&force=false")
-          echo "$res" | jq .
-          msg=$(echo "$res" | jq -r '.deployments[0].message // empty')
-          dep=$(echo "$res" | jq -r '.deployments[0].deployment_uuid // empty')
-          case "$msg" in *queued*) ;; *) echo "::error::Coolify did not queue a deployment: $msg"; exit 1 ;; esac
-          echo "deployment_uuid=$dep" >> "$GITHUB_OUTPUT"
+      - uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Wait for deployment
+      - name: Deploy
+        run: flyctl deploy --remote-only --ha=false
         env:
-          DEPLOYMENT_UUID: ${{ steps.trigger.outputs.deployment_uuid }}
-        run: |
-          set -euo pipefail
-          echo "Coolify deployment $DEPLOYMENT_UUID"
-          for i in $(seq 1 150); do
-            status=$(curl -sS -H "Authorization: Bearer $COOLIFY_TOKEN" "$COOLIFY_URL/api/v1/deployments/$DEPLOYMENT_UUID" | jq -r '.status // "unknown"' || echo unreachable)
-            echo "$(date -u +%H:%M:%S) $status"
-            case "$status" in
-              finished) exit 0 ;;
-              failed|cancelled*)
-                curl -sS -H "Authorization: Bearer $COOLIFY_TOKEN" "$COOLIFY_URL/api/v1/deployments/$DEPLOYMENT_UUID" \
-                  | jq -r '.logs // "[]"' | jq -r '.[] | select(.hidden != true) | .output' | tail -n 60 || true
-                echo "::error::Coolify deployment $status"; exit 1 ;;
-            esac
-            sleep 10
-          done
-          echo "::error::Timed out waiting for Coolify deployment"; exit 1
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: Smoke test
         run: |
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' https://parasocial.jjacob.dev/ || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://parasocial.jjacob.dev/signin || true)
             echo "HTTP $code"
             case "$code" in 2*|3*) exit 0 ;; esac
             sleep 10

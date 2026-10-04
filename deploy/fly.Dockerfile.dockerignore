@@ -1,0 +1,10 @@
+**/node_modules
+**/.svelte-kit
+**/build
+**/dist
+.git
+.claude
+reference
+inspo ui
+deploy/.env
+**/*.log
