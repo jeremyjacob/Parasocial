@@ -240,6 +240,43 @@ test("assembly problems reach list_problems and write reports, warnings included
   }
 });
 
+test("list_problems answers with the parts done so far when the engine is slow; open_document warms it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const parts = Array.from({ length: 10 }, (_, i) => `p${i}`);
+  const regenerated: string[] = [];
+  // the first chunk of 8 answers at once; the rest waits for the gate
+  const slow = {
+    async run(job: { ops: { op: string; part?: string }[] }) {
+      if (job.ops.some((o) => o.part === "p9")) await gate;
+      return job.ops.map((o) => {
+        if (o.op === "parts") return { ok: true, value: parts.map((id) => ({ id, file: `studios/${id}.ts` })) };
+        if (o.op === "assemblies") return { ok: true, value: [] };
+        regenerated.push(o.part!);
+        return { ok: true, value: { part: o.part, name: o.part, ok: true, problems: [], faces: [], edges: [], timings: { total: 1, ops: 1 } } };
+      });
+    },
+  };
+  process.env.LIST_PROBLEMS_BUDGET_MS = "200";
+  try {
+    const c = await connect(claude.session.userID, "Slow", slow);
+    const r = await c.call("list_problems");
+    expect(Object.keys(r.parts)).toEqual(parts.slice(0, 8));
+    expect(r.stillRegenerating).toEqual(["p8", "p9"]);
+    expect(r.note).toContain("2 of 10 parts are still regenerating");
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(Object.keys((await c.call("list_problems")).parts)).toEqual(parts);
+    regenerated.length = 0;
+    await c.call("open_document", { document: documentID });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(regenerated).toEqual(parts);
+  } finally {
+    delete process.env.LIST_PROBLEMS_BUDGET_MS;
+    release();
+  }
+});
+
 /** Set a script's content (whatever earlier tests left), returning its new version. */
 async function put(path: string, content: string) {
   const { version } = await claude.call("read_script", { path });

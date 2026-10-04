@@ -86,6 +86,8 @@ const vec = (v?: number[]) => v?.map((x) => round(x, 3));
 /** An object without its undefined, null and empty-array fields. */
 const lean = <T extends Record<string, unknown>>(o: T): Partial<T> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && !(Array.isArray(v) && !v.length))) as Partial<T>;
 /** A long list cut to `max`, saying how many more there were. */
+/** How long list_problems waits for regeneration before answering with the parts done so far. */
+const listProblemsBudgetMs = () => Number(process.env.LIST_PROBLEMS_BUDGET_MS ?? 10_000);
 const cap = <T>(xs: T[] | undefined, max: number): (T | string)[] | undefined => (xs && xs.length > max ? [...xs.slice(0, max), `+${xs.length - max} more`] : xs);
 
 /**
@@ -235,6 +237,24 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const problem = { severity: "error", kind: r.timeout ? "timeout" : "runtime", message: r.error };
       return { part: parts[i], name: parts[i], ok: false, partial: true, empty: true, problems: [problem], params: [], faces: [], edges: [], timings: { total: 0, ops: 0 } };
     });
+  }
+
+  /**
+   * Regenerate parts in small jobs, waiting at most `ms`: a cold engine can take a minute on a big
+   * document. Parts not done by then are undefined; their jobs keep running, so the host warms up.
+   */
+  async function regenerateWithin(d: DocState, parts: string[], ms: number) {
+    const CHUNK = 8;
+    const results: any[] = new Array(parts.length);
+    let failure: unknown;
+    const jobs: Promise<void>[] = [];
+    for (let i = 0; i < parts.length; i += CHUNK)
+      jobs.push(regenerateParts(d, parts.slice(i, i + CHUNK)).then((r) => r.forEach((x, j) => (results[i + j] = x)), (e) => void (failure ??= e)));
+    let timer!: ReturnType<typeof setTimeout>;
+    const done = await Promise.race([Promise.all(jobs).then(() => true), new Promise<false>((r) => (timer = setTimeout(() => r(false), ms)))]);
+    clearTimeout(timer);
+    if (failure) throw failure;
+    return { results, done };
   }
 
   /** Regenerate parts; compact results in the shape the UI shows (§8 Errors). */
@@ -504,6 +524,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     const d = await loadDoc(db, s.userID, id);
     s.defaultDocument = id;
     await setStatus("idle", id);
+    // warm the engine in the background: the first list_problems or describe_model is then fast
+    partsOf(d).then((parts) => regenerateParts(d, parts)).catch(() => {});
     return text({ id, name: d.name, url: documentURL(id), units: d.units, scripts: d.scripts.map((f) => f.path), configurations: d.configurations.map((c) => ({ id: c.id, name: c.name })) });
   }, { readOnlyHint: true });
 
@@ -1326,12 +1348,20 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "list_problems",
-    "Each part's status (\"ok\" or its error and warning lines), assemblies' problems, and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session.",
+    "Each part's status (\"ok\" or its error and warning lines), assemblies' problems, and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session. On a cold engine it answers after about 10 s with the parts done so far; call again for the rest.",
     { document },
     async ({ document: dd }) => {
       const documentID = docID(dd);
       const d = await loadDoc(db, s.userID, documentID);
-      const results = await regenerateParts(d, await partsOf(d));
+      const started = Date.now();
+      const all = await partsOf(d);
+      const { results: partial, done } = await regenerateWithin(d, all, Math.max(0, listProblemsBudgetMs() - (Date.now() - started)));
+      const results = partial.filter(Boolean);
+      if (!done) {
+        // assemblies wait behind the remaining parts; report what's done instead of blocking on them
+        const pending = all.filter((_, i) => !partial[i]);
+        return text(lean({ parts: partStatus(results), stillRegenerating: cap(pending, 20), note: `The geometry engine was cold: ${pending.length} of ${all.length} parts are still regenerating, and assemblies weren't checked yet. Call list_problems again shortly.` }));
+      }
       const [asms] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
       const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
       const introduced = (file: string | undefined, kind: string) => {
