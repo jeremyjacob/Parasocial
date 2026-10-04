@@ -32,6 +32,18 @@ export type OpSpec = {
 
 const toLoc = (f?: Frame) => (f ? { file: f.file, line: f.line, col: f.col, fn: f.fn } : undefined);
 
+/** A geometry operation that ran (not a cache hit), for timings and the engine's watchdog. */
+export type OpTiming = { part: string; type: string; id: string; tag?: string; source?: { file: string; line: number }; ms?: number };
+
+let observer: ((phase: "start" | "end", op: OpTiming) => void) | null = null;
+/**
+ * @internal Watch geometry operations as they run (the engine worker tells its host, so a timeout
+ * can say which operation was running). Never called for cache hits.
+ */
+export function setOpObserver(fn: typeof observer) {
+  observer = fn;
+}
+
 export function runOp(spec: OpSpec): OpRecord {
   const c = ctx();
   const frames = c.frames();
@@ -54,6 +66,8 @@ export function runOp(spec: OpSpec): OpRecord {
     .map((f) => toLoc(f)!);
   if (!rec) {
     const t0 = performance.now();
+    const timing: OpTiming = { part: c.part, type: spec.type, id, tag: spec.tag, source: site && { file: site.file, line: site.line } };
+    observer?.("start", timing);
     try {
       rec = scoped(() => createRecord({ ...spec.build(), id, type: spec.type, tag: spec.tag, key, inputs: spec.inputs, params: spec.params, callSite: toLoc(site), callChain }));
     } catch (e) {
@@ -64,8 +78,11 @@ export function runOp(spec: OpSpec): OpRecord {
       const base = e instanceof Error ? e.message : `${spec.type} failed: ${occtMessage(e)}`;
       const better = e instanceof KernelError ? spec.explain?.(e) : undefined;
       fail(spec, better ?? base, site, id, e instanceof KernelError ? "operation" : "runtime");
+    } finally {
+      timing.ms = performance.now() - t0;
+      c.noteOp(timing);
+      observer?.("end", timing);
     }
-    c.opTime += performance.now() - t0;
     c.cache.put(rec!);
   } else {
     // same geometry, but the call may have moved in the source

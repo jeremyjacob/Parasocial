@@ -6,8 +6,13 @@ import { LatestWins } from "../scheduler";
 import { drawPart } from "../drawing";
 import { computeBom } from "../bom-engine";
 import type { EngineRequest, EngineInfo } from "../protocol";
+import { setOpObserver } from "@parasocial/api/internal";
 
 export type WorkerInit = { type: "init"; glueSingle: string; glueMulti: string; wasmSingle: string; wasmMulti: string; threads: boolean; build: string; /** compiled once by the engine page for all its workers */ wasmModule?: WebAssembly.Module };
+
+// The host's watchdog names the operation that was running when a request times out: tell it as
+// each geometry operation starts and ends (cache hits don't run, so they don't count).
+setOpObserver((phase, op) => (self as any).postMessage({ type: "op", phase, op: { part: op.part, type: op.type, tag: op.tag, source: op.source, ms: op.ms } }));
 
 const engine = new Engine();
 // snapshots (other versions) regenerate in their own engine so the live document's cache stays warm

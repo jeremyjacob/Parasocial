@@ -32,8 +32,38 @@ type Slot = {
   failed: boolean;
   /** the slot's message handler, once attached (set on the worker when it starts) */
   onmessage?: (ev: MessageEvent) => void;
+  /** what the worker is computing (its "op" messages), for timeout messages */
+  progress?: Progress;
 };
 type Pending = { slot: Slot; timer: any; req: any; internal?: (m: any) => void };
+
+type OpInfo = { part: string; type: string; tag?: string; source?: { file: string; line: number }; ms?: number };
+type Progress = { current: null | { op: OpInfo; at: number }; slowest: OpInfo | null; opsMs: number; count: number };
+const noProgress = (): Progress => ({ current: null, slowest: null, opsMs: 0, count: 0 });
+
+function track(p: Progress, phase: "start" | "end", op: OpInfo) {
+  if (phase === "start") return void (p.current = { op, at: Date.now() });
+  p.current = null;
+  p.count++;
+  p.opsMs += op.ms ?? 0;
+  if (!p.slowest || (op.ms ?? 0) > (p.slowest.ms ?? 0)) p.slowest = op;
+}
+
+/**
+ * Why a request ran out of time: the geometry operation that was running (with its source line),
+ * or, when none was, that script code may loop forever. (Same wording as the engine pool's.)
+ */
+function timeoutMessage(req: any, limitMs: number, progress: Progress): string {
+  const what = req.op === "regenerate" || req.op === "regenerateSnapshot" ? `regeneration${req.part ? ` of ${req.part}` : ""}` : "loading the scripts";
+  const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+  const name = (op: OpInfo) => `${op.type}${op.tag ? ` "${op.tag}"` : ""}${op.source ? ` at ${op.source.file}:${op.source.line}` : ""}`;
+  const head = `${what} timed out after ${limitMs / 1000} s (the time limit)`;
+  const { current, slowest, opsMs, count } = progress;
+  const done = count ? `; ${count} geometry operation${count === 1 ? "" : "s"} finished before it in ${s(opsMs)}${slowest && (slowest.ms ?? 0) >= 100 ? ` (slowest: ${name(slowest)}, ${s(slowest.ms!)})` : ""}` : "";
+  if (current) return `${head} while ${name(current.op)} was running (${s(Date.now() - current.at)} so far)${done}. The geometry is too heavy, not looping: simplify that operation (fewer or smaller tools per boolean, smaller fillets) or split the work`;
+  if (count && opsMs >= limitMs / 2) return `${head}: geometry operations took ${s(opsMs)} of it${done}. Reduce the number or size of operations`;
+  return `${head}: no geometry operation was running, so ${what === "loading the scripts" ? "a script may loop forever at its top level" : "the script may loop forever"}${done}`;
+}
 
 const slots: Slot[] = [];
 let spare: Slot | null = null;
@@ -121,12 +151,12 @@ function attach(slot: Slot) {
     if (m?.type === "started") {
       const p = pending.get(m.id);
       if (p && p.slot === slot && p.timer === null && WATCHED.has(p.req.op)) {
-        const regen = p.req.op === "regenerate" || p.req.op === "regenerateSnapshot";
-        const message = regen ? `regeneration timed out after ${cfg.timeoutMs / 1000} s: the script may loop forever` : `loading the scripts timed out after ${cfg.timeoutMs / 1000} s: a script may loop forever at its top level`;
-        p.timer = setTimeout(() => replaceWorker(slot, { message, timeout: true }, false), cfg.timeoutMs);
+        const progress = (slot.progress = noProgress());
+        p.timer = setTimeout(() => replaceWorker(slot, { message: timeoutMessage(p.req, cfg.timeoutMs, progress), timeout: true }, false), cfg.timeoutMs);
       }
       return;
     }
+    if (m?.type === "op") return void (slot.progress && track(slot.progress, m.phase, m.op));
     // the kernel faulted: whatever it answered before this stands; everything still waiting goes to a replacement
     if (m?.type === "poisoned") return replaceWorker(slot, { message: `the geometry kernel crashed (${m.error})` }, true);
     if (m?.type !== "result") return;

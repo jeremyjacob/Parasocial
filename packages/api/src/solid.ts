@@ -125,7 +125,8 @@ export class Solid {
 
   // ---------- booleans ----------
   /**
-   * Fuse one or more solids into this one; an options object `{ tag }` may come last.
+   * Fuse one or more solids into this one; an options object `{ tag }` may come last. With no
+   * solids (`a.union(...[])`) it returns this solid unchanged.
    * @example body.union(boss, rib, { tag: "joined" })
    */
   union(...others: (Solid | OpOpts)[]): Solid {
@@ -134,6 +135,7 @@ export class Solid {
   /**
    * Remove one or more solids from this one (holes, pockets); an options object `{ tag }` may come last.
    * Faces cut by a tool keep the tool's names (tag the tool: `cylinder(3, 20, { tag: "bore" })`).
+   * With no tools (`a.subtract(...[])`) it returns this solid unchanged.
    * @example plate.subtract(cylinder(3, 20, { at: [10, 10, -5], tag: "bore" }))
    */
   subtract(...others: (Solid | OpOpts)[]): Solid {
@@ -144,11 +146,18 @@ export class Solid {
     return this.subtract(...others);
   }
   /**
-   * Keep only the volume common to this solid and every other one; an options object `{ tag }` may come last.
+   * Keep only the volume common to this solid and every other one (`a.intersect(b, c)` is a ∩ b ∩ c,
+   * one intersection after another); an options object `{ tag }` may come last. With no solids it
+   * returns this solid unchanged. To keep what lies inside any of several solids, union them first:
+   * `a.intersect(b.union(c))`.
    * @example box(20, 20, 20, { center: true }).intersect(cylinder(12, 40, { center: true })) // rounded block
    */
   intersect(...others: (Solid | OpOpts)[]): Solid {
-    return booleanOp("intersect", this, ...splitOpts(others));
+    const [solids, opts] = splitOpts(others);
+    // OCCT's Common with several tools keeps a ∩ (b ∪ c): intersect one tool at a time instead
+    let out: Solid = this;
+    solids.forEach((b, i) => (out = booleanOp("intersect", out, [b], i === solids.length - 1 ? opts : {})));
+    return out;
   }
 
   // ---------- transforms ----------
@@ -468,14 +477,16 @@ function checkKind(s: EntitySet, kind: EntityKind, what: string) {
 
 function splitOpts(args: (Solid | OpOpts)[]): [Solid[], OpOpts] {
   const solids = args.filter((a): a is Solid => a instanceof Solid);
-  const opts = (args.find((a) => !(a instanceof Solid)) as OpOpts) ?? {};
-  if (!solids.length) userError("boolean needs at least one other solid");
-  return [solids, opts];
+  const rest = args.filter((a) => !(a instanceof Solid));
+  for (const a of rest) if (typeof a !== "object" || a === null || Array.isArray(a)) userError(`booleans take solids and an optional { tag } (got ${Array.isArray(a) ? "an array: spread it with ..." : JSON.stringify(a)})`);
+  return [solids, (rest[0] as OpOpts) ?? {}];
 }
 
 /** @internal */
 export function booleanOp(kind: "union" | "subtract" | "intersect", a: Solid, others: Solid[], opts: OpOpts): Solid {
   for (const b of others) if (!(b instanceof Solid)) userError(`${kind} expects solids`);
+  // nothing to fuse, cut or intersect with: the solid as it is (`a.subtract(...holes)` with no holes)
+  if (!others.length) return a;
   const A = a.record;
   const tools = others.map((o) => o.record);
   const rec = runOp({

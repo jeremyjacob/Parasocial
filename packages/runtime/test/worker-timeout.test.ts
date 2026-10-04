@@ -256,7 +256,7 @@ test("worker announces execution before running live or snapshot geometry, inclu
   }
   const self: any = { postMessage: (m: any) => events.push(m) };
   const source = readFileSync(new URL("../src/browser/worker.ts", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
-  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => null, noteKernelFault: () => false });
+  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => null, noteKernelFault: () => false, setOpObserver: () => {} });
   for (const [id, op, part] of [[1, "regenerate", "a"], [2, "regenerateSnapshot", "b"], [3, "regenerate", "bad"]] as const) {
     await self.onmessage({ data: { id, req: { op, part, key: "snapshot", doc: {} } } });
     await flush();
@@ -435,7 +435,7 @@ test("worker: a kernel fault is reported after the answer, and the worker answer
   }
   const self: any = { postMessage: (m: any) => events.push(m) };
   const source = readFileSync(new URL("../src/browser/worker.ts", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
-  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => fault, noteKernelFault: () => false });
+  runInNewContext(transpiler.transformSync(source), { self, Engine, LatestWins, kernelFault: () => fault, noteKernelFault: () => false, setOpObserver: () => {} });
   await self.onmessage({ data: { id: 1, req: { op: "regenerate", part: "bad" } } });
   await flush();
   expect(events.map((e) => e.type)).toEqual(["started", "result", "poisoned"]);
@@ -453,3 +453,30 @@ test("pool: an evaluation that runs too long times out and replaces the worker",
   expect(h.workers[0].terminated).toBe(true);
   expect(h.replies.find((r) => r.id === id)).toMatchObject({ ok: false, timeout: true, error: expect.stringMatching(/^evaluation timed out/) });
 });
+
+for (const kind of ["pool", "browser"] as const) {
+  test(`${kind}: a timeout names the geometry operation that was running, not a loop`, async () => {
+    const h = await host(kind);
+    const id = await h.request({ op: "regenerate", part: "grille" });
+    const w = h.workers[0];
+    w.emit({ type: "started", id });
+    w.emit({ type: "op", phase: "start", op: { part: "grille", type: "sketch", source: { file: "studios/grille.ts", line: 4 } } });
+    w.emit({ type: "op", phase: "end", op: { part: "grille", type: "sketch", source: { file: "studios/grille.ts", line: 4 }, ms: 3 } });
+    w.emit({ type: "op", phase: "start", op: { part: "grille", type: "intersect", tag: "slots", source: { file: "studios/grille.ts", line: 12 } } });
+    await h.tick(100);
+    const r = h.replies.find((x) => x.id === id);
+    expect(r).toMatchObject({ ok: false, timeout: true });
+    expect(r.error).toStartWith("regeneration of grille timed out after 0.1 s");
+    expect(r.error).toContain('while intersect "slots" at studios/grille.ts:12 was running');
+    expect(r.error).toContain("1 geometry operation finished before it");
+    expect(r.error).not.toContain("loop forever");
+  });
+
+  test(`${kind}: a timeout with no geometry running says the script may loop`, async () => {
+    const h = await host(kind);
+    const id = await h.request({ op: "regenerate", part: "spin" });
+    h.workers[0].emit({ type: "started", id });
+    await h.tick(100);
+    expect(h.replies.find((x) => x.id === id)?.error).toContain("no geometry operation was running, so the script may loop forever");
+  });
+}
