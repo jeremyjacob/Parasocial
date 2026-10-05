@@ -1,14 +1,12 @@
 {
   "volume": 25317.4114,
   "area": 14294.0117,
-  "faces": 28,
-  "edges": 70,
-  "vertices": 44,
+  "faces": 26,
+  "edges": 64,
+  "vertices": 40,
   "valid": true,
   "faceNames": [
     "mount/head · side · head",
-    "mount/head · side · head",
-    "mount/mirror1 · mirrored · (mount/head · side · head)",
     "mount/mirror1 · mirrored · (mount/head · side · head)",
     "mount/mirror1 · mirrored · (mount/slot · side · slot/end2)",
     "mount/mirror1 · mirrored · (mount/slot · side · slot/side1)",

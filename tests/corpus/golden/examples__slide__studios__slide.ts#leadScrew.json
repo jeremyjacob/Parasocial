@@ -1,13 +1,12 @@
 {
   "volume": 14728.5403,
   "area": 6879.0826,
-  "faces": 6,
-  "edges": 7,
-  "vertices": 5,
+  "faces": 5,
+  "edges": 6,
+  "vertices": 4,
   "valid": true,
   "faceNames": [
     "slide:leadScrew/gear · cap.end",
-    "slide:leadScrew/gear · cap.start",
     "slide:leadScrew/gear · side",
     "slide:leadScrew/rod · cap.end",
     "slide:leadScrew/rod · cap.start",

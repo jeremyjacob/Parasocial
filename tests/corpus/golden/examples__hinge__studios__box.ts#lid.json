@@ -1,8 +1,8 @@
 {
   "volume": 10740,
   "area": 7910,
-  "faces": 12,
-  "edges": 26,
+  "faces": 10,
+  "edges": 24,
   "vertices": 16,
   "valid": true,
   "faceNames": [
@@ -15,8 +15,6 @@
     "box:lid/plate · zmin",
     "box:lid/tab · xmax",
     "box:lid/tab · xmin",
-    "box:lid/tab · ymin",
-    "box:lid/tab · zmax",
-    "box:lid/tab · zmin"
+    "box:lid/tab · ymin"
   ]
 }

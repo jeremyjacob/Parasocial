@@ -1,13 +1,11 @@
 {
   "volume": 96969.9317,
   "area": 25943.2501,
-  "faces": 32,
-  "edges": 77,
-  "vertices": 49,
+  "faces": 28,
+  "edges": 59,
+  "vertices": 37,
   "valid": true,
   "faceNames": [
-    "lamp:turret/shoulder · cap.end",
-    "lamp:turret/shoulder · cap.start",
     "lamp:turret/shoulder · side · outline/end1",
     "lamp:turret/shoulder · side · outline/end2",
     "lamp:turret/shoulder · side · outline/side1",
@@ -33,8 +31,6 @@
     "lamp:turret/table · side · ring",
     "lamp:turret/tableEdge · chamfer · ((lamp:turret/table · cap.end) & (lamp:turret/table · side · ring))",
     "lamp:turret/tower · cap.end",
-    "lamp:turret/tower · cap.end",
-    "lamp:turret/tower · cap.start",
     "lamp:turret/tower · cap.start",
     "lamp:turret/tower · side · stem/side2",
     "lamp:turret/tower · side · stem/side4"

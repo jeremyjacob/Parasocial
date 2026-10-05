@@ -31,7 +31,7 @@ function idxOf(t: Topology, k: EntityKind): ShapeIndex {
 export type CollectOptions = {
   /** Input kinds to query `Generated` for. Default: all. Faces rarely generate. */
   generatedFrom?: EntityKind[];
-  /** Skip `Modified`/`IsDeleted` queries (e.g. prism, whose inputs are profiles). */
+  /** Skip `Modified` queries (e.g. prism, whose inputs are profiles). */
   noModified?: boolean;
 };
 
@@ -49,7 +49,7 @@ function query<T>(fn: () => T, fallback: T): T {
   }
 }
 
-/** Walk Modified/Generated/IsDeleted for every input entity and index the results by output entity. */
+/** Walk Modified/Generated for every input entity and index the results by output entity. */
 export function collectHistory(maker: HistoryMaker | null, inputs: Topology[], output: Topology, opts: CollectOptions = {}): EntityHistory {
   const hist: EntityHistory = {
     face: output.faces.items.map(() => []),
@@ -76,7 +76,9 @@ export function collectHistory(maker: HistoryMaker | null, inputs: Topology[], o
         const same = idxOf(output, kind).indexOf(s);
         if (same >= 0) {
           hist[kind][same].push({ slot, kind, index, rel: "same" });
-        } else if (maker && !opts.noModified && !query(() => maker.IsDeleted(s), true)) {
+        } else if (maker && !opts.noModified) {
+          // Simplifying a boolean can report the original as deleted and still return its
+          // merged replacement from Modified. Only membership in the output decides survival.
           for (const m of query(() => listToArray(maker.Modified(s)), [] as any[])) {
             push(m, { slot, kind, index, rel: "modified" });
             m.delete();

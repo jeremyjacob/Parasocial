@@ -348,6 +348,14 @@ export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[]): Built 
       mk.delete();
       throw new KernelError(`${kind} failed`);
     }
+    // Remove boolean subdivisions of the same surface so the displayed face is also one
+    // selectable CAD face. Simplify through the maker so Modified/Generated include the merges.
+    try {
+      mk.SimplifyResult(true, true);
+    } catch (e) {
+      mk.delete();
+      throw e;
+    }
     return { shape: downcast(mk.Shape()), maker: mk };
   }));
 }

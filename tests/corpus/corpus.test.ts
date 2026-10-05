@@ -64,6 +64,19 @@ describe("fillets survive upstream dimension changes", () => {
 });
 
 describe("split faces", () => {
+  test("a merged face keeps its source name even when the boolean reports that source as deleted", () => {
+    const { engine } = engineFor(join(root, "tests/corpus/studios/skin.ts"));
+    try {
+      const rec = regen(engine, "skin").record;
+      const top = nameIndex(rec, "face").get("skin/pad · offset · (skin/plate · zmax)")!;
+      expect(top).toHaveLength(1);
+      expect(faceOf(rec, top[0]).area).toBeCloseTo(60 * 40, 6);
+      expect(rec.history.face.every((origins) => origins.length > 0)).toBe(true);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   test("a split face resolves to all descendants and disambiguates by point", async () => {
     const { engine } = engineFor(join(root, "tests/corpus/studios/split.ts"));
     const r = regen(engine, "split");

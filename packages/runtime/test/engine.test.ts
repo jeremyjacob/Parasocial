@@ -273,7 +273,11 @@ test("adopted shapes (another worker's parts) answer cross-part requests like lo
   const pose = { r: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [3, 0, 2] as [number, number, number] };
   for (const e of [local, hub]) e.setPoses({ mount: pose });
   expect(hub.interference("enclosure", "mount")).toBeCloseTo(local.interference("enclosure", "mount"), 6);
-  expect(hub.interferences(["enclosure", "enclosure:lid", "mount"]).map((i) => [i.a, i.b, i.volume])).toEqual(local.interferences(["enclosure", "enclosure:lid", "mount"]).map((i) => [i.a, i.b, i.volume]));
+  const adopted = hub.interferences(["enclosure", "enclosure:lid", "mount"]);
+  const original = local.interferences(["enclosure", "enclosure:lid", "mount"]);
+  expect(adopted.map((i) => [i.a, i.b])).toEqual(original.map((i) => [i.a, i.b]));
+  // B-rep serialization and surface unification can change the last few floating-point digits.
+  adopted.forEach((i, index) => expect(i.volume).toBeCloseTo(original[index].volume, 6));
   // entity indices survive the round trip
   const faces = local.describeAll("mount").faces.length;
   for (const index of [0, Math.floor(faces / 2), faces - 1]) {
