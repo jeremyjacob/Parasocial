@@ -22,6 +22,7 @@ vi.mock('@parasocial/viewer', async (importOriginal) => ({
 		setSectionArrowHover() {}
 		setSection() {}
 		setBuild() {}
+		buildDuration() { return 1000; }
 		setHelpers() {}
 		setOverlapsOnTop() {}
 		setMarkup() {}

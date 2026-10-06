@@ -531,8 +531,7 @@
 	const buildPlaying = $derived(!!ws.build?.playing);
 	$effect(() => {
 		if (!viewer || !buildPlaying) return;
-		// a few seconds, longer for parts with many faces
-		const ms = Math.min(10000, Math.max(3500, 2500 + viewer.faceCount() * 10));
+		const ms = viewer.buildDuration();
 		let raf = 0,
 			hold = 0,
 			last = performance.now();

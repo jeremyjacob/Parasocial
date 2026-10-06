@@ -32,7 +32,7 @@ for (const t of [0.15, 0.35, 0.55, 0.75, 1]) {
 await page.evaluate(() => ((globalThis as any).__ws.build = { t: 0, playing: true, loop: false }));
 for (let i = 0; i < 6; i++) {
   await page.waitForTimeout(400);
-  console.log("t", await page.evaluate(() => [performance.now() | 0, (globalThis as any).__ws.build?.t, (globalThis as any).__ws.viewer?.faceCount()]));
+  console.log("t", await page.evaluate(() => [performance.now() | 0, (globalThis as any).__ws.build?.t, (globalThis as any).__ws.viewer?.buildDuration()]));
 }
 await page.screenshot({ path: `${out}/build-playing.png` });
 console.log("build state", await page.evaluate(() => JSON.stringify((globalThis as any).__ws.build)));

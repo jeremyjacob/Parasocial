@@ -1,123 +1,151 @@
-// Build animation: every face of every part flies in from outside and pops into place, smallest
-// parts first, each part from its centre outward. All on the GPU: each face's vertices (and the
-// edge segments riding with it) carry the face centre, its order within the part and where it
-// flies in from; one shared uniform is the progress, one per part its time window.
+// Build animation: every piece (a connected solid, so each plank of a shed) is thrown in rigid,
+// tumbling, speeding up as it comes, slams into place with a small rebound and shakes the camera.
+// Pieces land bottom-up, one after another. All on the GPU: each vertex (and each edge segment)
+// carries its piece's pivot, start time, launch offset and spin; one shared uniform is the progress.
 import * as THREE from "three";
 
-/** Progress value meaning "not building": every face is in place. */
+/** Progress value meaning "not building": every piece is in place. */
 export const BUILD_OFF = 2;
+
+/** Share of a piece's time spent flying; the rest is the impact settling. */
+export const BUILD_HIT = 0.55;
 
 /** Shared by every part of one viewer. */
 export type BuildUniforms = {
   buildT: { value: number };
-  /** One face's flight, as a share of the whole timeline. */
+  /** One piece's flight and settle, as a share of the whole timeline. */
   buildDur: { value: number };
-  /** Tint a face arrives with, fading as it settles. */
-  buildGlow: { value: THREE.Color };
 };
 
 export const makeBuildUniforms = (): BuildUniforms => ({
   buildT: { value: BUILD_OFF },
   buildDur: { value: 0.1 },
-  buildGlow: { value: new THREE.Color(0xff8a00) },
 });
+
+/** One piece's flight, in its part's coordinates. */
+export type BuildPiece = {
+  pivot: THREE.Vector3;
+  /** Launch time, 0..1 of the timeline. */
+  start: number;
+  /** Where it's thrown from, relative to its place. */
+  offset: THREE.Vector3;
+  /** Spin it arrives with (axis × angle), undone by the impact. */
+  spin: THREE.Vector3;
+  /** How far it rebounds off the impact. */
+  bounce: number;
+};
 
 const PARS = /* glsl */ `
 uniform float buildT, buildDur;
-uniform vec2 buildWindow; // this part: start, span
-attribute vec4 buildA; // face centre (xyz), order within the part, 0..1 (w)
-attribute vec3 buildB; // where the face flies in from, relative to its place
-varying float vBuildT;
-vec3 buildMove(vec3 p, vec4 a, vec3 off, out float t) {
-  t = clamp((buildT - buildWindow.x - buildWindow.y * a.w) / buildDur, 0.0, 1.0);
-  float e = 1.0 - pow(1.0 - t, 3.0);
-  // grows with a little overshoot (ease-out-back) while it glides in
-  float u = t - 1.0;
-  float s = 1.0 + 2.70158 * u * u * u + 1.70158 * u * u;
-  return a.xyz + (p - a.xyz) * s + off * (1.0 - e);
+attribute vec4 buildA; // pivot (xyz), start (w)
+attribute vec4 buildB; // launch offset (xyz), rebound (w)
+attribute vec3 buildC; // spin: axis × angle
+vec3 buildRot(vec3 v, vec3 r) {
+  float a = length(r);
+  if (a < 1e-6) return v;
+  vec3 k = r / a;
+  float c = cos(a), s = sin(a);
+  return v * c + cross(k, v) * s + k * dot(k, v) * (1.0 - c);
+}
+// flight left: 1 at launch, 0 on impact; already moving when it appears and accelerating in
+float buildLeft(float t) {
+  float f = clamp(t / ${BUILD_HIT.toFixed(3)}, 0.0, 1.0);
+  return 1.0 - f * (0.25 + 0.75 * f);
+}
+vec3 buildMove(vec3 p, out float t) {
+  t = (buildT - buildA.w) / buildDur;
+  float left = buildLeft(t);
+  vec3 q = buildA.xyz + buildRot(p - buildA.xyz, buildC * left) + buildB.xyz * left;
+  // after the impact: kick back the way it came, dip past its place, settle
+  float s = clamp((t - ${BUILD_HIT.toFixed(3)}) / ${(1 - BUILD_HIT).toFixed(3)}, 0.0, 1.0);
+  float l = length(buildB.xyz);
+  if (s > 0.0 && l > 0.0) q += buildB.xyz / l * buildB.w * sin(9.42478 * s) * exp(-4.5 * s);
+  return q;
 }
 `;
 
-// a primitive whose vertices all land here is clipped away (beyond the far plane either way)
+// a primitive whose vertices all wait to launch is clipped away (beyond the far plane either way)
 const HIDE = "if (bT <= 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);";
 
 /**
- * Patch a material whose geometry carries buildA/buildB. `kind`: "mesh" for built-in or
- * three-chunk shaders (begin_vertex/project_vertex), "line" for LineMaterial (instanced
- * segments). `glow` tints arriving faces (mesh only).
+ * Patch a material whose geometry carries buildA/B/C. `kind`: "mesh" for built-in or three-chunk
+ * shaders (begin_vertex/project_vertex), "line" for LineMaterial (instanced segments).
  */
-export function withBuild<T extends THREE.Material>(m: T, u: BuildUniforms, win: { value: THREE.Vector2 }, kind: "mesh" | "line", glow = false): T {
+export function withBuild<T extends THREE.Material>(m: T, u: BuildUniforms, kind: "mesh" | "line"): T {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey.bind(m);
   m.onBeforeCompile = (sh, r) => {
     prev.call(m, sh, r);
-    Object.assign(sh.uniforms, u, { buildWindow: win });
+    Object.assign(sh.uniforms, u);
     let v = sh.vertexShader.replace("void main() {", `${PARS}\nvoid main() {`);
     if (kind === "mesh") {
       v = v
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nfloat bT;\ntransformed = buildMove(transformed, buildA, buildB, bT);\nvBuildT = bT;")
+        // the spin turns the normals too, so a tumbling piece catches the light
+        .replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\nobjectNormal = buildRot(objectNormal, buildC * buildLeft((buildT - buildA.w) / buildDur));")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nfloat bT;\ntransformed = buildMove(transformed, bT);")
         .replace("#include <project_vertex>", `#include <project_vertex>\n${HIDE}`);
     } else {
       v = v
-        .replace("vec4 start = modelViewMatrix * vec4( instanceStart, 1.0 );", "float bT;\nvec4 start = modelViewMatrix * vec4( buildMove( instanceStart, buildA, buildB, bT ), 1.0 );\nvBuildT = bT;")
-        .replace("vec4 end = modelViewMatrix * vec4( instanceEnd, 1.0 );", "float bT2;\nvec4 end = modelViewMatrix * vec4( buildMove( instanceEnd, buildA, buildB, bT2 ), 1.0 );")
+        .replace("vec4 start = modelViewMatrix * vec4( instanceStart, 1.0 );", "float bT;\nvec4 start = modelViewMatrix * vec4( buildMove( instanceStart, bT ), 1.0 );")
+        .replace("vec4 end = modelViewMatrix * vec4( instanceEnd, 1.0 );", "float bT2;\nvec4 end = modelViewMatrix * vec4( buildMove( instanceEnd, bT2 ), 1.0 );")
         .replace("#include <fog_vertex>", `${HIDE}\n#include <fog_vertex>`);
     }
     sh.vertexShader = v;
-    if (glow)
-      sh.fragmentShader = sh.fragmentShader
-        .replace("void main() {", "uniform vec3 buildGlow;\nvarying float vBuildT;\nvoid main() {")
-        .replace("#include <opaque_fragment>", "outgoingLight = mix(outgoingLight, buildGlow, (1.0 - vBuildT) * 0.75);\n#include <opaque_fragment>");
   };
-  m.customProgramCacheKey = () => `${prevKey()}+build:${kind}${glow ? "+glow" : ""}`;
+  m.customProgramCacheKey = () => `${prevKey()}+build:${kind}`;
   return m;
 }
 
-/** Cheap stable hash to 0..1, so faces at the same distance don't all arrive at once. */
-const hash = (n: number) => {
+/** Write each piece's flight into the per-vertex (or per-segment) attributes. */
+export function writeBuild(attrs: { a: THREE.BufferAttribute; b: THREE.BufferAttribute; c: THREE.BufferAttribute }, pieceOf: Int32Array, pieces: BuildPiece[]) {
+  const A = attrs.a.array as Float32Array,
+    B = attrs.b.array as Float32Array,
+    C = attrs.c.array as Float32Array;
+  for (let i = 0; i < pieceOf.length; i++) {
+    const p = pieces[pieceOf[i]];
+    if (!p) continue;
+    A[i * 4] = p.pivot.x;
+    A[i * 4 + 1] = p.pivot.y;
+    A[i * 4 + 2] = p.pivot.z;
+    A[i * 4 + 3] = p.start;
+    B[i * 4] = p.offset.x;
+    B[i * 4 + 1] = p.offset.y;
+    B[i * 4 + 2] = p.offset.z;
+    B[i * 4 + 3] = p.bounce;
+    C[i * 3] = p.spin.x;
+    C[i * 3 + 1] = p.spin.y;
+    C[i * 3 + 2] = p.spin.z;
+  }
+  attrs.a.needsUpdate = attrs.b.needsUpdate = attrs.c.needsUpdate = true;
+}
+
+/**
+ * Split a part into pieces: faces sharing an edge belong together; edges on no face (wires) form
+ * pieces of their own. Returns the piece of each face and of each edge.
+ */
+export function findPieces(nFaces: number, nEdges: number, faceEdges: number[][]) {
+  const up = new Int32Array(nFaces + nEdges).map((_, i) => i);
+  const root = (i: number): number => {
+    while (up[i] !== i) i = up[i] = up[up[i]];
+    return i;
+  };
+  faceEdges.forEach((es, f) => {
+    for (const e of es) if (e < nEdges) up[root(f)] = root(nFaces + e);
+  });
+  const ids = new Map<number, number>();
+  const id = (i: number) => {
+    const r = root(i);
+    let k = ids.get(r);
+    if (k === undefined) ids.set(r, (k = ids.size));
+    return k;
+  };
+  const faces = Int32Array.from({ length: nFaces }, (_, f) => id(f));
+  const edges = Int32Array.from({ length: nEdges }, (_, e) => id(nFaces + e));
+  return { faces, edges, count: ids.size };
+}
+
+/** Cheap stable hash to 0..1. */
+export const hash = (n: number) => {
   const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
   return x - Math.floor(x);
 };
-
-/**
- * Per-face build data for a part: centre, order (by distance from the part's centre, a little
- * jittered) and fly-in offset (outward from the centre, farther for outer faces).
- */
-export function faceBuildData(positions: Float32Array, faceVerts: Uint32Array, normals: Float32Array) {
-  const nFaces = faceVerts.length / 2;
-  const centres = new Float32Array(nFaces * 3);
-  const box = new THREE.Box3().setFromArray(positions);
-  const mid = box.getCenter(new THREE.Vector3());
-  const radius = Math.max(box.min.distanceTo(box.max) / 2, 1e-6);
-  const dist = new Float32Array(nFaces);
-  let maxD = 1e-9;
-  for (let f = 0; f < nFaces; f++) {
-    const lo = faceVerts[f * 2],
-      cnt = faceVerts[f * 2 + 1];
-    let x = 0,
-      y = 0,
-      z = 0;
-    for (let v = lo; v < lo + cnt; v++) (x += positions[v * 3]), (y += positions[v * 3 + 1]), (z += positions[v * 3 + 2]);
-    if (cnt) (x /= cnt), (y /= cnt), (z /= cnt);
-    centres.set([x, y, z], f * 3);
-    dist[f] = Math.hypot(x - mid.x, y - mid.y, z - mid.z);
-    maxD = Math.max(maxD, dist[f]);
-  }
-  const order = new Float32Array(nFaces);
-  const offset = new Float32Array(nFaces * 3);
-  const d = new THREE.Vector3();
-  for (let f = 0; f < nFaces; f++) {
-    const dn = dist[f] / maxD;
-    order[f] = Math.min(1, Math.max(0, dn * 0.88 + hash(f) * 0.12));
-    d.set(centres[f * 3] - mid.x, centres[f * 3 + 1] - mid.y, centres[f * 3 + 2] - mid.z);
-    if (d.lengthSq() < (radius * 1e-3) ** 2) {
-      // a face centred on the part's centre: come in along its normal (or from above)
-      const v = faceVerts[f * 2];
-      d.set(normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]);
-      if (d.lengthSq() < 1e-12) d.set(0, 0, 1);
-    }
-    d.normalize().multiplyScalar(radius * (0.35 + 0.65 * dn));
-    offset.set([d.x, d.y, d.z], f * 3);
-  }
-  return { centres, order, offset };
-}

@@ -15,7 +15,7 @@ import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { HaloPass } from "./halo";
 import { scaleAO, setupAO, sizeAO } from "./ao";
 import { screenShading } from "./shading";
-import { BUILD_OFF, makeBuildUniforms } from "./build";
+import { BUILD_HIT, BUILD_OFF, hash, makeBuildUniforms, type BuildPiece } from "./build";
 
 /** A pencil stroke; with `part`, its points are in that part's coordinates and move with it. */
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean; part?: string };
@@ -98,6 +98,8 @@ export class Viewer {
   /** Build animation progress (0..1), shared with the parts; null when off. */
   private build: number | null = null;
   private buildUniforms = makeBuildUniforms();
+  /** The build's length (ms) and its impacts (timeline time, strength 0..1), for the camera shake. */
+  private buildPlan: { ms: number; hits: { at: number; k: number }[] } | null = null;
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
   private pickBuf = new Float32Array(4 * 13 * 13);
   private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
@@ -314,6 +316,7 @@ export class Viewer {
     this.restyle(d.id);
     this.boundsCache = null;
     if (this.section) this.applyClip(p);
+    this.buildPlan = null;
     if (this.build !== null) this.layoutBuild();
     this.updateGrid();
     this.requestRender();
@@ -328,44 +331,112 @@ export class Viewer {
     this.slots[p.slot] = null;
     this.selection.refs = this.selection.refs.filter((r) => r.part !== id);
     this.boundsCache = null;
+    this.buildPlan = null;
     if (this.build !== null) this.layoutBuild();
     this.requestRender();
   }
 
   // ---------- build animation ----------
   /**
-   * Build animation: 0 = nothing built yet, 1 = everything in place; null turns it off. Parts
-   * build smallest first (equal sizes: nearest the model's centre first), each from its own
-   * centre outward, face by face (build.ts).
+   * Build animation: 0 = nothing built yet, 1 = everything in place; null turns it off. Each piece
+   * (connected solid) is thrown in and slams down, bottom-up (build.ts).
    */
   setBuild(t: number | null) {
-    if (t !== null && this.build === null) this.layoutBuild();
+    if (t !== null && (this.build === null || !this.buildPlan)) this.layoutBuild();
     this.build = t;
     this.buildUniforms.buildT.value = t ?? BUILD_OFF;
     this.requestRender();
   }
 
-  /** Total face count of the shown parts (to pace the build animation). */
-  faceCount() {
-    let n = 0;
-    for (const p of this.parts.values()) if (p.group.visible) n += p.faceVerts.length / 2;
-    return n;
+  /** How long the build animation runs, in ms. */
+  buildDuration() {
+    if (!this.buildPlan) this.layoutBuild();
+    return this.buildPlan!.ms;
   }
 
-  /** Give every part its slot in the build timeline. */
+  /**
+   * Choreograph the build: pieces land bottom-up (sweeping across within a level), each thrown
+   * from above and outside the model, tumbling, and heavier pieces shake the camera harder.
+   */
   private layoutBuild() {
-    const centre = this.modelSphere().center;
-    const parts = [...this.parts.values()].map((p) => {
-      const s = p.faceMesh.geometry.boundingSphere!;
-      return { p, r: s.radius, d: s.center.clone().applyMatrix4(p.group.matrix).distanceTo(centre) };
+    const pieces: { p: PartObject; k: number; box: THREE.Box3 }[] = [];
+    for (const p of this.parts.values()) {
+      if (!p.group.visible) continue;
+      p.buildBoxes.forEach((b, k) => b.isEmpty() || pieces.push({ p, k, box: b.clone().applyMatrix4(p.group.matrix) }));
+    }
+    const model = new THREE.Box3();
+    for (const q of pieces) model.union(q.box);
+    const sphere = model.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : model.getBoundingSphere(new THREE.Sphere());
+    const R = Math.max(sphere.radius, 1e-6);
+    const level = (q: (typeof pieces)[number]) => Math.round(q.box.min.z / (R * 0.05));
+    const c = new THREE.Vector3();
+    pieces.sort((a, b) => level(a) - level(b) || a.box.getCenter(c).x - b.box.getCenter(new THREE.Vector3()).x || a.box.min.y - b.box.min.y);
+
+    // a piece flies for ~0.4 s and settles for ~0.35 s; launches are spaced so the whole build
+    // stays within a few seconds for a handful of pieces and ~12 s for hundreds
+    const n = pieces.length;
+    const flight = 0.75;
+    const gap = n <= 1 ? 0 : Math.min(0.32, Math.max(0.025, 5.5 / n), (11 - flight) / (n - 1));
+    const total = (n - 1) * gap + flight + 0.35;
+    this.buildUniforms.buildDur.value = flight / total;
+
+    const radii = pieces.map((q) => q.box.getBoundingSphere(new THREE.Sphere()).radius);
+    const rMax = Math.max(1e-6, ...radii);
+    const up = new THREE.Vector3(0, 0, 1);
+    const hits: { at: number; k: number }[] = [];
+    const flights = new Map<PartObject, BuildPiece[]>();
+    pieces.forEach((q, i) => {
+      const r = radii[i];
+      const start = (i * gap) / total;
+      // thrown from above, out past the model on the piece's own side
+      const mid = q.box.getCenter(new THREE.Vector3());
+      const out = mid.clone().sub(sphere.center).setZ(0);
+      if (out.lengthSq() < (R * 0.05) ** 2) out.set(Math.cos(hash(i) * 6.283), Math.sin(hash(i) * 6.283), 0);
+      out.normalize();
+      const dir = out.multiplyScalar(0.75).add(up).add(new THREE.Vector3(hash(i + 0.1) - 0.5, hash(i + 0.2) - 0.5, 0).multiplyScalar(0.5)).normalize();
+      const offset = dir.clone().multiplyScalar(R * 1.6 + r);
+      // tumbling about an axis across its path, so it swings down into place
+      const spin = new THREE.Vector3().crossVectors(dir, up);
+      if (spin.lengthSq() < 1e-6) spin.set(1, 0, 0);
+      spin.normalize().multiplyScalar((hash(i + 0.3) < 0.5 ? -1 : 1) * (0.45 + 0.5 * hash(i + 0.4)));
+      // into the part's coordinates (placements are rigid)
+      const inv = new THREE.Matrix4().copy(q.p.group.matrix).invert();
+      const rot = new THREE.Matrix3().setFromMatrix4(inv);
+      const flight: BuildPiece = {
+        pivot: mid.clone().applyMatrix4(inv),
+        start,
+        offset: offset.applyMatrix3(rot),
+        spin: spin.applyMatrix3(rot),
+        bounce: Math.min(r * 0.12, R * 0.03),
+      };
+      let list = flights.get(q.p);
+      if (!list) flights.set(q.p, (list = []));
+      list[q.k] = flight;
+      hits.push({ at: start + BUILD_HIT * this.buildUniforms.buildDur.value, k: Math.max(0.15, Math.min(1, (r / rMax) ** 1.2)) });
     });
-    // sizes within 2% count as equal (copies of one part), then centre outward
-    parts.sort((a, b) => (Math.abs(a.r - b.r) > 0.02 * Math.max(a.r, b.r) ? a.r - b.r : a.d - b.d));
-    const n = parts.length;
-    const dur = this.buildUniforms.buildDur.value;
-    // overlapping windows: a lone part gets the whole timeline, many share it staggered
-    const span = n <= 1 ? 1 : Math.min(1, Math.max(0.25, 2.5 / n));
-    parts.forEach(({ p }, k) => p.buildWindow.value.set((n <= 1 ? 0 : (k / (n - 1)) * (1 - span)) * (1 - dur), span * (1 - dur)));
+    for (const [p, list] of flights) p.setBuild(list);
+    this.buildPlan = { ms: total * 1000, hits };
+  }
+
+  /** Camera offset from the build's impacts at progress `t`: a sharp jolt down, then a rattle. */
+  private buildShake(t: number) {
+    const plan = this.buildPlan;
+    if (!plan) return null;
+    const cam = this.camera;
+    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+    const upv = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+    let x = 0,
+      y = 0;
+    for (const h of plan.hits) {
+      const dt = ((t - h.at) * plan.ms) / 1000;
+      if (dt < 0 || dt > 0.6) continue;
+      const env = h.k * Math.exp(-dt * 11);
+      x += env * Math.sin(dt * 95 + h.at * 50) * 0.5;
+      y += env * (Math.cos(dt * 80) - 0.3);
+    }
+    if (!x && !y) return null;
+    const amp = this.modelSphere().radius * 0.018;
+    return right.multiplyScalar(x * amp).addScaledVector(upv, -y * amp);
   }
 
   /** The mesh currently shown for a part (e.g. to write derived-data caches). */
@@ -1672,6 +1743,8 @@ export class Viewer {
     const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section && (this.build === null || this.build >= 1);
     const r = this.renderer, cam = this.camera;
     const layers = cam.layers.mask, autoClear = r.autoClear, bg = this.scene.background;
+    const shake = this.build !== null && this.build < 1 ? this.buildShake(this.build) : null;
+    if (shake) cam.position.add(shake), cam.updateMatrixWorld();
     try {
       // Paint the grid first, then depth-test axes and parts together over it.
       r.setRenderTarget(null);
@@ -1686,6 +1759,7 @@ export class Viewer {
       cam.layers.mask = layers;
       r.autoClear = autoClear;
       this.scene.background = bg;
+      if (shake) cam.position.sub(shake), cam.updateMatrixWorld();
     }
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;
