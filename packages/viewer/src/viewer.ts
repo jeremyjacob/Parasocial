@@ -355,39 +355,81 @@ export class Viewer {
   }
 
   /**
-   * Choreograph the build: pieces land bottom-up (sweeping across within a level), each thrown
-   * from above and outside the model, tumbling, and heavier pieces shake the camera harder.
+   * Choreograph the build. Order: inside-out through the assembly hierarchy (part ids are scope
+   * paths, `assembly/sub/part@name`): each sub-assembly builds in one go, and within a level the
+   * pieces and sub-assemblies whose bounds reach least far from the level's centre come first, the
+   * enclosing housings last; ties go bottom-up. Heft (volume, relative to the heaviest piece) sets
+   * how fast a piece is thrown, how little it rebounds and how hard it shakes the camera.
    */
   private layoutBuild() {
-    const pieces: { p: PartObject; k: number; box: THREE.Box3 }[] = [];
+    type Piece = { p: PartObject; k: number; box: THREE.Box3; vol: number };
+    type Node = { box: THREE.Box3; kids: Map<string, Node>; pieces: Piece[] };
+    const node = (): Node => ({ box: new THREE.Box3(), kids: new Map(), pieces: [] });
+    const root = node();
+    let n = 0;
     for (const p of this.parts.values()) {
       if (!p.group.visible) continue;
-      p.buildBoxes.forEach((b, k) => b.isEmpty() || pieces.push({ p, k, box: b.clone().applyMatrix4(p.group.matrix) }));
+      let at = root;
+      for (const seg of p.id.split("/")) {
+        if (!at.kids.has(seg)) at.kids.set(seg, node());
+        at = at.kids.get(seg)!;
+      }
+      p.buildBoxes.forEach((b, k) => b.isEmpty() || (at.pieces.push({ p, k, box: b.clone().applyMatrix4(p.group.matrix), vol: p.buildVolumes[k] }), n++));
     }
-    const model = new THREE.Box3();
-    for (const q of pieces) model.union(q.box);
-    const sphere = model.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : model.getBoundingSphere(new THREE.Sphere());
+    const fill = (nd: Node): THREE.Box3 => {
+      for (const q of nd.pieces) nd.box.union(q.box);
+      for (const kid of nd.kids.values()) nd.box.union(fill(kid));
+      return nd.box;
+    };
+    fill(root);
+    const order: Piece[] = [];
+    const walk = (nd: Node) => {
+      const c = nd.box.getCenter(new THREE.Vector3());
+      const r = Math.max(nd.box.getBoundingSphere(new THREE.Sphere()).radius, 1e-6);
+      const corner = new THREE.Vector3();
+      const reach = (b: THREE.Box3) => {
+        let m = 0;
+        for (let i = 0; i < 8; i++) m = Math.max(m, corner.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).distanceTo(c));
+        return Math.round((m / r) * 10);
+      };
+      const items: { box: THREE.Box3; go: () => void }[] = [
+        ...nd.pieces.map((q) => ({ box: q.box, go: () => order.push(q) })),
+        ...[...nd.kids.values()].filter((k) => !k.box.isEmpty()).map((k) => ({ box: k.box, go: () => walk(k) })),
+      ];
+      items
+        .map((it) => ({ ...it, reach: reach(it.box) }))
+        .sort((a, b) => a.reach - b.reach || a.box.min.z - b.box.min.z || a.box.min.x - b.box.min.x || a.box.min.y - b.box.min.y)
+        .forEach((it) => it.go());
+    };
+    walk(root);
+
+    const sphere = root.box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : root.box.getBoundingSphere(new THREE.Sphere());
     const R = Math.max(sphere.radius, 1e-6);
-    const level = (q: (typeof pieces)[number]) => Math.round(q.box.min.z / (R * 0.05));
-    const c = new THREE.Vector3();
-    pieces.sort((a, b) => level(a) - level(b) || a.box.getCenter(c).x - b.box.getCenter(new THREE.Vector3()).x || a.box.min.y - b.box.min.y);
-
-    // a piece flies for ~0.4 s and settles for ~0.35 s; launches are spaced so the whole build
-    // stays within a few seconds for a handful of pieces and ~12 s for hundreds
-    const n = pieces.length;
-    const flight = 0.75;
-    const gap = n <= 1 ? 0 : Math.min(0.32, Math.max(0.025, 5.5 / n), (11 - flight) / (n - 1));
-    const total = (n - 1) * gap + flight + 0.35;
-    this.buildUniforms.buildDur.value = flight / total;
-
-    const radii = pieces.map((q) => q.box.getBoundingSphere(new THREE.Sphere()).radius);
-    const rMax = Math.max(1e-6, ...radii);
+    const vMax = Math.max(1e-12, ...order.map((q) => q.vol));
     const up = new THREE.Vector3(0, 0, 1);
+    // seconds: impacts are spaced by heft (a heavy one gets a beat to ring out), launched so they land on time
+    const base = Math.min(0.3, Math.max(0.025, 5.5 / Math.max(1, n)));
+    const plan = order.map((q, i) => {
+      const h = Math.cbrt(q.vol / vMax);
+      const toHit = 0.55 - 0.27 * h;
+      return { q, i, h, toHit, dur: toHit / BUILD_HIT, gap: base * (0.5 + h) };
+    });
+    let hit = 0;
+    const hitAt = plan.map((_, i) => (i ? (hit += plan[i - 1].gap) : 0));
+    // long builds are squeezed to ~12 s by tightening the spacing, not the flights
+    const span = hit + 0.55;
+    const squeeze = span > 11.5 ? Math.max(0.05, (11.5 - 0.55) / hit) : 1;
+    const launch = plan.map((x, i) => hitAt[i] * squeeze - x.toHit);
+    const first = Math.min(0, ...launch);
+    const times = launch.map((t) => t - first);
+    let total = 0;
+    plan.forEach((x, i) => (total = Math.max(total, times[i] + x.dur)));
+    total += 0.3;
+
     const hits: { at: number; k: number }[] = [];
     const flights = new Map<PartObject, BuildPiece[]>();
-    pieces.forEach((q, i) => {
-      const r = radii[i];
-      const start = (i * gap) / total;
+    plan.forEach(({ q, i, h, toHit, dur }) => {
+      const r = q.box.getBoundingSphere(new THREE.Sphere()).radius;
       // thrown from above, out past the model on the piece's own side
       const mid = q.box.getCenter(new THREE.Vector3());
       const out = mid.clone().sub(sphere.center).setZ(0);
@@ -395,24 +437,24 @@ export class Viewer {
       out.normalize();
       const dir = out.multiplyScalar(0.75).add(up).add(new THREE.Vector3(hash(i + 0.1) - 0.5, hash(i + 0.2) - 0.5, 0).multiplyScalar(0.5)).normalize();
       const offset = dir.clone().multiplyScalar(R * 1.6 + r);
-      // tumbling about an axis across its path, so it swings down into place
+      // tumbling about an axis across its path; light pieces flutter more
       const spin = new THREE.Vector3().crossVectors(dir, up);
       if (spin.lengthSq() < 1e-6) spin.set(1, 0, 0);
-      spin.normalize().multiplyScalar((hash(i + 0.3) < 0.5 ? -1 : 1) * (0.45 + 0.5 * hash(i + 0.4)));
+      spin.normalize().multiplyScalar((hash(i + 0.3) < 0.5 ? -1 : 1) * (0.35 + 0.5 * hash(i + 0.4)) * (1.4 - 0.7 * h));
       // into the part's coordinates (placements are rigid)
       const inv = new THREE.Matrix4().copy(q.p.group.matrix).invert();
       const rot = new THREE.Matrix3().setFromMatrix4(inv);
-      const flight: BuildPiece = {
-        pivot: mid.clone().applyMatrix4(inv),
-        start,
-        offset: offset.applyMatrix3(rot),
-        spin: spin.applyMatrix3(rot),
-        bounce: Math.min(r * 0.12, R * 0.03),
-      };
       let list = flights.get(q.p);
       if (!list) flights.set(q.p, (list = []));
-      list[q.k] = flight;
-      hits.push({ at: start + BUILD_HIT * this.buildUniforms.buildDur.value, k: Math.max(0.15, Math.min(1, (r / rMax) ** 1.2)) });
+      list[q.k] = {
+        pivot: mid.clone().applyMatrix4(inv),
+        start: times[i] / total,
+        dur: dur / total,
+        offset: offset.applyMatrix3(rot),
+        spin: spin.applyMatrix3(rot),
+        bounce: Math.min(r * (0.2 - 0.15 * h), R * 0.04),
+      };
+      hits.push({ at: (times[i] + toHit) / total, k: Math.max(0.03, h ** 1.5) });
     });
     for (const [p, list] of flights) p.setBuild(list);
     this.buildPlan = { ms: total * 1000, hits };
