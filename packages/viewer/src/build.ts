@@ -1,5 +1,6 @@
-// Build animation: every piece (a connected solid, so each plank of a shed) is thrown in rigid,
-// tumbling, speeding up as it comes, slams into place with a small rebound and shakes the camera.
+// Build animation: every piece (a connected solid, so each plank of a shed) pops into existence
+// and is thrown in rigid, tumbling, speeding up as it comes, slams into place with a small rebound
+// and shakes the camera.
 // Heavy pieces (by volume) fly faster, rebound less and hit harder. Pieces land inside-out, one
 // sub-assembly at a time. All on the GPU: each vertex (and each edge segment) carries its piece's
 // pivot, timing, launch offset and spin; one shared uniform is the progress.
@@ -55,7 +56,9 @@ float buildLeft(float t) {
 vec3 buildMove(vec3 p, out float t) {
   t = (buildT - buildA.w) / buildC.w;
   float left = buildLeft(t);
-  vec3 q = buildA.xyz + buildRot(p - buildA.xyz, buildC.xyz * left) + buildB.xyz * left;
+  // pops into existence at launch: grows from its pivot over the first moments of the flight
+  float g = 1.0 - pow(1.0 - clamp(t / 0.16, 0.0, 1.0), 3.0);
+  vec3 q = buildA.xyz + buildRot((p - buildA.xyz) * g, buildC.xyz * left) + buildB.xyz * left;
   // after the impact: kick back the way it came, dip past its place, settle
   float s = clamp((t - ${BUILD_HIT.toFixed(3)}) / ${(1 - BUILD_HIT).toFixed(3)}, 0.0, 1.0);
   float l = length(buildB.xyz);
@@ -166,6 +169,128 @@ export function pieceVolumes(positions: Float32Array, indices: Uint32Array, vert
     const v = Math.abs(vol[k]);
     return v > boxVol * 1e-4 ? Math.min(v, boxVol) : boxVol * 0.05;
   });
+}
+
+/** A level of the assembly hierarchy: its own pieces and its sub-assemblies. */
+export type OrderNode<T> = { pieces: { item: T; box: THREE.Box3; vol: number }[]; kids: OrderNode<T>[] };
+
+/** Extra beats (s) in the build: after a sub-assembly is done, before the housings close it up, before the last piece. */
+export const PAUSE = { group: 0.4, cover: 0.35, last: 0.3 };
+
+const boxVol = (b: THREE.Box3, pad: number) => (b.max.x - b.min.x + 2 * pad) * (b.max.y - b.min.y + 2 * pad) * (b.max.z - b.min.z + 2 * pad);
+
+/**
+ * Build order, inside-out through the hierarchy: a sub-assembly builds in one go. Within a level,
+ * when most of an item's pieces lie inside a much bigger item's bounds: a hollow one (a housing, a
+ * cup) waits for what it holds, except small things reaching its walls (screws, inserts, a button
+ * poking through) that are fastened on after; a solid one goes first and what's in it after. Of what's free to go, ordinary pieces before covers
+ * (hollow ones enclosing something, or big hollow shells), then those reaching least far from the
+ * level's centre, then bottom-up. `pause` is an extra beat (s) before that piece lands.
+ */
+export function buildOrder<T>(root: OrderNode<T>): { item: T; pause: number }[] {
+  type Bounds = { box: THREE.Box3; vol: number; boxes: THREE.Box3[] };
+  type Item = Bounds & { piece?: T; kid?: OrderNode<T> };
+  const out: { item: T; pause: number }[] = [];
+  let pending = 0;
+  const bounds = new Map<OrderNode<T>, Bounds>();
+  const measure = (nd: OrderNode<T>) => {
+    const m: Bounds = { box: new THREE.Box3(), vol: 0, boxes: [] };
+    for (const q of nd.pieces) m.box.union(q.box), (m.vol += q.vol), m.boxes.push(q.box);
+    for (const k of nd.kids) {
+      const km = measure(k);
+      m.box.union(km.box), (m.vol += km.vol), m.boxes.push(...km.boxes);
+    }
+    bounds.set(nd, m);
+    return m;
+  };
+  measure(root);
+  const level = (nd: OrderNode<T>) => {
+    const { box } = bounds.get(nd)!;
+    const c = box.getCenter(new THREE.Vector3());
+    const r = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1e-9);
+    const pad = r * 0.01;
+    const items: Item[] = [
+      ...nd.pieces.map((q) => ({ box: q.box, vol: q.vol, boxes: [q.box], piece: q.item })),
+      ...nd.kids.filter((k) => !bounds.get(k)!.box.isEmpty()).map((k) => ({ ...bounds.get(k)!, kid: k })),
+    ];
+    const bv = items.map((it) => boxVol(it.box, pad));
+    const padded = items.map((it) => it.box.clone().expandByScalar(pad));
+    const levelVol = boxVol(box, pad);
+    const hollow = items.map((it, a) => it.vol < 0.4 * bv[a]);
+    // an item's biggest piece, and how much of its pieces' bounds lie inside each other item's
+    const biggest = items.map((it) => Math.max(...it.boxes.map((b) => boxVol(b, pad))));
+    const x = new THREE.Box3();
+    const share = (a: number, b: number) => {
+      let inside = 0,
+        all = 0;
+      for (const q of items[b].boxes) {
+        all += boxVol(q, pad);
+        x.copy(q).expandByScalar(pad).intersect(padded[a]);
+        if (!x.isEmpty()) inside += boxVol(x, 0);
+      }
+      return inside / Math.max(all, 1e-30);
+    };
+    // a small part reaching a's walls: a fastener (or a set of them), not something a holds; a
+    // sub-assembly never is
+    const fastener = (a: number, b: number) => {
+      if (items[b].kid?.kids.length || biggest[b] >= 0.03 * bv[a]) return false;
+      const A = items[a].box;
+      return items[b].boxes.some((q) =>
+        (["x", "y", "z"] as const).some((k) => {
+          const m = 0.08 * (A.max[k] - A.min[k]) + pad;
+          return q.min[k] <= A.min[k] + m || q.max[k] >= A.max[k] - m;
+        }),
+      );
+    };
+    // before[a]: the items that land before a
+    const before = items.map((): number[] => []);
+    const encloses = items.map(() => false);
+    items.forEach((_, a) =>
+      items.forEach((_, b) => {
+        if (a === b || bv[a] < 1.5 * biggest[b] || share(a, b) < 0.6) return;
+        if (hollow[a] && !fastener(a, b)) before[a].push(b), (encloses[a] = true);
+        else before[b].push(a);
+      }),
+    );
+    const cover = items.map((_, a) => encloses[a] || (hollow[a] && bv[a] >= 0.2 * levelVol));
+    const corner = new THREE.Vector3();
+    const reach = items.map(({ box: b }) => {
+      let m = 0;
+      for (let i = 0; i < 8; i++) m = Math.max(m, corner.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).distanceTo(c));
+      return Math.round((m / r) * 10);
+    });
+    const done = new Set<number>();
+    let covering = false;
+    while (done.size < items.length) {
+      let best = -1;
+      for (let a = 0; a < items.length; a++) {
+        if (done.has(a) || before[a].some((b) => !done.has(b))) continue;
+        if (best < 0) best = a;
+        else {
+          const A = items[a].box,
+            B = items[best].box;
+          const d = +cover[a] - +cover[best] || reach[a] - reach[best] || A.min.z - B.min.z || A.min.x - B.min.x || A.min.y - B.min.y;
+          if (d < 0) best = a;
+        }
+      }
+      // mixed hollow and solid nesting can tie a knot: then take the next one regardless
+      if (best < 0) best = items.findIndex((_, a) => !done.has(a));
+      done.add(best);
+      if (cover[best] && !covering && out.length) pending = Math.max(pending, PAUSE.cover);
+      covering ||= cover[best];
+      const it = items[best];
+      if (it.kid) {
+        level(it.kid);
+        pending = Math.max(pending, PAUSE.group);
+      } else {
+        out.push({ item: it.piece!, pause: out.length ? pending : 0 });
+        pending = 0;
+      }
+    }
+  };
+  level(root);
+  if (out.length > 2) out[out.length - 1].pause = Math.max(out[out.length - 1].pause, PAUSE.last);
+  return out;
 }
 
 /** Cheap stable hash to 0..1. */

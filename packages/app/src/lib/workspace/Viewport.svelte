@@ -538,7 +538,7 @@
 		const step = (now: number) => {
 			const b = ws.build;
 			if (!b?.playing) return;
-			const t = (b.t >= 1 ? 0 : b.t) + (now - last) / ms;
+			const t = (b.t >= 1 ? 0 : b.t) + ((now - last) / ms) * b.speed;
 			last = now;
 			if (t < 1) return void ((ws.build = { ...b, t }), (raf = requestAnimationFrame(step)));
 			if (!b.loop) return void (ws.build = { ...b, t: 1, playing: false });
@@ -554,13 +554,8 @@
 		raf = requestAnimationFrame(step);
 		return () => (cancelAnimationFrame(raf), clearTimeout(hold));
 	});
-	/** Grabbing the slider pauses; it also reports values set while playing, which are ignored. */
-	function pauseBuild() {
-		if (ws.build?.playing) ws.build = { ...ws.build, playing: false };
-	}
-	function scrubBuild(v: number) {
-		if (ws.build && !ws.build.playing) ws.build = { ...ws.build, t: v };
-	}
+	/** Speed slider: log scale, ¼× to 4×. */
+	const speedLabel = (s: number) => `${s < 1 ? s.toFixed(2).replace(/0$/, '') : s.toFixed(1)}×`;
 	function playBuild() {
 		const b = ws.build;
 		if (b) ws.build = { ...b, t: b.t >= 1 ? 0 : b.t, playing: !b.playing };
@@ -825,9 +820,8 @@
 		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="build-bar" in:pop={{ origin: 'top center' }} out:popOut>
 			<span class="text-ui font-medium">Build</span>
 			<IconButton label={ws.build.playing ? 'Pause' : 'Play'} size="sm" onclick={playBuild}>{#if ws.build.playing}<Pause />{:else}<Play />{/if}</IconButton>
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<span class="contents" onpointerdowncapture={pauseBuild} onkeydowncapture={pauseBuild}><Slider value={Math.min(1, ws.build.t)} min={0} max={1} step={0.001} onValueChange={scrubBuild} class="w-48" aria-label="Build progress" /></span>
-			<span class="w-10 text-label text-fg-secondary tabular-nums">{Math.round(Math.min(1, ws.build.t) * 100)}%</span>
+			<Slider value={Math.log2(ws.build.speed)} min={-2} max={2} step={0.05} onValueChange={(v: number) => ws.setBuildSpeed(Math.round(2 ** v * 100) / 100)} class="w-40" aria-label="Build speed" />
+			<span class="w-10 text-label text-fg-secondary tabular-nums">{speedLabel(ws.build.speed)}</span>
 			<IconButton label="Loop" size="sm" active={ws.build.loop} onclick={() => (ws.build = { ...ws.build!, loop: !ws.build!.loop })}><Repeat /></IconButton>
 			<IconButton label="Close build" shortcut={['A']} size="sm" onclick={() => (ws.build = null)}><X /></IconButton>
 		</div>

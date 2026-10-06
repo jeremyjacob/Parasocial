@@ -91,8 +91,8 @@ export class WorkspaceState {
 	/** Section view (S): axis, offset along it (mm), flipped. */
 	/** Axis-aligned section, or 'Face': through a planar face's plane (offset along its outward normal). */
 	section = $state<{ axis: 'X' | 'Y' | 'Z' | 'Face'; offset: number; flip: boolean; plane?: { origin: number[]; normal: number[] } } | null>(null);
-	/** Build animation (A): progress 0..1, playing, looping. Just for show. */
-	build = $state<{ t: number; playing: boolean; loop: boolean } | null>(null);
+	/** Build animation (A): progress 0..1, playing, looping, playback speed (remembered per browser). Just for show. */
+	build = $state<{ t: number; playing: boolean; loop: boolean; speed: number } | null>(null);
 	/** Ground grid and origin triad (G, Shift+G); remembered per browser. */
 	showGrid = $state(pref('parasocial:grid', true));
 	showOrigin = $state(pref('parasocial:origin', true));
@@ -1002,7 +1002,18 @@ export class WorkspaceState {
 	toggleBuild() {
 		if (this.build) return void (this.build = null);
 		this.section = null;
-		this.build = { t: 0, playing: true, loop: false };
+		let speed = 1;
+		try {
+			speed = Number(localStorage.getItem('parasocial:buildSpeed')) || 1;
+		} catch {}
+		this.build = { t: 0, playing: true, loop: false, speed };
+	}
+
+	setBuildSpeed(speed: number) {
+		if (this.build) this.build = { ...this.build, speed };
+		try {
+			localStorage.setItem('parasocial:buildSpeed', String(speed));
+		} catch {}
 	}
 
 	/** Remember section settings (called whenever they change). */

@@ -24,12 +24,12 @@ await page.keyboard.press("a");
 await page.waitForTimeout(100);
 // pause and scrub to fixed points
 for (const t of [0.15, 0.35, 0.55, 0.75, 1]) {
-  await page.evaluate((t) => ((globalThis as any).__ws.build = { t, playing: false, loop: false }), t);
+  await page.evaluate((t) => ((globalThis as any).__ws.build = { t, playing: false, loop: false, speed: 1 }), t);
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${out}/build-${Math.round(t * 100)}.png` });
 }
 // and let it play from the start
-await page.evaluate(() => ((globalThis as any).__ws.build = { t: 0, playing: true, loop: false }));
+await page.evaluate(() => ((globalThis as any).__ws.build = { t: 0, playing: true, loop: false, speed: 1 }));
 for (let i = 0; i < 6; i++) {
   await page.waitForTimeout(400);
   console.log("t", await page.evaluate(() => [performance.now() | 0, (globalThis as any).__ws.build?.t, (globalThis as any).__ws.viewer?.buildDuration()]));

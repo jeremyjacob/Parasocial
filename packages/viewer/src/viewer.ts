@@ -15,7 +15,7 @@ import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { HaloPass } from "./halo";
 import { scaleAO, setupAO, sizeAO } from "./ao";
 import { screenShading } from "./shading";
-import { BUILD_HIT, BUILD_OFF, hash, makeBuildUniforms, type BuildPiece } from "./build";
+import { BUILD_HIT, BUILD_OFF, buildOrder, hash, makeBuildUniforms, type BuildPiece, type OrderNode } from "./build";
 
 /** A pencil stroke; with `part`, its points are in that part's coordinates and move with it. */
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean; part?: string };
@@ -345,6 +345,8 @@ export class Viewer {
     if (t !== null && (this.build === null || !this.buildPlan)) this.layoutBuild();
     this.build = t;
     this.buildUniforms.buildT.value = t ?? BUILD_OFF;
+    // overlap volumes don't fly in with their parts: they show once everything's in place
+    this.overlaps.visible = t === null || t >= 1;
     this.requestRender();
   }
 
@@ -356,54 +358,38 @@ export class Viewer {
 
   /**
    * Choreograph the build. Order: inside-out through the assembly hierarchy (part ids are scope
-   * paths, `assembly/sub/part@name`): each sub-assembly builds in one go, and within a level the
-   * pieces and sub-assemblies whose bounds reach least far from the level's centre come first, the
-   * enclosing housings last; ties go bottom-up. Heft (volume, relative to the heaviest piece) sets
+   * paths, `assembly/sub/part@name`), see buildOrder. Heft (volume, relative to the heaviest piece) sets
    * how fast a piece is thrown, how little it rebounds and how hard it shakes the camera.
    */
   private layoutBuild() {
     type Piece = { p: PartObject; k: number; box: THREE.Box3; vol: number };
-    type Node = { box: THREE.Box3; kids: Map<string, Node>; pieces: Piece[] };
-    const node = (): Node => ({ box: new THREE.Box3(), kids: new Map(), pieces: [] });
+    type Node = OrderNode<Piece> & { named: Map<string, Node> };
+    const node = (): Node => ({ pieces: [], kids: [], named: new Map() });
     const root = node();
+    const model = new THREE.Box3();
     let n = 0;
     for (const p of this.parts.values()) {
       if (!p.group.visible) continue;
       let at = root;
       for (const seg of p.id.split("/")) {
-        if (!at.kids.has(seg)) at.kids.set(seg, node());
-        at = at.kids.get(seg)!;
+        if (!at.named.has(seg)) {
+          const kid = node();
+          at.named.set(seg, kid), at.kids.push(kid);
+        }
+        at = at.named.get(seg)!;
       }
-      p.buildBoxes.forEach((b, k) => b.isEmpty() || (at.pieces.push({ p, k, box: b.clone().applyMatrix4(p.group.matrix), vol: p.buildVolumes[k] }), n++));
+      p.buildBoxes.forEach((b, k) => {
+        if (b.isEmpty()) return;
+        const q = { p, k, box: b.clone().applyMatrix4(p.group.matrix), vol: p.buildVolumes[k] };
+        at.pieces.push({ item: q, box: q.box, vol: q.vol });
+        model.union(q.box);
+        n++;
+      });
     }
-    const fill = (nd: Node): THREE.Box3 => {
-      for (const q of nd.pieces) nd.box.union(q.box);
-      for (const kid of nd.kids.values()) nd.box.union(fill(kid));
-      return nd.box;
-    };
-    fill(root);
-    const order: Piece[] = [];
-    const walk = (nd: Node) => {
-      const c = nd.box.getCenter(new THREE.Vector3());
-      const r = Math.max(nd.box.getBoundingSphere(new THREE.Sphere()).radius, 1e-6);
-      const corner = new THREE.Vector3();
-      const reach = (b: THREE.Box3) => {
-        let m = 0;
-        for (let i = 0; i < 8; i++) m = Math.max(m, corner.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).distanceTo(c));
-        return Math.round((m / r) * 10);
-      };
-      const items: { box: THREE.Box3; go: () => void }[] = [
-        ...nd.pieces.map((q) => ({ box: q.box, go: () => order.push(q) })),
-        ...[...nd.kids.values()].filter((k) => !k.box.isEmpty()).map((k) => ({ box: k.box, go: () => walk(k) })),
-      ];
-      items
-        .map((it) => ({ ...it, reach: reach(it.box) }))
-        .sort((a, b) => a.reach - b.reach || a.box.min.z - b.box.min.z || a.box.min.x - b.box.min.x || a.box.min.y - b.box.min.y)
-        .forEach((it) => it.go());
-    };
-    walk(root);
+    const ordered = buildOrder(root);
+    const order = ordered.map((o) => o.item);
 
-    const sphere = root.box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : root.box.getBoundingSphere(new THREE.Sphere());
+    const sphere = model.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : model.getBoundingSphere(new THREE.Sphere());
     const R = Math.max(sphere.radius, 1e-6);
     const vMax = Math.max(1e-12, ...order.map((q) => q.vol));
     const up = new THREE.Vector3(0, 0, 1);
@@ -415,7 +401,7 @@ export class Viewer {
       return { q, i, h, toHit, dur: toHit / BUILD_HIT, gap: base * (0.5 + h) };
     });
     let hit = 0;
-    const hitAt = plan.map((_, i) => (i ? (hit += plan[i - 1].gap) : 0));
+    const hitAt = plan.map((_, i) => (i ? (hit += plan[i - 1].gap + ordered[i].pause) : 0));
     // long builds are squeezed to ~12 s by tightening the spacing, not the flights
     const span = hit + 0.55;
     const squeeze = span > 11.5 ? Math.max(0.05, (11.5 - 0.55) / hit) : 1;
