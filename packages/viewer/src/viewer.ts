@@ -15,6 +15,7 @@ import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { HaloPass } from "./halo";
 import { scaleAO, setupAO, sizeAO } from "./ao";
 import { screenShading } from "./shading";
+import { BUILD_OFF, makeBuildUniforms } from "./build";
 
 /** A pencil stroke; with `part`, its points are in that part's coordinates and move with it. */
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean; part?: string };
@@ -94,6 +95,9 @@ export class Viewer {
   private resolution = new THREE.Vector2(1, 1);
   /** device px per CSS px, shared with the parts (vertex dots are sized in CSS px) */
   private pixelRatio = { value: 1 };
+  /** Build animation progress (0..1), shared with the parts; null when off. */
+  private build: number | null = null;
+  private buildUniforms = makeBuildUniforms();
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
   private pickBuf = new Float32Array(4 * 13 * 13);
   private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
@@ -294,7 +298,7 @@ export class Viewer {
       this.scene.remove(prev.group);
       prev.dispose();
     }
-    const p = new PartObject(d, slot, this.resolution, this.pixelRatio);
+    const p = new PartObject(d, slot, this.resolution, this.pixelRatio, this.buildUniforms);
     this.parts.set(d.id, p);
     this.colors.set(d.id, new THREE.Color(d.color));
     if (d.dim) this.dimmed.add(d.id);
@@ -310,6 +314,7 @@ export class Viewer {
     this.restyle(d.id);
     this.boundsCache = null;
     if (this.section) this.applyClip(p);
+    if (this.build !== null) this.layoutBuild();
     this.updateGrid();
     this.requestRender();
   }
@@ -323,7 +328,44 @@ export class Viewer {
     this.slots[p.slot] = null;
     this.selection.refs = this.selection.refs.filter((r) => r.part !== id);
     this.boundsCache = null;
+    if (this.build !== null) this.layoutBuild();
     this.requestRender();
+  }
+
+  // ---------- build animation ----------
+  /**
+   * Build animation: 0 = nothing built yet, 1 = everything in place; null turns it off. Parts
+   * build smallest first (equal sizes: nearest the model's centre first), each from its own
+   * centre outward, face by face (build.ts).
+   */
+  setBuild(t: number | null) {
+    if (t !== null && this.build === null) this.layoutBuild();
+    this.build = t;
+    this.buildUniforms.buildT.value = t ?? BUILD_OFF;
+    this.requestRender();
+  }
+
+  /** Total face count of the shown parts (to pace the build animation). */
+  faceCount() {
+    let n = 0;
+    for (const p of this.parts.values()) if (p.group.visible) n += p.faceVerts.length / 2;
+    return n;
+  }
+
+  /** Give every part its slot in the build timeline. */
+  private layoutBuild() {
+    const centre = this.modelSphere().center;
+    const parts = [...this.parts.values()].map((p) => {
+      const s = p.faceMesh.geometry.boundingSphere!;
+      return { p, r: s.radius, d: s.center.clone().applyMatrix4(p.group.matrix).distanceTo(centre) };
+    });
+    // sizes within 2% count as equal (copies of one part), then centre outward
+    parts.sort((a, b) => (Math.abs(a.r - b.r) > 0.02 * Math.max(a.r, b.r) ? a.r - b.r : a.d - b.d));
+    const n = parts.length;
+    const dur = this.buildUniforms.buildDur.value;
+    // overlapping windows: a lone part gets the whole timeline, many share it staggered
+    const span = n <= 1 ? 1 : Math.min(1, Math.max(0.25, 2.5 / n));
+    parts.forEach(({ p }, k) => p.buildWindow.value.set((n <= 1 ? 0 : (k / (n - 1)) * (1 - span)) * (1 - dur), span * (1 - dur)));
   }
 
   /** The mesh currently shown for a part (e.g. to write derived-data caches). */
@@ -1626,7 +1668,8 @@ export class Viewer {
     this.needsRender = false;
     this.viewCube?.update(this.camera);
     this.syncHelpers();
-    const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section;
+    // mid-build the faces are moving: the AO pass would shade the finished shape
+    const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section && (this.build === null || this.build >= 1);
     const r = this.renderer, cam = this.camera;
     const layers = cam.layers.mask, autoClear = r.autoClear, bg = this.scene.background;
     try {

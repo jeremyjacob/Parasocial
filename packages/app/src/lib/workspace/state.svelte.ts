@@ -91,6 +91,8 @@ export class WorkspaceState {
 	/** Section view (S): axis, offset along it (mm), flipped. */
 	/** Axis-aligned section, or 'Face': through a planar face's plane (offset along its outward normal). */
 	section = $state<{ axis: 'X' | 'Y' | 'Z' | 'Face'; offset: number; flip: boolean; plane?: { origin: number[]; normal: number[] } } | null>(null);
+	/** Build animation (A): progress 0..1, playing, looping. Just for show. */
+	build = $state<{ t: number; playing: boolean; loop: boolean } | null>(null);
 	/** Ground grid and origin triad (G, Shift+G); remembered per browser. */
 	showGrid = $state(pref('parasocial:grid', true));
 	showOrigin = $state(pref('parasocial:origin', true));
@@ -977,6 +979,7 @@ export class WorkspaceState {
 	/** Start a section at a planar face, using an axis when its normal is aligned to one. */
 	sectionFromFace(plane: { origin: number[]; normal: number[] }) {
 		const k = plane.normal.findIndex((c) => Math.abs(c) > 1 - 1e-6);
+		this.build = null;
 		this.section = k < 0
 			? { axis: 'Face', offset: 0, flip: false, plane }
 			: { axis: (['X', 'Y', 'Z'] as const)[k], offset: plane.origin[k], flip: plane.normal[k] < 0 };
@@ -985,6 +988,7 @@ export class WorkspaceState {
 	/** Section on/off (S). Start at the selected planar face, otherwise restore the last settings. */
 	toggleSection(center = 0) {
 		if (this.section) return void (this.section = null);
+		this.build = null;
 		const plane = this.selection.length === 1 ? this.viewer?.facePlane(this.selection[0]) : null;
 		if (plane) return this.sectionFromFace(plane);
 		let last: any = null;
@@ -992,6 +996,13 @@ export class WorkspaceState {
 			last = JSON.parse(localStorage.getItem('parasocial:section') ?? 'null');
 		} catch {}
 		this.section = last && ['X', 'Y', 'Z'].includes(last.axis) && Number.isFinite(last.offset) ? { axis: last.axis, offset: last.offset, flip: !!last.flip } : { axis: 'Z', offset: center, flip: false };
+	}
+
+	/** Build animation on (playing from the start) or off. Takes the section's place. */
+	toggleBuild() {
+		if (this.build) return void (this.build = null);
+		this.section = null;
+		this.build = { t: 0, playing: true, loop: false };
 	}
 
 	/** Remember section settings (called whenever they change). */

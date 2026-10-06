@@ -2,7 +2,7 @@
 	import { cn } from '$lib/utils';
 	import { onMount } from 'svelte';
 	import {
-		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Focus, Scissors, ArrowLeft, Link2, LogIn
+		MousePointer2, MessageCircle, Pencil, Ruler, Maximize, Box, Boxes, Grid3x3, SquareDashed, Code2, Undo2, Redo2, Keyboard, Bot, Download, Plus, Sun, Moon, Eye, Focus, Scissors, Blocks, ArrowLeft, Link2, LogIn
 	} from '@lucide/svelte';
 	import { useQuery } from '@parasocial/sync/svelte';
 	import { queries, mutators, type ParasocialZero } from '@parasocial/sync';
@@ -314,6 +314,7 @@
 		{ id: 'view.right', label: 'Right view', group: 'View', keys: ['alt', 'R'], run: () => ws.viewer?.setView('right') },
 		{ id: 'view.ortho', label: 'Toggle orthographic', group: 'View', keys: ['O'], run: () => (ws.ortho = !ws.ortho) },
 		{ id: 'view.section', label: 'Section view', group: 'View', keys: ['S'], icon: Scissors, run: () => ws.toggleSection(centerZ()) },
+		{ id: 'view.build', label: 'Build animation', group: 'View', keys: ['A'], icon: Blocks, keywords: ['assemble', 'explode', 'animate'], run: () => ws.toggleBuild() },
 		{ id: 'view.grid', label: 'Toggle ground grid', group: 'View', keys: ['G'], run: () => ws.setHelpers({ grid: !ws.showGrid }) },
 		{ id: 'view.interference', label: 'Toggle interference (red where assembly parts overlap)', group: 'View', keys: ['I'], run: () => ws.asm.setShowInterference(!ws.asm.showInterference) },
 		{ id: 'view.interferenceOnTop', label: 'Toggle interference through parts (red overlaps show through what covers them)', group: 'View', run: () => ws.asm.setInterferenceOnTop(!ws.asm.interferenceOnTop) },

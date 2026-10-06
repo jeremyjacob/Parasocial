@@ -5,6 +5,7 @@ import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
 import { withScreenShading } from "./shading";
+import { faceBuildData, makeBuildUniforms, withBuild, type BuildUniforms } from "./build";
 
 export type EntityKind = "face" | "edge" | "vertex";
 export type EntityRef = { part: string; kind: EntityKind; index: number };
@@ -152,7 +153,7 @@ uniform float width;
 void main() {
   #include <begin_vertex>
   #include <project_vertex>
-  vec4 clipN = projectionMatrix * modelViewMatrix * vec4(position + normal, 1.0);
+  vec4 clipN = projectionMatrix * modelViewMatrix * vec4(transformed + normal, 1.0);
   vec2 dir = normalize(clipN.xy / clipN.w - gl_Position.xy / gl_Position.w);
   gl_Position.xy += dir * width * 2.0 / resolution * gl_Position.w;
   #include <clipping_planes_vertex>
@@ -202,12 +203,15 @@ export class PartObject {
   private edgesVisibleBeforePick = true;
   /** Opacity the script asked for; display fades multiply into it. */
   readonly baseOpacity: number;
+  /** Build animation: this part's slot in the timeline (start, span). */
+  readonly buildWindow = { value: new THREE.Vector2(0, 0.9) };
 
   constructor(
     data: PartData,
     slot: number,
     private resolution: THREE.Vector2,
     pixelRatio: { value: number } = { value: 1 },
+    private buildUniforms: BuildUniforms = makeBuildUniforms(),
   ) {
     this.id = data.id;
     this.slot = slot;
@@ -284,6 +288,20 @@ export class PartObject {
       faceId.fill(f, lo, hi + 1);
     }
     geo.setAttribute("faceId", new THREE.BufferAttribute(faceId, 1));
+    // build animation: every vertex carries its face's centre, order and fly-in offset
+    const fb = faceBuildData(m.positions, this.faceVerts, m.normals);
+    const buildA = new Float32Array(nv * 4),
+      buildB = new Float32Array(nv * 3);
+    for (let f = 0; f < nFaces; f++) {
+      const lo = this.faceVerts[f * 2],
+        cnt = this.faceVerts[f * 2 + 1];
+      for (let v = lo; v < lo + cnt; v++) {
+        buildA.set([fb.centres[f * 3], fb.centres[f * 3 + 1], fb.centres[f * 3 + 2], fb.order[f]], v * 4);
+        buildB.set(fb.offset.subarray(f * 3, f * 3 + 3), v * 3);
+      }
+    }
+    geo.setAttribute("buildA", new THREE.BufferAttribute(buildA, 4));
+    geo.setAttribute("buildB", new THREE.BufferAttribute(buildB, 3));
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
     this.faceMesh = new THREE.Mesh(geo, this.faceMaterial);
@@ -312,6 +330,8 @@ export class PartObject {
     om.uniforms = { resolution: { value: this.resolution }, width: { value: 2 }, color: { value: new THREE.Color(0xff8a00) } };
     Object.assign(om, { depthTest: false, depthWrite: false, transparent: true, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.KeepStencilOp });
     this.outline = new THREE.Mesh(geo, om);
+    withBuild(this.faceMaterial, this.buildUniforms, this.buildWindow, "mesh", true);
+    withBuild(this.silMaterial, this.buildUniforms, this.buildWindow, "mesh");
     this.outline.renderOrder = 21;
     this.outlineMask.visible = this.outline.visible = false;
     this.pickFaces = new THREE.Mesh(geo, this.pickFaceMaterial);
@@ -321,6 +341,23 @@ export class PartObject {
     const segs = this.edgeSegments([...Array(m.edgeRanges.length / 2).keys()].filter((e) => !d.hiddenEdges?.has(e)));
     const eg = new LineSegmentsGeometry();
     eg.setPositions(segs.positions);
+    // an edge rides in with the adjacent face that arrives last, so it never floats ahead of it
+    const edgeFace = new Int32Array(m.edgeRanges.length / 2).fill(-1);
+    d.faceEdges.forEach((es, f) => {
+      for (const e of es) if (e < edgeFace.length && (edgeFace[e] < 0 || fb.order[f] > fb.order[edgeFace[e]])) edgeFace[e] = f;
+    });
+    const nSeg = segs.edgeOfSegment.length;
+    const segA = new Float32Array(nSeg * 4),
+      segB = new Float32Array(nSeg * 3);
+    for (let s = 0; s < nSeg; s++) {
+      const f = edgeFace[segs.edgeOfSegment[s]];
+      // a free edge: its own midpoint, arriving last, straight in
+      if (f < 0) segA.set([segs.positions[s * 6], segs.positions[s * 6 + 1], segs.positions[s * 6 + 2], 1], s * 4);
+      else segA.set([fb.centres[f * 3], fb.centres[f * 3 + 1], fb.centres[f * 3 + 2], fb.order[f]], s * 4), segB.set(fb.offset.subarray(f * 3, f * 3 + 3), s * 3);
+    }
+    eg.setAttribute("buildA", new THREE.InstancedBufferAttribute(segA, 4));
+    eg.setAttribute("buildB", new THREE.InstancedBufferAttribute(segB, 3));
+    withBuild(this.edgeMaterial, this.buildUniforms, this.buildWindow, "line");
     this.edgeLines = new LineSegments2(eg, this.edgeMaterial);
     this.edgeLines.name = "edges";
     this.edgeLines.renderOrder = 1;

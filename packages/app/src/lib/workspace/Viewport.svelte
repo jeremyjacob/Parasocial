@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { dev } from '$app/environment';
-	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed } from '@lucide/svelte';
+	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed, Play, Pause, Repeat } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
@@ -526,6 +526,47 @@
 		ws.untracked(() => ws.rememberSection());
 	});
 
+	// ---- build animation (A) ----
+	$effect(() => viewer?.setBuild(ws.build ? ws.build.t : null));
+	const buildPlaying = $derived(!!ws.build?.playing);
+	$effect(() => {
+		if (!viewer || !buildPlaying) return;
+		// a few seconds, longer for parts with many faces
+		const ms = Math.min(10000, Math.max(3500, 2500 + viewer.faceCount() * 10));
+		let raf = 0,
+			hold = 0,
+			last = performance.now();
+		const step = (now: number) => {
+			const b = ws.build;
+			if (!b?.playing) return;
+			const t = (b.t >= 1 ? 0 : b.t) + (now - last) / ms;
+			last = now;
+			if (t < 1) return void ((ws.build = { ...b, t }), (raf = requestAnimationFrame(step)));
+			if (!b.loop) return void (ws.build = { ...b, t: 1, playing: false });
+			// looping: hold the finished model a moment, then start over
+			ws.build = { ...b, t: 1 };
+			hold = window.setTimeout(() => {
+				if (!ws.build?.playing) return;
+				ws.build = { ...ws.build, t: 0 };
+				last = performance.now();
+				raf = requestAnimationFrame(step);
+			}, 900);
+		};
+		raf = requestAnimationFrame(step);
+		return () => (cancelAnimationFrame(raf), clearTimeout(hold));
+	});
+	/** Grabbing the slider pauses; it also reports values set while playing, which are ignored. */
+	function pauseBuild() {
+		if (ws.build?.playing) ws.build = { ...ws.build, playing: false };
+	}
+	function scrubBuild(v: number) {
+		if (ws.build && !ws.build.playing) ws.build = { ...ws.build, t: v };
+	}
+	function playBuild() {
+		const b = ws.build;
+		if (b) ws.build = { ...b, t: b.t >= 1 ? 0 : b.t, playing: !b.playing };
+	}
+
 	/**
 	 * Section arrow: drag it along its axis to move the plane, click it to flip. `t0` is where it was
 	 * grabbed along the axis, relative to the plane.
@@ -758,7 +799,7 @@
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[120px] right-[33px] z-10">
-			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} bind:overlapsOnTop={() => ws.asm.interferenceOnTop, (v) => ws.asm.setInterferenceOnTop(v)} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
+			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:build={() => !!ws.build, (v) => { if (v !== !!ws.build) ws.toggleBuild(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} bind:overlapsOnTop={() => ws.asm.interferenceOnTop, (v) => ws.asm.setInterferenceOnTop(v)} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
 
@@ -778,6 +819,18 @@
 			<span class="w-16 text-label text-fg-secondary tabular-nums">{num(ws.section.offset, 1)} mm</span>
 			<IconButton label="Flip" size="sm" onclick={() => (ws.section = { ...ws.section!, flip: !ws.section!.flip })}><FlipVertical2 /></IconButton>
 			<IconButton label="Close section" shortcut={['S']} size="sm" onclick={() => (ws.section = null)}><X /></IconButton>
+		</div>
+	{/if}
+
+	{#if ws.build}
+		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="build-bar" in:pop={{ origin: 'top center' }} out:popOut>
+			<span class="text-ui font-medium">Build</span>
+			<IconButton label={ws.build.playing ? 'Pause' : 'Play'} size="sm" onclick={playBuild}>{#if ws.build.playing}<Pause />{:else}<Play />{/if}</IconButton>
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<span class="contents" onpointerdowncapture={pauseBuild} onkeydowncapture={pauseBuild}><Slider value={Math.min(1, ws.build.t)} min={0} max={1} step={0.001} onValueChange={scrubBuild} class="w-48" aria-label="Build progress" /></span>
+			<span class="w-10 text-label text-fg-secondary tabular-nums">{Math.round(Math.min(1, ws.build.t) * 100)}%</span>
+			<IconButton label="Loop" size="sm" active={ws.build.loop} onclick={() => (ws.build = { ...ws.build!, loop: !ws.build!.loop })}><Repeat /></IconButton>
+			<IconButton label="Close build" shortcut={['A']} size="sm" onclick={() => (ws.build = null)}><X /></IconButton>
 		</div>
 	{/if}
 

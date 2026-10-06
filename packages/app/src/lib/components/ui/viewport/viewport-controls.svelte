@@ -7,6 +7,7 @@
 		Box,
 		Boxes,
 		Scissors,
+		Blocks,
 		Grid3x3,
 		Square,
 		SquareDashed,
@@ -22,6 +23,8 @@
 	type Props = {
 		display?: DisplayMode;
 		section?: boolean;
+		/** Build animation; the button shows only when bound. */
+		build?: boolean;
 		grid?: boolean;
 		origin?: boolean;
 		/** Assembly overlaps drawn through covering geometry (x-ray) or depth-tested; the menu item shows only when bound. */
@@ -35,6 +38,7 @@
 	let {
 		display = $bindable('shaded-edges'),
 		section = $bindable(false),
+		build = $bindable(),
 		grid = $bindable(true),
 		origin = $bindable(true),
 		overlapsOnTop = $bindable(),
@@ -113,6 +117,11 @@
 	<IconButton label="Section view" shortcut={['S']} tooltipSide={tipSide} active={section} onclick={() => (section = !section)} class="rounded-md">
 		<Scissors />
 	</IconButton>
+	{#if build !== undefined}
+		<IconButton label="Build animation" shortcut={['A']} tooltipSide={tipSide} active={build} onclick={() => (build = !build)} class="rounded-md">
+			<Blocks />
+		</IconButton>
+	{/if}
 	<IconButton
 		label={ortho ? 'Orthographic (switch to perspective)' : 'Perspective (switch to orthographic)'}
 		tooltipSide={tipSide}
