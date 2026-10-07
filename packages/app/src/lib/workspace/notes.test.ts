@@ -42,6 +42,26 @@ function setup() {
 }
 
 describe('studio notes', () => {
+	it('offers a stop control for a working built-in agent without a manual hand-off', async () => {
+		const { ws, nc, note } = setup();
+		const working = { ...note, status: 'AgentWorking', claimedBy: 'agent' } as Note;
+		ws.agents = [{ id: 'agent', clientName: 'Agent', builtin: true }] as typeof ws.agents;
+		const assign = vi.spyOn(nc, 'assignAgent').mockReturnValue({} as any);
+		const ui = render(Harness, { props: { component: NoteCard, props: { ws, nc, note: working, onfocus: vi.fn(), onversion: vi.fn() } } });
+		await fireEvent.click(ui.getByRole('button', { name: 'Stop agent' }));
+		expect(assign).toHaveBeenCalledWith(note.id, false);
+		await fireEvent.click(ui.getByRole('button', { name: 'Note actions' }));
+		expect(ui.getByRole('menuitem', { name: 'Take back from agent' })).toBeTruthy();
+	});
+
+	it('keeps stop controls out of external agent notes', () => {
+		const { ws, nc, note } = setup();
+		const working = { ...note, status: 'AgentWorking', claimedBy: 'agent' } as Note;
+		ws.agents = [{ id: 'agent', clientName: 'Claude Code', builtin: false }] as typeof ws.agents;
+		const ui = render(Harness, { props: { component: NoteCard, props: { ws, nc, note: working, onfocus: vi.fn(), onversion: vi.fn() } } });
+		expect(ui.queryByRole('button', { name: 'Stop agent' })).toBeNull();
+	});
+
 	it('composes and saves one studio target without the geometry engine', async () => {
 		const { ws, nc, note } = setup();
 		const mutate = vi.spyOn(ws, 'mutate').mockResolvedValue({ client: Promise.resolve({ type: 'success' }) } as any);

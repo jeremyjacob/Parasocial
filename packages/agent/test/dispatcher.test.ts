@@ -3,8 +3,8 @@ import { mutators } from "@parasocial/sync";
 import { runMutator } from "@parasocial/sync/server";
 import { createTestDb, createUser, newDoc, run, type TestDb } from "../../sync/test/helpers";
 import { createAgentDispatcher } from "../src/dispatcher";
-import { builtinSession, type RunOptions, type RunOutcome } from "../src/run";
-import { newNote, toolDeps } from "./helpers";
+import { builtinSession, runNote, type RunOptions, type RunOutcome } from "../src/run";
+import { newNote, scriptedModel, toolDeps } from "./helpers";
 
 let db: TestDb;
 beforeAll(async () => {
@@ -172,6 +172,39 @@ test("a note can be created already handed to the agent", async () => {
   const [n] = await db.sql`SELECT status, agent_assigned_by FROM notes WHERE id = ${noteID}`;
   expect(n).toMatchObject({ status: "Open", agent_assigned_by: ada });
   await run(db, mutators.note.remove({ noteID }), { userID: ada });
+});
+
+test("stopping an auto-picked-up run keeps it stopped on subsequent scans", async () => {
+  const ada = await createUser(db);
+  const documentID = await newDoc(db, ada);
+  const noteID = await newNote(db, ada, documentID);
+  await db.sql`INSERT INTO user_agent_settings (user_id, provider, model) VALUES (${ada}, 'anthropic', 'm')`;
+  const m = scriptedModel([{ tool: "set_note_status", input: { id: noteID, status: "Resolved" } }]);
+  const generate = m.model.doGenerate.bind(m.model);
+  (m.model as any).doGenerate = async (o: any) => {
+    await run(db, mutators.note.assignAgent({ noteID, assign: false }), { userID: ada });
+    return generate(o);
+  };
+  let runs = 0;
+  const d = createAgentDispatcher(toolDeps(db), {
+    run: (deps, o) => {
+      runs++;
+      return runNote(deps, { ...o, model: m.model });
+    },
+    sweepMs: 0, log: () => {},
+  });
+  try {
+    await d.ready;
+    const deadline = Date.now() + 5_000;
+    while (d.running().size && Date.now() < deadline) await Bun.sleep(10);
+    expect(d.running().size).toBe(0);
+    await d.scan(documentID);
+    expect(runs).toBe(1);
+    const [n] = await db.sql`SELECT status, claimed_by FROM notes WHERE id = ${noteID}`;
+    expect(n).toMatchObject({ status: "Open", claimed_by: null });
+  } finally {
+    await d.stop();
+  }
 });
 
 test("runs interrupted by a restart are given back and picked up again", async () => {

@@ -12,6 +12,7 @@ import type { Session, ToolDeps } from "@parasocial/mcp/tools";
 import { mcpToolSet } from "./tools";
 import { languageModel, ProviderSetupError } from "./providers";
 import { loadAgentCredentials } from "./settings";
+import { noteThread } from "./thread";
 
 export const BUILTIN_CLIENT_NAME = "Agent";
 export const MAX_STEPS = 80;
@@ -46,6 +47,7 @@ export type RunOptions = {
 
 const ADDENDUM = `Built-in agent
 You are the agent built into Parasocial, working one note that a person handed to you (it is already claimed for you). Other runs of you may be working other notes in this document at the same time: stick to your note, and if a write fails on a stale baseVersion, re-read and redo your edit on top of the newer version. Your tools act on this document only; their document argument is filled in for you. Nobody watches this run live and you can't wait for answers: never ask for permission. If you need a decision or information from a person, reply_to_note with status "Open" and a short, specific question, then stop. When the work is done and verified, resolve the note (set_note_status "Resolved", or reply_to_note if there's something worth saying) and stop.
+New human replies to your note are added to this conversation after a tool step. Incorporate them into the work before continuing.
 Keep note replies short: a sentence or two, three at most, in plain words. Say what changed or what you need, not how you did it; the linked version already shows the details. No headings, lists, or step-by-step recaps.`;
 
 /**
@@ -128,13 +130,22 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
   const abort = new AbortController();
   const onOuterAbort = () => abort.abort(opts.signal?.reason);
   opts.signal?.addEventListener("abort", onOuterAbort);
+  if (opts.signal?.aborted) onOuterAbort();
   let takenBack = false;
   // set_note_status / reply_to_note / release_note settle the note (and release the claim): the run ends there
   let settled = false;
   let replied = false;
   let poll: ReturnType<typeof setInterval> | undefined;
+  let off: (() => void) | undefined;
 
   const noteState = async () => (await db.sql`SELECT status, claimed_by, removed_at FROM notes WHERE id = ${noteID}`)[0] as { status: string; claimed_by: string | null; removed_at: unknown } | undefined;
+  const checkClaim = async () => {
+    const n = await noteState();
+    if (!n || n.removed_at || (n.claimed_by !== sessionID && n.status !== "Resolved" && !settled)) {
+      takenBack = true;
+      abort.abort(new Error("taken back"));
+    }
+  };
 
   try {
     const claim = await client.callTool({ name: "claim_note", arguments: { document: documentID, id: noteID } });
@@ -143,21 +154,22 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
       return "claimed";
     }
 
-    poll = setInterval(async () => {
-      const n = await noteState().catch(() => undefined);
-      if (!n || n.removed_at || (n.claimed_by !== sessionID && n.status !== "Resolved" && !settled)) {
-        takenBack = true;
-        abort.abort(new Error("taken back"));
-      }
-    }, opts.claimPollMs ?? CLAIM_POLL_MS);
+    const check = () => void checkClaim().catch(() => {});
+    off = deps.noteEvents.on((e) => {
+      if (e.documentID === documentID && e.noteID === noteID && e.kind === "assigned") check();
+    });
+    poll = setInterval(check, opts.claimPollMs ?? CLAIM_POLL_MS);
     (poll as any).unref?.();
 
-    const note = await client.callTool({ name: "get_note", arguments: { document: documentID, id: noteID } });
+    const note = await client.callTool({ name: "get_note", arguments: { document: documentID, id: noteID } }, undefined, { signal: abort.signal });
     const noteContent = note.content as { type: string; text?: string; data?: string; mimeType?: string }[];
     const noteText = noteContent.find((c) => c.type === "text")?.text ?? "";
     // images pasted into the thread go to the model as images
     const noteImages = noteContent.filter((c) => c.type === "image" && c.data).map((c) => ({ type: "file" as const, mediaType: c.mimeType ?? "image/png", data: c.data! }));
     const tools = await mcpToolSet(client, documentID);
+    // A failed get_note has plain error text; recover its human messages from the thread read.
+    const initial = note.isError ? null : JSON.parse(noteText) as { messages?: { id: string }[] };
+    const newReplies = noteThread(deps, documentID, noteID, (initial?.messages ?? []).map((m) => m.id));
 
     for (const name of ["set_note_status", "reply_to_note", "release_note"]) {
       const t = tools[name];
@@ -173,46 +185,52 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
       };
     }
 
+    // Check ownership before every tool, including tools generated just as a person stops us.
+    for (const tool of Object.values(tools)) {
+      if (!tool.execute) continue;
+      const execute = tool.execute;
+      tool.execute = async (input, options) => {
+        await checkClaim();
+        abort.signal.throwIfAborted();
+        return execute(input, options);
+      };
+    }
+
     const instructions = `${client.getInstructions() ?? ""}\n\n${ADDENDUM}`;
     const prompt = `You've been handed note ${noteID}. Here it is:\n\n${noteText}${noteImages.length ? `\n\nThe ${noteImages.length === 1 ? "image" : `${noteImages.length} images`} pasted into the thread follow, in order.` : ""}`;
     t({ event: "prompt", instructions, prompt, images: noteImages.length, tools: Object.keys(tools) });
-    let result;
-    try {
-      result = await generateText({
-        model,
-        instructions,
-        messages: [{ role: "user", content: noteImages.length ? [{ type: "text", text: prompt }, ...noteImages] : prompt }],
-        tools,
-        stopWhen: [isStepCount(opts.maxSteps ?? MAX_STEPS), () => settled],
-        abortSignal: abort.signal,
-        maxRetries: 2,
-        onStepEnd: (step) => {
-          // content: text, reasoning, tool calls and their results / errors, in order
-          t({ event: "step", n: step.stepNumber, finishReason: step.finishReason, usage: step.usage, content: step.content, settled });
-          db.sql`UPDATE agent_sessions SET last_seen_at = ${Date.now()} WHERE id = ${sessionID}`.catch(() => {});
-        },
-      });
-    } catch (e) {
-      t({ event: "error", error: e, takenBack, aborted: !!opts.signal?.aborted });
-      if (takenBack) {
-        await post("Stopped: the note was taken back.");
-        return "taken-back";
-      }
-      if (opts.signal?.aborted) {
-        await release();
-        await post("Stopped: the server is shutting down. The note is open again.");
-        return "open";
-      }
-      await release();
-      await post(`Stopped on an error from the model provider: ${errorText(e)}`, "message");
-      return "error";
-    }
+    const result = await generateText({
+      model,
+      instructions,
+      messages: [{ role: "user", content: noteImages.length ? [{ type: "text", text: prompt }, ...noteImages] : prompt }],
+      tools,
+      stopWhen: [isStepCount(opts.maxSteps ?? MAX_STEPS), () => settled],
+      abortSignal: abort.signal,
+      maxRetries: 2,
+      prepareStep: async ({ messages }) => {
+        await checkClaim();
+        abort.signal.throwIfAborted();
+        const replies = await newReplies();
+        if (replies.length) {
+          t({ event: "replies", messages: replies });
+          return { messages: [...messages, ...replies] };
+        }
+      },
+      onStepEnd: (step) => {
+        // content: text, reasoning, tool calls and their results / errors, in order
+        t({ event: "step", n: step.stepNumber, finishReason: step.finishReason, usage: step.usage, content: step.content, settled });
+        db.sql`UPDATE agent_sessions SET last_seen_at = ${Date.now()} WHERE id = ${sessionID}`.catch(() => {});
+      },
+    });
 
     const usage = { inputTokens: result.totalUsage.inputTokens, outputTokens: result.totalUsage.outputTokens, steps: result.steps.length };
     const n = await noteState();
     t({ event: "finished", usage, finishReason: result.finishReason, text: result.text, settled, replied, note: n });
+    if (takenBack || !n || n.removed_at || (!settled && n.claimed_by !== sessionID && n.status !== "Resolved")) {
+      await post("Stopped: the note was taken back.");
+      return "taken-back";
+    }
     if (n?.status === "Resolved") return "resolved";
-    if (takenBack || !n || n.removed_at) return "taken-back";
     if (!settled) {
       // stopped without settling: say why, and give the note back
       await release();
@@ -223,8 +241,23 @@ async function work(deps: ToolDeps, opts: RunOptions, t: Trace): Promise<RunOutc
       await post("Left the note open.", "activity", { usage });
     }
     return "open";
+  } catch (e) {
+    t({ event: "error", error: e, takenBack, aborted: !!opts.signal?.aborted });
+    if (takenBack) {
+      await post("Stopped: the note was taken back.");
+      return "taken-back";
+    }
+    if (opts.signal?.aborted) {
+      await release();
+      await post("Stopped: the server is shutting down. The note is open again.");
+      return "open";
+    }
+    await release();
+    await post(`Stopped on an error from the model provider: ${errorText(e)}`, "message");
+    return "error";
   } finally {
     clearInterval(poll);
+    off?.();
     opts.signal?.removeEventListener("abort", onOuterAbort);
     await client.close().catch(() => {});
     await server.close().catch(() => {});

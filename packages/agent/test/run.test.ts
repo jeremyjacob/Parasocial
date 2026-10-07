@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mutators } from "@parasocial/sync";
+import { mutators, sha256Hex } from "@parasocial/sync";
 import { createTestDb, createUser, newDoc, run, type TestDb } from "../../sync/test/helpers";
 import { runNote } from "../src/run";
 import { saveAgentSettings } from "../src/settings";
@@ -143,6 +143,90 @@ test("taking the note back stops a run in progress", async () => {
   expect(await outcome).toBe("taken-back");
   expect(await noteRow(noteID)).toMatchObject({ status: "Open", claimed_by: null });
   expect((await thread(noteID)).at(-1)).toMatchObject({ kind: "activity", text: "Stopped: the note was taken back.", builtin: true });
+});
+
+test("human follow-ups and images join the conversation after a tool and persist without duplicates", async () => {
+  const userID = await createUser(db);
+  const documentID = await newDoc(db, userID);
+  const noteID = await newNote(db, userID, documentID);
+  const otherNote = await newNote(db, userID, documentID, "Unrelated note");
+  const deps = toolDeps(db);
+  const hash = await sha256Hex("follow-up-image");
+  await deps.store.put(hash, new Uint8Array([1, 2, 3]), "image/png");
+  await db.sql`INSERT INTO blobs (hash, size, content_type) VALUES (${hash}, 3, 'image/png') ON CONFLICT DO NOTHING`;
+  const m = scriptedModel([
+    { tool: "list_scripts", input: {} },
+    { tool: "list_scripts", input: {} },
+    { tool: "set_note_status", input: { id: noteID, status: "Resolved" } },
+  ]);
+  const generate = m.model.doGenerate.bind(m.model);
+  (m.model as any).doGenerate = async (o: any) => {
+    if (!m.calls()) {
+      await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "Actually make it 5 mm", images: [hash] } as any), { userID });
+      await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID, text: "Keep the corners rounded" } as any), { userID });
+      await run(db, mutators.note.reply({ id: crypto.randomUUID(), noteID: otherNote, text: "Only for the other note" } as any), { userID });
+    }
+    return generate(o);
+  };
+
+  expect(await runNote(deps, { documentID, noteID, userID, model: m.model })).toBe("resolved");
+  expect(JSON.stringify(m.prompts[0])).not.toContain("Actually make it 5 mm");
+  for (const prompt of m.prompts.slice(1) as any[]) {
+    const replies = prompt.filter((p: any) => p.role === "user" && JSON.stringify(p.content).includes("New reply on note"));
+    expect(replies).toHaveLength(2);
+    expect(JSON.stringify(replies)).toContain("Actually make it 5 mm");
+    expect(JSON.stringify(replies)).toContain("Keep the corners rounded");
+    expect(replies[0].content.find((c: any) => c.type === "file").mediaType).toBe("image/png");
+    expect(JSON.stringify(prompt)).not.toContain("Only for the other note");
+    expect(prompt.findIndex((p: any) => p.role === "tool")).toBeLessThan(prompt.indexOf(replies[0]));
+  }
+});
+
+test("taking an auto-picked-up note back blocks the next tool and leaves it idle", async () => {
+  const userID = await createUser(db);
+  const documentID = await newDoc(db, userID);
+  const noteID = await newNote(db, userID, documentID);
+  const m = scriptedModel([{ tool: "set_note_status", input: { id: noteID, status: "Resolved" } }]);
+  const generate = m.model.doGenerate.bind(m.model);
+  (m.model as any).doGenerate = async (o: any) => {
+    await run(db, mutators.note.assignAgent({ noteID, assign: false }), { userID });
+    return generate(o);
+  };
+
+  expect(await runNote(toolDeps(db), { documentID, noteID, userID, model: m.model, claimPollMs: 60_000 })).toBe("taken-back");
+  expect(await noteRow(noteID)).toMatchObject({ status: "Open", claimed_by: null });
+  expect((await thread(noteID)).at(-1)?.text).toBe("Stopped: the note was taken back.");
+  const [session] = await db.sql`SELECT status FROM agent_sessions WHERE user_id = ${userID}`;
+  expect(session?.status).toBe("idle");
+});
+
+test("a stop interrupts the initial note load without waiting for the claim poll", async () => {
+  const userID = await createUser(db);
+  const documentID = await newDoc(db, userID);
+  const noteID = await newNote(db, userID, documentID);
+  const deps = toolDeps(db);
+  const loading = Promise.withResolvers<void>();
+  const unblock = Promise.withResolvers<void>();
+  deps.pool.run = async () => {
+    loading.resolve();
+    await unblock.promise;
+    throw new Error("test note load interrupted");
+  };
+  const m = scriptedModel([{ text: "never reached" }]);
+  const outcome = runNote(deps, { documentID, noteID, userID, model: m.model, claimPollMs: 60_000 });
+  try {
+    await loading.promise;
+    // Allow the dedicated LISTEN connection to subscribe before triggering the mutation.
+    await Bun.sleep(50);
+    await run(db, mutators.note.assignAgent({ noteID, assign: false }), { userID });
+    expect(await Promise.race([outcome, Bun.sleep(1_000).then(() => "timed-out")])).toBe("taken-back");
+    expect(m.calls()).toBe(0);
+    expect(await noteRow(noteID)).toMatchObject({ status: "Open", claimed_by: null });
+    expect((await thread(noteID)).at(-1)?.text).toBe("Stopped: the note was taken back.");
+  } finally {
+    unblock.resolve();
+    await outcome;
+  }
 });
 
 test("with AGENT_TRACE_DIR set, the run and its tool calls are traced in full", async () => {

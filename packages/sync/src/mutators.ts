@@ -76,8 +76,8 @@ async function pg(tx: Tx, text: string, params: unknown[] = []): Promise<Record<
 /** Postgres channel for note activity agents may need to act on (see NoteEvent). */
 export const NOTE_EVENTS_CHANNEL = "parasocial_note_events";
 /**
- * Payload on NOTE_EVENTS_CHANNEL: a note was created, a human replied on one, a note was handed to
- * the built-in agent, or a document's auto hand-off was switched on (no note).
+ * Payload on NOTE_EVENTS_CHANNEL: a note was created, a human replied on one, a note was handed
+ * to or taken back from the built-in agent, or a document's auto hand-off was switched on (no note).
  */
 export type NoteEvent = { documentID: string; noteID: string | null; kind: "created" | "reply" | "assigned" | "auto-handoff" };
 
@@ -1342,6 +1342,7 @@ export const mutators = defineMutators({
         updatedAt: Date.now(),
       });
       await setAgentStatus(tx, note.claimedBy, "idle", null);
+      if (!c.agentSessionID) await notifyNote(tx, { documentID: note.documentID, noteID: note.id, kind: "assigned" });
     }),
 
     /**
@@ -1370,6 +1371,7 @@ export const mutators = defineMutators({
       const release = holder?.builtin ? { claimedBy: null, status: note.status === "AgentWorking" ? ("Open" as const) : note.status } : {};
       await tx.mutate.notes.update({ id: note.id, agentAssignedBy: null, agentAssignedAt: null, ...release, updatedAt: now });
       if (holder?.builtin) await setAgentStatus(tx, holder.id, "idle", null);
+      await notifyNote(tx, { documentID: note.documentID, noteID: note.id, kind: "assigned" });
     }),
 
     /** set_note_status. AgentWorking is only entered through claim; any other status releases the claim. */

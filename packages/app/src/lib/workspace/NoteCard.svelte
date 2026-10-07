@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink, Bot, Hand, ImagePlus } from '@lucide/svelte';
+	import { Crosshair, MoreHorizontal, ArrowUp, Check, Trash2, Undo2, Unlink, Bot, Hand, ImagePlus, Square } from '@lucide/svelte';
 	import { NoteMessage, NoteImages, NoteStatusChip, type NoteMessageData, type NoteSegment, type NoteStatus } from '$lib/components/ui/notes';
 	import { IconButton, Button } from '$lib/components/ui/button';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
@@ -86,7 +86,7 @@
 	const agentEntry = $derived<MenuEntry[]>(
 		note.removedAt || resolved
 			? []
-			: note.agentAssignedBy
+			: note.agentAssignedBy || claimant?.builtin
 				? [{ label: 'Take back from agent', icon: Hand, onSelect: () => nc.assignAgent(note.id, false) }]
 				: [{ label: 'Hand to agent', icon: Bot, disabled: !!note.claimedBy, onSelect: handToAgent }]
 	);
@@ -145,6 +145,9 @@
 		{#if withAgent && status !== 'working'}<span class="flex shrink-0 items-center text-fg-tertiary" title="With the agent: it picks this up, and again after your replies"><Bot size={14} /></span>{/if}
 		<!-- "Open" is the default: only call out the states worth noticing -->
 		{#if status !== 'open' && !(resolved && !note.removedAt)}<NoteStatusChip {status} label={claimant ? `${claimant.clientName} working` : undefined} class="shrink-0" />{/if}
+		{#if claimant?.builtin && !note.removedAt}
+			<IconButton label="Stop agent" size="sm" onclick={() => nc.assignAgent(note.id, false)}><Square /></IconButton>
+		{/if}
 		{#if !note.removedAt}
 			{#if resolved}
 				<button

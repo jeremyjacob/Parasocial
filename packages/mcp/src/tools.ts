@@ -405,7 +405,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
   async function noteData(documentID: string, ids: string[]): Promise<Map<string, NoteData>> {
     if (!ids.length) return new Map();
     const [messages, strokes, numbers] = await Promise.all([
-      db.sql`SELECT m.note_id, m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ANY(${ids}) ORDER BY m.created_at`,
+      db.sql`SELECT m.id, m.note_id, m.kind, m.text, m.data, m.created_at, m.version_id, u.name AS user_name, a.client_name, a.label FROM note_messages m LEFT JOIN users u ON u.id = m.author_user_id LEFT JOIN agent_sessions a ON a.id = m.author_agent_id WHERE m.note_id = ANY(${ids}) ORDER BY m.created_at, m.id`,
       db.sql`SELECT note_id, part, points, color FROM markup_strokes WHERE note_id = ANY(${ids})`,
       db.sql`SELECT id FROM notes WHERE document_id = ${documentID} ORDER BY created_at`,
     ]);
@@ -432,7 +432,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       snapshot: full && n.snapshot_hash ? signBlobURL(deps.config, { hash: n.snapshot_hash, documentID, basePath: "/api/blobs" }) : undefined,
       messages: messages
         .filter((m: any) => m.kind !== "activity")
-        .map((m: any) => lean({ kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, images: messageImages(m).length ? messageImages(m).map((hash) => signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs" })) : undefined, at: when(m.created_at), version: m.version_id ?? undefined })),
+        .map((m: any) => lean({ id: m.id, kind: m.kind, from: m.client_name ? `${m.client_name}${m.label ? ` (${m.label})` : ""}` : (m.user_name ?? "someone"), text: m.text, images: messageImages(m).length ? messageImages(m).map((hash) => signBlobURL(deps.config, { hash, documentID, basePath: "/api/blobs" })) : undefined, at: when(m.created_at), version: m.version_id ?? undefined })),
       activity: activity.length > 5 ? [`(${activity.length - 5} earlier)`, ...activity.slice(-5)] : activity,
     });
   }
