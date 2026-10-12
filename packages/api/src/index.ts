@@ -5,7 +5,8 @@
  * Units: numbers are mm and degrees. World Z is up.
  * Parts: a studio (studios/*.ts) exports parts: `export default part("Bracket", () => solid)` (id = file
  * name) or `export const lid = part("Lid", ...)` (id `case:lid`); `export const name = "Case"` names the
- * studio, `export const description = "..."` says more. Names are short labels (1–4 words, sentence
+ * studio, `export const description = "..."` says more, `export const folder = "Drivetrain/Gears"` files it in the
+ * Parts tree (organize studios by subsystem with it; there are no subdirectories). Names are short labels (1–4 words, sentence
  * case, no dashes, part numbers or materials); details go in description, partNumber, material. Params: `const w = param("width", 40, { label: "Width", min: 10 })` (value in code = default).
  *
  * Planes: sketch point [u, v] → world; positive extrude/offset goes along the normal.

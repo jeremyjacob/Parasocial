@@ -21,9 +21,10 @@ export type DocumentState = {
 /**
  * A part a studio exports: `export default part(...)` is `<stem>`, `export const lid = part(...)` is `<stem>:lid`.
  * `studio` is the studio's display name: its `export const name = "..."`, else the file stem;
- * `studioDescription` is its `export const description = "..."`.
+ * `studioDescription` is its `export const description = "..."`; `studioFolder` is its
+ * `export const folder = "A/B"` (where the Parts panel files it), normalized to trimmed `/`-joined segments.
  */
-export type PartInfo = { id: string; file: string; export: string; name: string; studio: string; studioDescription?: string };
+export type PartInfo = { id: string; file: string; export: string; name: string; studio: string; studioDescription?: string; studioFolder?: string };
 
 /**
  * An assembly a studio exports (`export default assembly(...)`). It holds its own copies of the
@@ -39,6 +40,7 @@ export type AssemblyInfo = {
   name: string;
   studio: string;
   studioDescription?: string;
+  studioFolder?: string;
   /** From `assembly(name, body, { description, partNumber })`. */
   description?: string;
   partNumber?: string;
@@ -301,7 +303,8 @@ export class Engine {
       }
       const studio = studioName(exports) ?? stem;
       const about = studioDescription(exports);
-      const studioDesc = about ? { studioDescription: about } : {};
+      const folder = studioFolder(exports);
+      const studioDesc = { ...(about ? { studioDescription: about } : {}), ...(folder ? { studioFolder: folder } : {}) };
       const list: PartInfo[] = [];
       const seen = new Set<PartDef>();
       // the default export first, then named exports in source order
@@ -1164,6 +1167,13 @@ function exportLine(src: string, key: string): number {
 function studioDescription(exports: Record<string, any>): string | undefined {
   const d = exportEntries(exports).find(([k]) => k === "description")?.[1];
   return typeof d === "string" && d.trim() ? d.trim() : undefined;
+}
+
+function studioFolder(exports: Record<string, any>): string | undefined {
+  const f = exportEntries(exports).find(([k]) => k === "folder")?.[1];
+  if (typeof f !== "string") return undefined;
+  const path = f.split("/").map((s) => s.trim()).filter(Boolean).join("/");
+  return path || undefined;
 }
 
 const isPartDef = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;

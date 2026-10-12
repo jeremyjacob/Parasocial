@@ -7,7 +7,9 @@
  * exports like `export const lid = part("Lid", ...)` in studios/case.ts are part id `case:lid`. Related
  * parts can share a studio and its helpers. `export const name = "Case"` gives the studio a display
  * name and `export const description = "Two-part shell with snap hinge"` a line saying more (the
- * Parts tree shows it on hover). Parts are modeled in place (where they sit in the product). A studio
+ * Parts tree shows it on hover). `export const folder = "Drivetrain/Gears"` files the studio in a folder
+ * of the Parts tree (`/` nests); studios/ itself stays flat, so this is how studios are organized and
+ * moving one is a one-line edit. Parts are modeled in place (where they sit in the product). A studio
  * exports parts or assemblies, never both.
  *
  * Names (studio, part, assembly) are labels in the Parts tree: 1–4 words, sentence case, naming what

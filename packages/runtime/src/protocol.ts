@@ -120,7 +120,7 @@ export function validateEngineMessage(m: unknown): EngineMessage | null {
 /** A part list (setDocument / setScript / parts / snapshotParts). */
 export function validatePartInfos(v: unknown): PartInfo[] | null {
   if (!Array.isArray(v)) return null;
-  for (const p of v) if (!isObj(p) || !isStr(p.id) || !isStr(p.file) || !isStr(p.export) || !isStr(p.name) || !isStr(p.studio) || !optStr(p.studioDescription)) return null;
+  for (const p of v) if (!isObj(p) || !isStr(p.id) || !isStr(p.file) || !isStr(p.export) || !isStr(p.name) || !isStr(p.studio) || !optStr(p.studioDescription) || !optStr(p.studioFolder)) return null;
   return v as PartInfo[];
 }
 
@@ -134,7 +134,7 @@ const isConnectorAt = (x: unknown) => isObj(x) && isStr(x.connector) && (x.index
 export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
   if (!Array.isArray(v)) return null;
   for (const a of v) {
-    if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !optStr(a.studioDescription) || !optStr(a.description) || !optStr(a.partNumber) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
+    if (!isObj(a) || !isStr(a.id) || !isStr(a.file) || !isStr(a.name) || !isStr(a.studio) || !optStr(a.studioDescription) || !optStr(a.studioFolder) || !optStr(a.description) || !optStr(a.partNumber) || !Array.isArray(a.fixed) || !a.fixed.every(isStr) || !Array.isArray(a.joints) || !Array.isArray(a.problems)) return null;
     if (!Array.isArray(a.instances) || !a.instances.every((i: unknown) => isObj(i) && isStr(i.id) && isStr(i.part) && isStr(i.scope) && (i.name === undefined || isStr(i.name)) && (i.place === undefined || isPose(i.place)))) return null;
     if (!Array.isArray(a.subs) || !a.subs.every((s: unknown) => isObj(s) && isStr(s.id) && isStr(s.parent) && isStr(s.assembly) && (s.name === undefined || isStr(s.name)) && (s.place === undefined || isPose(s.place)))) return null;
     for (const p of a.problems) if (!isObj(p) || !isStr(p.message)) return null;

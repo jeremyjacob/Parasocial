@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle, Focus } from '@lucide/svelte';
+	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle, Focus, Folder } from '@lucide/svelte';
 	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { ContextMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { toast } from '$lib/components/ui/toast';
@@ -20,6 +20,8 @@
 	let filter = $state('');
 	/** Expanded studios (by path); studios start collapsed. */
 	let expanded = $state<Set<string>>(new Set());
+	/** Collapsed folders (by path); folders start open. */
+	let collapsed = $state<Set<string>>(new Set());
 	const dark = $derived(theme.resolved === 'dark');
 
 	type Status = 'ok' | 'warning' | 'error' | 'pending';
@@ -48,7 +50,7 @@
 		const q = filter.trim().toLowerCase();
 		// assemblies first, otherwise in document order
 		const studios = [...ws.partTree].sort((a, b) => Number(b.assemblies.length > 0) - Number(a.assemblies.length > 0));
-		return studios.flatMap(({ file, name, description, assemblies, ids }) => {
+		return studios.flatMap(({ file, name, description, folder, assemblies, ids }) => {
 			const asmProblems = ws.asm.problems.filter((p) => assemblies.some((a) => a.id === p.assembly));
 			const asmStatus: Status = asmProblems.some((p) => p.severity !== 'warning') ? 'error' : asmProblems.length ? 'warning' : 'ok';
 			const parts = new Map(ids.map((id) => {
@@ -70,14 +72,45 @@
 			const instanceIDs = new Set(assemblies.flatMap((a) => a.instances.map((i) => i.id)));
 			const standalone = [...parts.values()].filter((r) => !instanceIDs.has(r.id));
 			const rows: Row[] = [...standalone, ...(assemblies.length === 1 ? assemblyRows[0].children : assemblyRows)];
-			// a studio's name matching shows all its parts; otherwise only the matching parts
-			const all = !q || name.toLowerCase().includes(q);
+			// a studio's name (or its folder's) matching shows all its parts; otherwise only the matching parts
+			const all = !q || name.toLowerCase().includes(q) || !!folder?.toLowerCase().includes(q);
 			const shown = all ? rows : matching(rows, q);
 			if (!all && !shown.length) return [];
 			const status = rows.reduce<Status>((s, r) => (RANK[r.status] > RANK[s] ? r.status : s), asmStatus);
-			return [{ file, name, description, asm: assemblies.length > 0, rows: shown, ids, status, busy: rows.some((r) => r.busy) }];
+			return [{ file, name, description, folder, asm: assemblies.length > 0, rows: shown, ids, status, busy: rows.some((r) => r.busy) }];
 		});
 	});
+	type Studio = (typeof tree)[number];
+	type FolderNode = { path: string; name: string; folders: FolderNode[]; studios: Studio[]; status: Status; busy: boolean };
+	/** Studios filed under their folder exports (`folder = "A/B"` nests); folders by name, before the loose studios. */
+	const folders = $derived.by(() => {
+		const root: FolderNode = { path: '', name: '', folders: [], studios: [], status: 'ok', busy: false };
+		for (const g of tree) {
+			let f = root;
+			for (const name of g.folder?.split('/') ?? []) {
+				const path = f.path ? `${f.path}/${name}` : name;
+				let next = f.folders.find((c) => c.path === path);
+				if (!next) f.folders.push((next = { path, name, folders: [], studios: [], status: 'ok', busy: false }));
+				f = next;
+			}
+			f.studios.push(g);
+		}
+		const finish = (f: FolderNode) => {
+			f.folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+			f.folders.forEach(finish);
+			const all = [...f.folders, ...f.studios];
+			f.status = all.reduce<Status>((s, x) => (RANK[x.status] > RANK[s] ? x.status : s), 'ok');
+			f.busy = all.some((x) => x.busy);
+		};
+		finish(root);
+		return root;
+	});
+	const ancestors = (folder?: string) => (folder ?? '').split('/').filter(Boolean).map((_, i, segs) => segs.slice(0, i + 1).join('/'));
+	function toggleFolder(path: string) {
+		const next = new Set(collapsed);
+		if (!next.delete(path)) next.add(path);
+		collapsed = next;
+	}
 	const selectedPart = $derived(new Set(ws.selection.map((s) => s.part)));
 	/** The studio in the viewport; the others are greyed. */
 	const active = $derived(ws.studio?.file ?? null);
@@ -119,6 +152,7 @@
 			const g = tree.find((g) => leaves(g.rows).some((r) => r.id === part));
 			if (!g) return;
 			const next = new Set(expanded).add(g.file);
+			if (ancestors(g.folder).some((p) => collapsed.has(p))) collapsed = new Set([...collapsed].filter((p) => !ancestors(g.folder).includes(p)));
 			const reveal = (rows: Row[]) => {
 				for (const r of rows) if (r.kind !== 'part' && r.ids.includes(part)) { next.add(r.id); reveal(r.children); }
 			};
@@ -224,45 +258,7 @@
 		{#if !ws.readOnly}<IconButton label="Add studio" size="sm" class="ml-auto" onclick={onAddStudio}><Plus /></IconButton>{/if}
 	</div>
 	<ul class="scrollbar-slim flex min-h-0 flex-col gap-px overflow-auto px-2 pb-2" role="tree" aria-label="Parts by studio" bind:this={list}>
-		{#each tree as g (g.file)}
-			{@const open = expanded.has(g.file) || !!filter.trim()}
-			<li in:rise={{ y: -4 }} role="treeitem" aria-expanded={open} aria-selected={false} aria-current={active === g.file ? 'true' : undefined} data-studio={g.file}>
-				<ContextMenu items={studioMenu(g.file, g.name, g.ids)} onOpen={() => showStudio(g.file)}>
-					<!-- Figma-style: the chevron hangs in the row's left padding, the type icon takes the leading cell -->
-					<ListRow
-						name={g.name}
-						description={g.description}
-						class="pl-6 text-fg-secondary"
-						status={g.status}
-						statusLabel={LABEL[g.status]}
-						busy={g.busy && !open}
-						strong={active === g.file}
-						dimmed={active !== g.file}
-						hideable={false}
-						onclick={() => selectStudio(g.file)}
-					>
-						{#snippet leading()}
-							<button
-								type="button"
-								class="focus-ring absolute top-1/2 left-0.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg"
-								aria-label="{open ? 'Collapse' : 'Expand'} {g.name}"
-								onpointerdown={(e) => e.stopPropagation()}
-								onclick={(e) => (e.stopPropagation(), toggleExpanded(g.file))}
-							>
-								<ChevronRight size={14} class={cn(open && 'rotate-90')} />
-							</button>
-							{@const Icon = g.asm ? Boxes : Box}
-							<span class="inline-flex text-fg-tertiary" title={g.asm ? 'Assembly' : 'Part studio'}><Icon size={14} /></span>
-						{/snippet}
-					</ListRow>
-				</ContextMenu>
-				{#if open}
-					<ul class="flex flex-col gap-px pt-px" role="group">
-						{@render renderRows(g.rows, g.file, g.ids.length, 1)}
-					</ul>
-				{/if}
-			</li>
-		{/each}
+		{@render renderFolder(folders)}
 	</ul>
 </div>
 
@@ -288,6 +284,72 @@
 				</ContextMenu>
 			</div>
 			{#if group && open}<ul class="flex flex-col gap-px pt-px" role="group">{@render renderRows(r.children, file, siblings, depth + 1)}</ul>{/if}
+		</li>
+	{/each}
+{/snippet}
+
+{#snippet renderFolder(f: FolderNode)}
+	{#each f.folders as c (c.path)}
+		{@const open = !collapsed.has(c.path) || !!filter.trim()}
+		<li role="treeitem" aria-expanded={open} aria-selected={false} data-folder={c.path}>
+			<ListRow name={c.name} class="pl-6 text-fg-secondary" status={c.status} statusLabel={LABEL[c.status]} busy={c.busy && !open} hideable={false} onclick={() => toggleFolder(c.path)}>
+				{#snippet leading()}
+					<button
+						type="button"
+						class="focus-ring absolute top-1/2 left-0.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg"
+						aria-label="{open ? 'Collapse' : 'Expand'} {c.name}"
+						onpointerdown={(e) => e.stopPropagation()}
+						onclick={(e) => (e.stopPropagation(), toggleFolder(c.path))}
+					>
+						<ChevronRight size={14} class={cn(open && 'rotate-90')} />
+					</button>
+					<span class="inline-flex text-fg-tertiary" title="Folder"><Folder size={14} /></span>
+				{/snippet}
+			</ListRow>
+			{#if open}
+				<ul class="flex flex-col gap-px pt-px pl-4" role="group">
+					{@render renderFolder(c)}
+				</ul>
+			{/if}
+		</li>
+	{/each}
+	{#each f.studios as g (g.file)}
+		{@const open = expanded.has(g.file) || !!filter.trim()}
+		<li in:rise={{ y: -4 }} role="treeitem" aria-expanded={open} aria-selected={false} aria-current={active === g.file ? 'true' : undefined} data-studio={g.file}>
+			<ContextMenu items={studioMenu(g.file, g.name, g.ids)} onOpen={() => showStudio(g.file)}>
+				<!-- Figma-style: the chevron hangs in the row's left padding, the type icon takes the leading cell -->
+				<ListRow
+					name={g.name}
+					description={g.description}
+					class="pl-6 text-fg-secondary"
+					status={g.status}
+					statusLabel={LABEL[g.status]}
+					busy={g.busy && !open}
+					strong={active === g.file}
+					dimmed={active !== g.file}
+					hideable={false}
+					onclick={() => selectStudio(g.file)}
+				>
+					{#snippet leading()}
+						<button
+							type="button"
+							class="focus-ring absolute top-1/2 left-0.5 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-fg-tertiary hover:text-fg"
+							aria-label="{open ? 'Collapse' : 'Expand'} {g.name}"
+							onpointerdown={(e) => e.stopPropagation()}
+							onclick={(e) => (e.stopPropagation(), toggleExpanded(g.file))}
+						>
+							<ChevronRight size={14} class={cn(open && 'rotate-90')} />
+						</button>
+						{@const Icon = g.asm ? Boxes : Box}
+						<span class="inline-flex text-fg-tertiary" title={g.asm ? 'Assembly' : 'Part studio'}><Icon size={14} /></span>
+					{/snippet}
+				</ListRow>
+			</ContextMenu>
+			{#if open}
+				<ul class="flex flex-col gap-px pt-px" role="group">
+					{@render renderRows(g.rows, g.file, g.ids.length, 1)}
+				</ul>
+			{/if}
 		</li>
 	{/each}
 {/snippet}

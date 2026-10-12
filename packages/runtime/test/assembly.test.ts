@@ -466,6 +466,15 @@ test("studio and assembly descriptions reach the part and assembly lists and the
   expect(bomToMarkdown(bom)).toStartWith("# Bill of materials: Box (BX-1)\n\nLid swings open 120°\n");
 });
 
+test("a studio's folder export is normalized onto its parts and assemblies", () => {
+  const e = new Engine();
+  const box = BOX.replace("export const name", 'export const folder = " Housing / Lids/ ";\nexport const name');
+  const mech = ASM.replace("export default assembly", 'export const folder = "Housing";\nexport default assembly');
+  e.setDocument({ scripts: { "studios/box.ts": box, "studios/mech.ts": mech } });
+  expect(e.partInfos().map((p) => p.studioFolder)).toEqual(["Housing/Lids", "Housing/Lids"]);
+  expect(e.assemblies()[0].studioFolder).toBe("Housing");
+});
+
 test("assembly options are checked", () => {
   const e = new Engine();
   e.setDocument({ scripts: { "studios/box.ts": BOX, "studios/mech.ts": ASM.replace(`name: "hinge" });\n});`, `name: "hinge" });\n}, { material: "steel" } as any);`) } });

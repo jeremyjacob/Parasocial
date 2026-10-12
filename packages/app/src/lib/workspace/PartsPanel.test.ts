@@ -204,3 +204,24 @@ describe('subassembly tree', () => {
 		expect(queryByText('Module left2')).toBeNull();
 	});
 });
+
+it('files studios under their folders, nested and collapsible, with loose studios after', async () => {
+	localStorage.clear();
+	const ws = new WorkspaceState({ documentID: 'doc', userID: 'user', zero: {} as ParasocialZero });
+	vi.spyOn(ws, 'partTree', 'get').mockReturnValue([
+		{ file: 'studios/a.ts', name: 'Loose', parts: [], assemblies: [], instances: [], ids: ['a'] },
+		{ file: 'studios/b.ts', name: 'Spur', folder: 'Drivetrain/Gears', parts: [], assemblies: [], instances: [], ids: ['b'] },
+		{ file: 'studios/c.ts', name: 'Shaft', folder: 'Drivetrain', parts: [], assemblies: [], instances: [], ids: ['c'] }
+	]);
+	const ui = render(Harness, { props: { component: PartsPanel, props: { ws, onExport: vi.fn(), onAddStudio: vi.fn(), onAddNote: vi.fn(), onAddStudioNote: vi.fn() } } });
+	const order = () => [...ui.container.querySelectorAll('[data-folder], [data-studio]')].map((e) => e.getAttribute('data-folder') ?? e.getAttribute('data-studio'));
+	expect(order()).toEqual(['Drivetrain', 'Drivetrain/Gears', 'studios/b.ts', 'studios/c.ts', 'studios/a.ts']);
+	const drivetrain = ui.container.querySelector('[data-folder="Drivetrain"]')!;
+	expect(drivetrain.querySelector('[data-studio="studios/b.ts"]')).not.toBeNull();
+	await fireEvent.click(ui.getByRole('button', { name: 'Collapse Drivetrain' }));
+	expect(order()).toEqual(['Drivetrain', 'studios/a.ts']);
+	// filtering by a folder name shows its studios
+	await fireEvent.click(ui.getByRole('button', { name: 'Expand Drivetrain' }));
+	await fireEvent.input(ui.getByLabelText('Filter studios and parts'), { target: { value: 'gears' } });
+	expect(order()).toEqual(['Drivetrain', 'Drivetrain/Gears', 'studios/b.ts']);
+});

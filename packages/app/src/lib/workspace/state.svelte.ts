@@ -173,11 +173,11 @@ export class WorkspaceState {
 	/**
 	 * Parts grouped under the studio that exports them (Parts tab tree), in path order; `name` is
 	 * the studio's display name, `description` its description export (else its one assembly's
-	 * description). A studio exports parts or assemblies, not both (the engine
+	 * description), `folder` its folder export. A studio exports parts or assemblies, not both (the engine
 	 * rejects a mix); an assembly studio comes with its instances. `ids` is what the viewport
 	 * shows while the studio is active: its parts, or its instances.
 	 */
-	get partTree(): { file: string; name: string; description?: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
+	get partTree(): { file: string; name: string; description?: string; folder?: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
 		return this.scripts
 			.map((s) => s.path)
 			.filter((p) => /^studios\/[^/]+\.ts$/.test(p))
@@ -189,10 +189,11 @@ export class WorkspaceState {
 				const assemblies = this.asm.assemblies.filter((a) => a.file === file);
 				const name = known[0]?.studio ?? assemblies[0]?.studio ?? stem;
 				const description = known[0]?.studioDescription ?? assemblies[0]?.studioDescription ?? (assemblies.length === 1 ? assemblies[0].description : undefined);
+				const folder = known[0]?.studioFolder ?? assemblies[0]?.studioFolder;
 				const parts = known.length || assemblies.length ? known : [{ id: stem, file, export: 'default', name: stem, studio: stem }];
 				const instances = assemblies.flatMap((a) => a.instances);
 				const ids = [...parts.map((p) => p.id), ...instances.map((i) => i.id)];
-				return { file, name, description, assemblies, parts, instances, ids };
+				return { file, name, description, folder, assemblies, parts, instances, ids };
 			});
 	}
 

@@ -222,10 +222,11 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return infos as PartInfo[];
   }
 
-  /** Each studio's display name and description export, in path order. */
+  /** Each studio's display name, description and folder exports, in path order. */
   function studiosOf(parts: readonly PartInfo[], assemblies: readonly AssemblyInfo[]) {
-    const byFile = new Map<string, { file: string; name: string; description?: string }>();
-    for (const x of [...parts, ...assemblies]) if (!byFile.has(x.file)) byFile.set(x.file, { file: x.file, name: x.studio, ...(x.studioDescription ? { description: x.studioDescription } : {}) });
+    const byFile = new Map<string, { file: string; name: string; description?: string; folder?: string }>();
+    for (const x of [...parts, ...assemblies])
+      if (!byFile.has(x.file)) byFile.set(x.file, { file: x.file, name: x.studio, ...(x.studioDescription ? { description: x.studioDescription } : {}), ...(x.studioFolder ? { folder: x.studioFolder } : {}) });
     return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
   }
 
