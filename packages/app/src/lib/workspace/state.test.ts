@@ -133,10 +133,24 @@ describe('isolate', () => {
 		expect(new Set(ws.isolated)).toEqual(new Set(['base', 'handle']));
 		expect(shown.get('lid')).toBe(false);
 		expect(shown.get('handle')).toBe(true);
-		expect(ws.undoStack).toHaveLength(1);
+		expect(ws.undoStack).toHaveLength(2);
 		ws.exitIsolate();
+		expect(ws.undoStack).toHaveLength(1);
 		expect(ws.hidden).toEqual(['knob']);
 		expect(Object.fromEntries(shown)).toEqual({ base: true, lid: true, handle: true, knob: false });
+	});
+
+	it('undoes and redoes hiding while isolated', async () => {
+		ws.isolate(['base', 'lid']);
+		ws.setHidden('lid', true);
+		expect(ws.isolated).toEqual(['base']);
+		expect(await ws.undo()).toBe('Hide lid');
+		expect(ws.isolated).toEqual(['base', 'lid']);
+		expect(shown.get('lid')).toBe(true);
+		expect(await ws.redo()).toBe('Hide lid');
+		expect(ws.isolated).toEqual(['base']);
+		expect(shown.get('lid')).toBe(false);
+		expect(ws.hidden).toEqual([]);
 	});
 
 	it('leaves isolation when switching studios', () => {

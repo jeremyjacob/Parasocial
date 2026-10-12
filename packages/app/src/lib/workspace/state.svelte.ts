@@ -21,6 +21,8 @@ type Visibility = { part: string; hidden: boolean };
 type Undo = { label: string } & (
 	| { kind: 'mutation'; undo: AnyMR[]; redo: AnyMR[] }
 	| { kind: 'visibility'; undo: Visibility[]; redo: Visibility[] }
+	/** Hiding/showing while isolated: the isolated parts before and after. Dropped on leaving isolation. */
+	| { kind: 'isolation'; undo: string[]; redo: string[] }
 );
 
 const DERIVED_CACHE = 'parasocial-derived-v1';
@@ -690,6 +692,11 @@ export class WorkspaceState {
 
 	/** Apply an entry and capture the inverse for the opposite stack. */
 	private async replay(entry: Undo): Promise<Undo> {
+		if (entry.kind === 'isolation') {
+			this.isolated = entry.undo;
+			this.refreshVisibility();
+			return { ...entry, undo: entry.redo, redo: entry.undo };
+		}
 		if (entry.kind === 'visibility') {
 			const inverse = entry.undo.map(({ part }) => ({ part, hidden: this.hidden.includes(part) }));
 			this.applyVisibility(entry.undo);
@@ -925,6 +932,9 @@ export class WorkspaceState {
 	exitIsolate() {
 		if (!this.isolated) return;
 		this.isolated = null;
+		// hides inside the isolation have nothing left to undo
+		this.undoStack = this.undoStack.filter((e) => e.kind !== 'isolation');
+		this.redoStack = this.redoStack.filter((e) => e.kind !== 'isolation');
 		this.refreshVisibility();
 	}
 
@@ -941,27 +951,30 @@ export class WorkspaceState {
 
 	/**
 	 * One visibility action, including multi-selection toggles and Show all. While isolated, hiding
-	 * and showing change what's isolated instead (not undoable, like isolating), so leaving still
-	 * restores the visibility from before.
+	 * and showing change what's isolated instead (undoable until leaving), so leaving still restores
+	 * the visibility from before.
 	 */
 	setVisibility(changes: Visibility[]) {
+		const desired = new Map(changes.map(({ part, hidden }) => [part, hidden]));
+		const redo = [...desired].filter(([part, hidden]) => this.isShown(part) === hidden).map(([part, hidden]) => ({ part, hidden }));
+		if (!redo.length) return;
+		const action = redo.every((v) => v.hidden) ? 'Hide' : redo.every((v) => !v.hidden) ? 'Show' : 'Toggle visibility of';
+		const target = redo.length === 1 ? (this.results[redo[0].part]?.name ?? redo[0].part) : `${redo.length} parts`;
+		const label = `${action} ${target}`;
 		if (this.isolated) {
-			const isolated = new Set(this.isolated);
-			for (const { part, hidden } of changes) {
+			const before = this.isolated;
+			const isolated = new Set(before);
+			for (const { part, hidden } of redo) {
 				if (hidden) isolated.delete(part);
 				else isolated.add(part);
 			}
 			this.isolated = [...isolated];
-			return this.refreshVisibility();
+			this.refreshVisibility();
+			return this.recordUndo({ kind: 'isolation', undo: before, redo: this.isolated, label });
 		}
-		const desired = new Map(changes.map(({ part, hidden }) => [part, hidden]));
-		const redo = [...desired].filter(([part, hidden]) => this.hidden.includes(part) !== hidden).map(([part, hidden]) => ({ part, hidden }));
-		if (!redo.length) return;
 		const undo = redo.map(({ part }) => ({ part, hidden: this.hidden.includes(part) }));
-		const action = redo.every((v) => v.hidden) ? 'Hide' : redo.every((v) => !v.hidden) ? 'Show' : 'Toggle visibility of';
-		const target = redo.length === 1 ? (this.results[redo[0].part]?.name ?? redo[0].part) : `${redo.length} parts`;
 		this.applyVisibility(redo);
-		this.recordUndo({ kind: 'visibility', undo, redo, label: `${action} ${target}` });
+		this.recordUndo({ kind: 'visibility', undo, redo, label });
 	}
 
 	private applyVisibility(changes: Visibility[]) {
