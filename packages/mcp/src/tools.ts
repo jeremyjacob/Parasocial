@@ -293,9 +293,15 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     return `${p.severity}${at ? ` ${at}` : ""} ${message}`;
   };
 
-  /** Per part: "ok", or its problem lines (and whether the workspace shows its last good geometry). */
-  const partStatus = (results: any[]) =>
-    Object.fromEntries(results.filter(Boolean).map((r: any) => [r.part, r.problems.length ? (r.partial && !r.empty ? [...r.problems.map(problemLine), "(showing last good geometry)"] : r.problems.map(problemLine)) : "ok"]));
+  /** Problem lines per part with problems (and whether the workspace shows its last good geometry), and how many parts are ok. */
+  const partStatus = (results: any[]) => {
+    const done = results.filter(Boolean);
+    const bad = done.filter((r: any) => r.problems.length);
+    return {
+      ok: done.length - bad.length,
+      parts: bad.length ? Object.fromEntries(bad.map((r: any) => [r.part, r.partial && !r.empty ? [...r.problems.map(problemLine), "(showing last good geometry)"] : r.problems.map(problemLine)])) : undefined,
+    };
+  };
 
   /** A regeneration result: part, name (when it differs), ok, problems (one line each), counts, bbox and volume; timings with `full`. */
   function summarize(r: any, full = false) {
@@ -1394,7 +1400,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "list_problems",
-    "Each part's status (\"ok\" or its error and warning lines), assemblies' problems, and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session. On a cold engine it answers after about 10 s with the parts done so far; call again for the rest.",
+    "Parts with errors or warnings (their lines; parts without are only counted as ok), assemblies' problems, and per problem file the version that last changed it (likely the one that introduced the problem). Check at the start of a session. On a cold engine it answers after about 10 s with the parts done so far; call again for the rest.",
     { document },
     async ({ document: dd }) => {
       const documentID = docID(dd);
@@ -1406,7 +1412,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       if (!done) {
         // assemblies wait behind the remaining parts; report what's done instead of blocking on them
         const pending = all.filter((_, i) => !partial[i]);
-        return text(lean({ parts: partStatus(results), stillRegenerating: cap(pending, 20), note: `The geometry engine was cold: ${pending.length} of ${all.length} parts are still regenerating, and assemblies weren't checked yet. Call list_problems again shortly.` }));
+        return text(lean({ ...partStatus(results), stillRegenerating: cap(pending, 20), note: `The geometry engine was cold: ${pending.length} of ${all.length} parts are still regenerating, and assemblies weren't checked yet. Call list_problems again shortly.` }));
       }
       const [asms] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
       const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
@@ -1427,7 +1433,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         if (!(key in introducedBy)) introducedBy[key] = introduced(p.source?.file, p.kind) ?? "unknown";
       }
       const assemblies = Object.fromEntries(asms.filter((a) => a.problems.length).map((a) => [a.id, a.problems.map(problemLine)]));
-      return text(lean({ parts: partStatus(results), assemblies: Object.keys(assemblies).length ? assemblies : undefined, introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
+      return text(lean({ ...partStatus(results), assemblies: Object.keys(assemblies).length ? assemblies : undefined, introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
     },
     { readOnlyHint: true },
   );

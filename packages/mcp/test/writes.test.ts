@@ -261,12 +261,13 @@ test("list_problems answers with the parts done so far when the engine is slow; 
   try {
     const c = await connect(claude.session.userID, "Slow", slow);
     const r = await c.call("list_problems");
-    expect(Object.keys(r.parts)).toEqual(parts.slice(0, 8));
+    expect(r.ok).toBe(8);
+    expect(r.parts).toBeUndefined();
     expect(r.stillRegenerating).toEqual(["p8", "p9"]);
     expect(r.note).toContain("2 of 10 parts are still regenerating");
     release();
     await new Promise((r) => setTimeout(r, 10));
-    expect(Object.keys((await c.call("list_problems")).parts)).toEqual(parts);
+    expect((await c.call("list_problems")).ok).toBe(parts.length);
     regenerated.length = 0;
     await c.call("open_document", { document: documentID });
     await new Promise((r) => setTimeout(r, 10));

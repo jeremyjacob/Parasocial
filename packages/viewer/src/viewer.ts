@@ -1196,7 +1196,7 @@ export class Viewer {
   // ---------- picking ----------
   /**
    * GPU ID-buffer pick at CSS pixel (x, y): renders a small window around the cursor with pick
-   * materials and returns the closest entity to the center (edges win within their wide proxy).
+   * materials and returns the closest entity to the center (edges win within their snap radius).
    */
   pick(x: number, y: number): EntityRef | null {
     const t0 = performance.now();
@@ -1215,7 +1215,9 @@ export class Viewer {
       py = Math.round(y * dpr);
     const lines = this.mode !== "shaded";
     cam.setViewOffset(W, H, px - R, py - R, size, size);
-    this.renderIds(this.pickTarget, this.filter.edge && lines, this.filter.face || this.filter.part, this.filter.vertex && lines, { edge: eSnap * 2 + 1, vertex: vSnap * 2 + 1 });
+    // thin edge proxies: the nearest edge pixel then measures the distance to the edge itself, so
+    // the snap radii below (and the face-width band) are what decide, not the proxy's width
+    this.renderIds(this.pickTarget, this.filter.edge && lines, this.filter.face || this.filter.part, this.filter.vertex && lines, { edge: Math.max(2, dpr), vertex: vSnap * 2 + 1 });
     cam.clearViewOffset();
     this.renderer.readRenderTargetPixels(this.pickTarget, 0, 0, size, size, this.pickBuf);
     // edges and vertices are thin: within their snap radius they win over the face under the cursor
