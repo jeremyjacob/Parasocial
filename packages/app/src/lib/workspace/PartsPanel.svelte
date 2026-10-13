@@ -20,8 +20,8 @@
 	let filter = $state('');
 	/** Expanded studios (by path); studios start collapsed. */
 	let expanded = $state<Set<string>>(new Set());
-	/** Collapsed folders (by path); folders start open. */
-	let collapsed = $state<Set<string>>(new Set());
+	/** Expanded folders (by path); folders start collapsed. */
+	let openFolders = $state<Set<string>>(new Set());
 	const dark = $derived(theme.resolved === 'dark');
 
 	type Status = 'ok' | 'warning' | 'error' | 'pending';
@@ -107,9 +107,9 @@
 	});
 	const ancestors = (folder?: string) => (folder ?? '').split('/').filter(Boolean).map((_, i, segs) => segs.slice(0, i + 1).join('/'));
 	function toggleFolder(path: string) {
-		const next = new Set(collapsed);
+		const next = new Set(openFolders);
 		if (!next.delete(path)) next.add(path);
-		collapsed = next;
+		openFolders = next;
 	}
 	const selectedPart = $derived(new Set(ws.selection.map((s) => s.part)));
 	/** The studio in the viewport; the others are greyed. */
@@ -152,7 +152,7 @@
 			const g = tree.find((g) => leaves(g.rows).some((r) => r.id === part));
 			if (!g) return;
 			const next = new Set(expanded).add(g.file);
-			if (ancestors(g.folder).some((p) => collapsed.has(p))) collapsed = new Set([...collapsed].filter((p) => !ancestors(g.folder).includes(p)));
+			if (ancestors(g.folder).some((p) => !openFolders.has(p))) openFolders = new Set([...openFolders, ...ancestors(g.folder)]);
 			const reveal = (rows: Row[]) => {
 				for (const r of rows) if (r.kind !== 'part' && r.ids.includes(part)) { next.add(r.id); reveal(r.children); }
 			};
@@ -290,7 +290,7 @@
 
 {#snippet renderFolder(f: FolderNode)}
 	{#each f.folders as c (c.path)}
-		{@const open = !collapsed.has(c.path) || !!filter.trim()}
+		{@const open = openFolders.has(c.path) || !!filter.trim()}
 		<li role="treeitem" aria-expanded={open} aria-selected={false} data-folder={c.path}>
 			<ListRow name={c.name} class="pl-6 text-fg-secondary" status={c.status} statusLabel={LABEL[c.status]} busy={c.busy && !open} hideable={false} onclick={() => toggleFolder(c.path)}>
 				{#snippet leading()}
