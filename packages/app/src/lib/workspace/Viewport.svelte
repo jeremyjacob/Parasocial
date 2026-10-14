@@ -458,8 +458,8 @@
 				const w = new THREE.Vector3(...v);
 				return (dir ? w.transformDirection(t) : w.applyMatrix4(t)).toArray() as [number, number, number];
 			});
-			// when "distance" is ambiguous (two holes), lead with center to center
-			pinned = pair.some((r) => r.key === 'center') ? 'center' : 'min';
+			// when "distance" is ambiguous (two holes, or a face and something parallel), lead with the sensible one
+			pinned = ['center', 'parallel'].find((k) => pair.some((r) => r.key === k)) ?? 'min';
 		} catch (e) {
 			if (request === measurementRequest) measurementError = e instanceof Error ? e.message : String(e);
 		} finally {

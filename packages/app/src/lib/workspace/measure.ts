@@ -68,6 +68,33 @@ function directionOf(ref: EntityRef, results: Results): V | undefined {
 	if (ref.kind === 'edge') return r?.edges[ref.index]?.direction;
 }
 
+/** A planar face as a point on it and its normal. */
+function planeOf(ref: EntityRef, results: Results, place: Place): { p: V; n: V } | null {
+	const f = ref.kind === 'face' ? results[ref.part]?.faces[ref.index] : undefined;
+	return f?.surface === 'plane' ? { p: place(ref.part, f.center), n: place(ref.part, f.normal, true) } : null;
+}
+
+/** A point of an entity that runs parallel to a plane with normal `n` (null if it doesn't): every point of
+ * it is the same distance from the plane, so this one stands for all of them. */
+function parallelPoint(ref: EntityRef, n: V, results: Results, place: Place): V | null {
+	const r = results[ref.part];
+	if (!r) return null;
+	const at = (v: V) => place(ref.part, v);
+	const along = (d: V) => Math.abs(dot(place(ref.part, d, true), n)) / (len(d) * len(n)); // cos to the normal
+	if (ref.kind === 'vertex') return r.vertices?.[ref.index] ? at(r.vertices[ref.index]) : null;
+	if (ref.kind === 'face') {
+		const f = r.faces[ref.index];
+		if (f?.surface === 'plane') return along(f.normal) > 0.9999 ? at(f.center) : null;
+		if (f && (f.surface === 'cylinder' || f.surface === 'cone') && f.axis) return along(f.axis) < 1e-4 ? at(onLine(f.center, f.origin ?? f.center, f.axis)) : null;
+	}
+	if (ref.kind === 'edge') {
+		const e = r.edges[ref.index];
+		if (e?.curve === 'line' && e.direction) return along(e.direction) < 1e-4 ? at(e.mid) : null;
+		if ((e?.curve === 'circle' || e?.curve === 'ellipse') && e.center && e.axis) return along(e.axis) > 0.9999 ? at(e.center) : null;
+	}
+	return null;
+}
+
 const isCenter = (a: Anchor) => a.kind === 'axis' || !!a.circle;
 const centerWord = (a: Anchor) => (a.kind === 'axis' ? 'axis' : a.circle ? 'center' : 'point');
 
@@ -98,6 +125,16 @@ export function pairReadouts(sel: EntityRef[], min: { distance: number; a: V; b:
 				if (parallel && coplanar) out.push({ key: 'max', label: 'Maximum distance', value: num(d + ca.r + cb.r, 2), unit: 'mm', a: sub(a, scale(u, ca.r)), b: add(b, scale(u, cb.r)) });
 			}
 		}
+	}
+	// a plane and something parallel to it: the distance square off the plane
+	for (const [i, j] of [[0, 1], [1, 0]]) {
+		const P = planeOf(sel[i], results, place);
+		const q = P && parallelPoint(sel[j], P.n, results, place);
+		if (!P || !q) continue;
+		const foot = sub(q, scale(P.n, dot(sub(q, P.p), P.n) / dot(P.n, P.n)));
+		const [a, b] = i === 0 ? [foot, q] : [q, foot];
+		out.push({ key: 'parallel', label: 'Parallel distance', value: num(len(sub(b, a)), 2), unit: 'mm', a, b });
+		break;
 	}
 	const d0 = directionOf(sel[0], results),
 		d1 = directionOf(sel[1], results);
