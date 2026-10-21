@@ -4,7 +4,7 @@
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
 import type { DrawingOptions } from "./drawing";
-import type { DocumentState, PartResult, PartInfo, EntityDescription, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, BuildInfo, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose } from "./engine";
 
 export type EngineRequest =
   /** `quiet`: only restore state (a replay into a replacement worker); answers true instead of the part list. */
@@ -45,6 +45,8 @@ export type EngineRequest =
   | { op: "distancePairs"; pairs: [string, string][]; within: number; budgetMs?: number }
   /** The assemblies the studios export (joints resolved to part ids). */
   | { op: "assemblies" }
+  /** The build scripts (builds/*.ts): each assembly's build steps, resolved to its copies. */
+  | { op: "builds" }
   /** Dragged assembly positions (part -> transform from its modeled pose); measure, interference and export use them. */
   | { op: "setPoses"; poses: Record<string, PartPose> }
   /** Where these parts overlap (latest wins: resolves null when superseded). */
@@ -84,7 +86,7 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, PartInfo, EntityDescription, DocumentState, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, BuildInfo, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose };
 
 /**
  * The part an id's geometry comes from: itself, or an instance's source part. Instance ids are
@@ -158,6 +160,27 @@ export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
     if (a.overlaps !== undefined && (!Array.isArray(a.overlaps) || !a.overlaps.every((o: unknown) => isObj(o) && isStr(o.a) && isStr(o.b) && isStr(o.scope) && optStr(o.reason)))) return null;
   }
   return v as AssemblyInfo[];
+}
+
+const optNum = (x: unknown) => x === undefined || isNum(x);
+
+/** The build scripts: steps naming instance ids, finite offsets and axes. */
+export function validateBuilds(v: unknown): BuildInfo[] | null {
+  if (!Array.isArray(v)) return null;
+  for (const b of v) {
+    if (!isObj(b) || !isStr(b.id) || !isStr(b.file) || !isStr(b.export) || !isStr(b.name) || !optStr(b.description) || !isStr(b.assembly) || !Array.isArray(b.steps) || !Array.isArray(b.problems)) return null;
+    for (const p of b.problems) if (!isObj(p) || !isStr(p.message) || (p.severity !== "error" && p.severity !== "warning")) return null;
+    for (const s of b.steps) {
+      if (!isObj(s) || !isStr(s.title) || !optStr(s.description) || !Array.isArray(s.parts) || !s.parts.every(isStr)) return null;
+      if (s.from !== undefined && !(Array.isArray(s.from) && s.from.every(isVec3))) return null;
+      if (!optNum(s.distance) || !optNum(s.turn) || !optNum(s.stagger) || !optNum(s.duration)) return null;
+      if (s.group !== undefined && typeof s.group !== "boolean") return null;
+      if (s.auto !== undefined && typeof s.auto !== "boolean") return null;
+      const a = s.along;
+      if (a !== undefined && !(isObj(a) && ("axis" in a ? isVec3(a.axis) : isStr(a.part) && isConnectorAt(a) && optStr(a.owner)))) return null;
+    }
+  }
+  return v as BuildInfo[];
 }
 
 const F32 = (x: unknown) => x instanceof Float32Array;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { dev } from '$app/environment';
-	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed, Play, Pause, Repeat } from '@lucide/svelte';
+	import { Copy, EyeOff, Focus, MessageCircle, Layers, Plus, Bot, Box, X, FlipVertical2, Scissors, SquareDashed } from '@lucide/svelte';
 	import { Viewer, type EntityRef } from '@parasocial/viewer';
 	import { FloatingToolbar, StatusPill, ViewportControls } from '$lib/components/ui/viewport';
 	import { ProgressLine, EmptyState } from '$lib/components/ui/feedback';
@@ -22,6 +22,7 @@
 	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { pairReadouts, singleReadouts, type Readout } from './measure';
 	import NoteComposer from './NoteComposer.svelte';
+	import BuildSteps from './BuildSteps.svelte';
 	import { rise, fadeOut, pop, popOut } from '$lib/styles/motion';
 
 	let { ws, nc, onAddStudio, onConnect, onOpenNote }: { ws: WorkspaceState; nc: NotesController; onAddStudio: () => void; onConnect: () => void; onOpenNote: (id: string) => void } = $props();
@@ -327,7 +328,7 @@
 		if (ws.tool === 'select' && e.button === 0 && viewer && !e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
 			const r = host.getBoundingClientRect();
 			const hit = viewer.pickPoint(e.clientX - r.left, e.clientY - r.top);
-			if (hit?.local && ws.asm.movable(hit.part)) {
+			if (hit?.local && !ws.steps.active && ws.asm.movable(hit.part)) {
 				const facing = viewer.camera.getWorldDirection(new THREE.Vector3()).negate();
 				partDrag = { part: hit.part, local: [hit.local.x, hit.local.y, hit.local.z], plane: new THREE.Plane().setFromNormalAndCoplanarPoint(facing, hit.point), x: e.clientX, y: e.clientY, started: false };
 				host.style.cursor = 'grabbing';
@@ -526,40 +527,19 @@
 		ws.untracked(() => ws.rememberSection());
 	});
 
-	// ---- build animation (A) ----
-	$effect(() => viewer?.setBuild(ws.build ? ws.build.t : null));
-	const buildPlaying = $derived(!!ws.build?.playing);
+	// ---- build steps (A) ----
+	// lay the steps out again when the build, the copies' geometry or their poses change
 	$effect(() => {
-		if (!viewer || !buildPlaying) return;
-		const ms = viewer.buildDuration();
-		let raf = 0,
-			hold = 0,
-			last = performance.now();
-		const step = (now: number) => {
-			const b = ws.build;
-			if (!b?.playing) return;
-			const t = (b.t >= 1 ? 0 : b.t) + ((now - last) / ms) * b.speed;
-			last = now;
-			if (t < 1) return void ((ws.build = { ...b, t }), (raf = requestAnimationFrame(step)));
-			if (!b.loop) return void (ws.build = { ...b, t: 1, playing: false });
-			// looping: hold the finished model a moment, then start over
-			ws.build = { ...b, t: 1 };
-			hold = window.setTimeout(() => {
-				if (!ws.build?.playing) return;
-				ws.build = { ...ws.build, t: 0 };
-				last = performance.now();
-				raf = requestAnimationFrame(step);
-			}, 900);
-		};
-		raf = requestAnimationFrame(step);
-		return () => (cancelAnimationFrame(raf), clearTimeout(hold));
+		if (!ws.steps.active) return;
+		ws.steps.build;
+		ws.results;
+		poses;
+		ws.untracked(() => ws.steps.replan());
 	});
-	/** Speed slider: log scale, ¼× to 4×. */
-	const speedLabel = (s: number) => `${s < 1 ? s.toFixed(2).replace(/0$/, '') : s.toFixed(1)}×`;
-	function playBuild() {
-		const b = ws.build;
-		if (b) ws.build = { ...b, t: b.t >= 1 ? 0 : b.t, playing: !b.playing };
-	}
+	// a studio without an assembly has nothing to build
+	$effect(() => {
+		if (ws.steps.active && !ws.steps.available) ws.untracked(() => ws.steps.close());
+	});
 
 	/**
 	 * Section arrow: drag it along its axis to move the plane, click it to flip. `t0` is where it was
@@ -773,7 +753,7 @@
 
 	<ProgressLine active={busy} label={!ws.kernelReady ? 'Loading' : 'Regenerating'} class="absolute inset-x-0 top-0 z-10" />
 
-	<div class="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 *:pointer-events-auto">
+	<div class="pointer-events-none absolute top-3 z-10 flex max-w-[calc(100%-140px)] flex-col items-start gap-1.5 transition-[left] duration-[var(--duration-slow)] ease-out *:pointer-events-auto {ws.steps.active ? 'left-[256px]' : 'left-3'}">
 		{#if ws.dirty.length}
 			<div data-testid="unsaved-preview" in:rise={{ y: -4, scale: 0.97, origin: 'top left' }} out:fadeOut>
 				<StatusPill tone="preview" title="Unsaved preview" detail="⌘S to save" />
@@ -793,7 +773,7 @@
 
 	{#if ws.mode === 'model'}
 		<div class="absolute top-[120px] right-[33px] z-10">
-			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} bind:build={() => !!ws.build, (v) => { if (v !== !!ws.build) ws.toggleBuild(); }} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} bind:overlapsOnTop={() => ws.asm.interferenceOnTop, (v) => ws.asm.setInterferenceOnTop(v)} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
+			<ViewportControls bind:display={() => ws.display, (v) => (ws.display = v)} bind:ortho={() => ws.ortho, (v) => (ws.ortho = v)} bind:section={() => !!ws.section, (v) => { if (v !== !!ws.section) ws.toggleSection(); }} build={ws.steps.available ? ws.steps.active : undefined} onBuild={() => ws.steps.toggle()} bind:grid={() => ws.showGrid, (v) => ws.setHelpers({ grid: v })} bind:origin={() => ws.showOrigin, (v) => ws.setHelpers({ origin: v })} bind:overlapsOnTop={() => ws.asm.interferenceOnTop, (v) => ws.asm.setInterferenceOnTop(v)} orientation="vertical" onZoomToFit={() => viewer?.fitOrHome()} />
 		</div>
 	{/if}
 
@@ -816,15 +796,8 @@
 		</div>
 	{/if}
 
-	{#if ws.build}
-		<div class="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] pl-3 shadow-toolbar" data-testid="build-bar" in:pop={{ origin: 'top center' }} out:popOut>
-			<span class="text-ui font-medium">Build</span>
-			<IconButton label={ws.build.playing ? 'Pause' : 'Play'} size="sm" onclick={playBuild}>{#if ws.build.playing}<Pause />{:else}<Play />{/if}</IconButton>
-			<Slider value={Math.log2(ws.build.speed)} min={-2} max={2} step={0.05} onValueChange={(v: number) => ws.setBuildSpeed(Math.round(2 ** v * 100) / 100)} class="w-40" aria-label="Build speed" />
-			<span class="w-10 text-label text-fg-secondary tabular-nums">{speedLabel(ws.build.speed)}</span>
-			<IconButton label="Loop" size="sm" active={ws.build.loop} onclick={() => (ws.build = { ...ws.build!, loop: !ws.build!.loop })}><Repeat /></IconButton>
-			<IconButton label="Close build" shortcut={['A']} size="sm" onclick={() => (ws.build = null)}><X /></IconButton>
-		</div>
+	{#if ws.steps.active}
+		<BuildSteps {ws} onSource={revealSource} />
 	{/if}
 
 	{#if readouts.length || ws.selection.length === 2}
@@ -890,7 +863,7 @@
 		</div>
 	{/if}
 
-	{#if viewer}
+	{#if viewer && !ws.steps.active}
 		<Pins {ws} {viewer} {nc} onopen={onOpenNote} />
 	{/if}
 	{#if nc.draft && nc.composerShown}
@@ -905,7 +878,8 @@
 		</div>
 	{/if}
 
-	<div class="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+	{#if !ws.steps.active}
+	<div class="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2" in:rise={{ y: 8, scale: 0.97, duration: 200, origin: '50% 100%' }}>
 		{#if ws.tool === 'pencil'}
 			<div class="flex items-center gap-0.5 rounded-[var(--toolbar-radius)] bg-elevated p-[var(--toolbar-pad)] shadow-toolbar" data-testid="pencil-options" in:rise={{ y: 8, scale: 0.97, duration: 200, origin: '50% 100%' }} out:rise={{ y: 4, scale: 0.98, duration: 100 }}>
 				{#each STROKE_COLORS as c (c)}
@@ -920,4 +894,5 @@
 		{/if}
 		<FloatingToolbar bind:tool={ws.tool} only={ws.readOnly ? ['select', 'measure'] : undefined} disabled={ws.dirty.length ? { note: 'Save to add notes', pencil: 'Save to draw' } : {}} />
 	</div>
+	{/if}
 </ContextMenu>

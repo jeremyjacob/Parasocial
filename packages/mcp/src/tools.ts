@@ -14,7 +14,7 @@ import { GUIDE, sessionContext } from "./instructions";
 import { trace } from "./trace";
 import { recordTouch, othersOn, changedUnderYou } from "./awareness";
 import { emptyPreview, mergeOverrides, solveAssemblies, findAssembly, poseTarget, scopedJointValues, expandTargets, targetNames, closeMatches, posedBox, posedPoint, posedDir, type Preview } from "./preview";
-import { sourcePart, type AssemblyInfo, type Overlap, type PartInfo, type PartPose } from "@parasocial/runtime/protocol";
+import { sourcePart, type AssemblyInfo, type BuildInfo, type Overlap, type PartInfo, type PartPose } from "@parasocial/runtime/protocol";
 import { overlapIntended } from "@parasocial/runtime/assembly-scope";
 import { registerOutputTools } from "./tools-output";
 import { affectedScripts, lineDiff, nameHints } from "./write-report";
@@ -817,7 +817,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
     let failed = false;
     try {
       const d = await loadDoc(db, s.userID, documentID);
-      const [infos, asms] = (await engine(d, [{ op: "parts" }, { op: "assemblies" }])) as [PartInfo[], AssemblyInfo[]];
+      const [infos, asms, builds] = (await engine(d, [{ op: "parts" }, { op: "assemblies" }, { op: "builds" }])) as [PartInfo[], AssemblyInfo[], BuildInfo[]];
       const { affected, missing } = affectedScripts(new Map(d.scripts.map((x) => [x.path, x.content])), w.paths);
       const every = w.all || w.verbose;
       const parts = infos.filter((p) => every || affected.has(p.file)).map((p) => p.id);
@@ -829,6 +829,8 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       const problems: Record<string, string[]> = {};
       for (const r of bad as any[]) problems[r.part] = [...(cap(r.problems.map(problemLine), 6) as string[]), ...(r.partial && !r.empty ? ["(showing last good geometry)"] : [])];
       for (const a of asms) if (a.problems.length && (every || affected.has(a.file))) problems[a.id] = cap(a.problems.map(problemLine), 6) as string[];
+      // build scripts the write touched (or that read a file it changed)
+      for (const b of builds) if (b.problems.length && (every || affected.has(b.file))) problems[b.file] = cap(b.problems.map(problemLine), 6) as string[];
       // imports of files that don't exist, unless that file's load error is already listed
       const reported = new Set(bad.flatMap((r: any) => r.problems.map((p: any) => p.source?.file)));
       for (const [file, gone] of missing) if (!reported.has(file)) (problems[file] ??= []).push(...gone.map((g) => `warning ${file} imports ${g}, which doesn't exist`));
@@ -885,7 +887,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
 
   tool(
     "write_script",
-    "Create or replace a script (studios/*.ts or lib/**/*.ts). baseVersion: its version from list_scripts / read_script (the document version that last changed it), null to create. Makes a version and regenerates the parts it reaches (its studio, or studios importing it). Returns the version, each script's new version (its next baseVersion), parts counted (regenerated, ok), problem lines per part or file (imports of missing files too), names that pack in details (names: move them to description/partNumber) and files others changed under you; verbose: every part, full results. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
+    "Create or replace a script (studios|builds/*.ts, lib/**/*.ts). baseVersion: its version from list_scripts / read_script (the document version that last changed it), null to create. Makes a version and regenerates the parts it reaches (its studio, or studios importing it). Returns the version, each script's new version (its next baseVersion), parts counted (regenerated, ok), problem lines per part or file (imports of missing files too), names that pack in details (names: move them to description/partNumber) and files others changed under you; verbose: every part, full results. note: the note id this answers. Safe to retry; writeId: an idempotency key to reuse when retrying.",
     { document, path: z.string(), content: z.string(), baseVersion: z.number().int().nullable(), message: z.string().optional(), note: z.string().optional(), writeId, verbose },
     async ({ document: dd, path, content, baseVersion, message, note, writeId, verbose }) => {
       const documentID = docID(dd);
@@ -1414,7 +1416,7 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
         const pending = all.filter((_, i) => !partial[i]);
         return text(lean({ ...partStatus(results), stillRegenerating: cap(pending, 20), note: `The geometry engine was cold: ${pending.length} of ${all.length} parts are still regenerating, and assemblies weren't checked yet. Call list_problems again shortly.` }));
       }
-      const [asms] = (await engine(d, [{ op: "assemblies" }])) as [AssemblyInfo[]];
+      const [asms, builds] = (await engine(d, [{ op: "assemblies" }, { op: "builds" }])) as [AssemblyInfo[], BuildInfo[]];
       const versions = await db.sql`SELECT v.id, v.number, v.kind, v.message, v.snapshot, v.created_at, u.name AS user_name, a.client_name FROM versions v LEFT JOIN users u ON u.id = v.author_user_id LEFT JOIN agent_sessions a ON a.id = v.author_agent_id WHERE v.document_id = ${documentID} ORDER BY v.number DESC LIMIT 200`;
       const introduced = (file: string | undefined, kind: string) => {
         // the most recent version that changed this script (or params, for param problems)
@@ -1428,12 +1430,13 @@ export function registerTools(server: McpServer, s: Session, deps: ToolDeps) {
       };
       // one entry per file (or "params") with problems, not per problem
       const introducedBy: Record<string, string> = {};
-      for (const r of [...results, ...asms] as any[]) for (const p of r.problems) {
+      for (const r of [...results, ...asms, ...builds] as any[]) for (const p of r.problems) {
         const key = p.kind === "param" ? "params" : (p.source?.file ?? "unknown");
         if (!(key in introducedBy)) introducedBy[key] = introduced(p.source?.file, p.kind) ?? "unknown";
       }
       const assemblies = Object.fromEntries(asms.filter((a) => a.problems.length).map((a) => [a.id, a.problems.map(problemLine)]));
-      return text(lean({ ...partStatus(results), assemblies: Object.keys(assemblies).length ? assemblies : undefined, introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
+      const buildProblems = Object.fromEntries(builds.filter((b) => b.problems.length).map((b) => [b.file, b.problems.map(problemLine)]));
+      return text(lean({ ...partStatus(results), assemblies: Object.keys(assemblies).length ? assemblies : undefined, builds: Object.keys(buildProblems).length ? buildProblems : undefined, introducedBy: Object.keys(introducedBy).length ? introducedBy : undefined }));
     },
     { readOnlyHint: true },
   );

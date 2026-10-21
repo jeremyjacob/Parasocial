@@ -26,7 +26,7 @@ let ready: Promise<EngineInfo> | null = null;
  */
 let poisoned = false;
 /** Requests that run user script code: the host's watchdog covers them from "started". */
-const RUNS_SCRIPTS = new Set(["setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "evaluate"]);
+const RUNS_SCRIPTS = new Set(["setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "builds", "evaluate"]);
 
 async function boot(cfg: WorkerInit): Promise<EngineInfo> {
   const t0 = performance.now();
@@ -145,6 +145,8 @@ async function handle(req: EngineRequest, id: number): Promise<{ value: unknown;
       return { value: computeBom(engine, { assembly: req.assembly, documentName: req.documentName }) };
     case "assemblies":
       return { value: engine.assemblies() };
+    case "builds":
+      return { value: engine.builds() };
     case "setPoses":
       engine.setPoses(req.poses);
       return { value: true };

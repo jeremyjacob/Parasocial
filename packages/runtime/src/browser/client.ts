@@ -1,8 +1,8 @@
 // App-side engine client: creates the cross-origin engine iframe, connects a MessageChannel,
 // validates everything that comes back, and exposes a typed RPC.
 import type { EngineRequest, EngineInfo, PartResult, PartInfo, EntityDescription, DocumentState, MeasureRef } from "../protocol";
-import { validateEngineMessage, validatePartResult, validatePartInfos, validateAssemblies, validateInterferences } from "../protocol";
-import type { AssemblyInfo, Interference, PartPose } from "../protocol";
+import { validateEngineMessage, validatePartResult, validatePartInfos, validateAssemblies, validateBuilds, validateInterferences } from "../protocol";
+import type { AssemblyInfo, BuildInfo, Interference, PartPose } from "../protocol";
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef, Resolution } from "@parasocial/naming";
 import type { DrawingOptions } from "../drawing";
@@ -84,6 +84,11 @@ export class EngineClient {
         const a = validateAssemblies(m.value);
         if (!a) return p.reject(new Error("engine returned a malformed assembly list"));
         return p.resolve(a);
+      }
+      if (p.op === "builds") {
+        const b = validateBuilds(m.value);
+        if (!b) return p.reject(new Error("engine returned a malformed build step list"));
+        return p.resolve(b);
       }
       if (p.op === "interferences" && m.value !== null) {
         const a = validateInterferences(m.value);
@@ -199,6 +204,10 @@ export class EngineClient {
   /** The assemblies the studios export. */
   assemblies() {
     return this.call<AssemblyInfo[]>({ op: "assemblies" });
+  }
+  /** The build scripts, steps resolved to each assembly's copies. */
+  builds() {
+    return this.call<BuildInfo[]>({ op: "builds" });
   }
   /** Dragged positions: measure and export use them. */
   setPoses(poses: Record<string, PartPose>) {

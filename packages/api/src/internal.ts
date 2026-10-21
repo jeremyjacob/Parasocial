@@ -8,3 +8,4 @@ export { Solid } from "./solid";
 export { EntitySet, entityView } from "./selection";
 export * from "./assembly";
 export type { ConnectorFrame } from "./connector";
+export * from "./steps";

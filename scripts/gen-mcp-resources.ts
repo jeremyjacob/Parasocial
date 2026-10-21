@@ -17,7 +17,7 @@ mkdirSync(out, { recursive: true });
 await $`bunx tsc ${join(root, "packages/api/src/index.ts")} --declaration --emitDeclarationOnly --stripInternal --outDir ${out} --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --strict --lib ES2022,DOM --types bun`.quiet().nothrow();
 
 /** Section order of the d.ts; each file is an api_reference topic (index.ts's is the cheat sheet). */
-const files = ["index", "part", "assembly", "connector", "sketch", "path3d", "solid", "selection", "measure", "plane", "units", "types", "std/index", "std/parts", "std/holes", "std/tables"];
+const files = ["index", "part", "assembly", "steps", "connector", "sketch", "path3d", "solid", "selection", "measure", "plane", "units", "types", "std/index", "std/parts", "std/holes", "std/tables"];
 
 /** `[start, end)` of a declaration (with its doc comment) in API_DTS. */
 type Span = [number, number];
@@ -144,7 +144,7 @@ if (missing.length) {
 }
 
 let ex = "# Example parts\n\nReal scripts from Parasocial's example documents.\n";
-for (const f of [...new Glob("*/{studios,lib}/*.ts").scanSync(join(root, "examples"))].sort()) ex += `\n## examples/${f}\n\n\`\`\`ts\n${readFileSync(join(root, "examples", f), "utf8").trim()}\n\`\`\`\n`;
+for (const f of [...new Glob("*/{studios,lib,builds}/*.ts").scanSync(join(root, "examples"))].sort()) ex += `\n## examples/${f}\n\n\`\`\`ts\n${readFileSync(join(root, "examples", f), "utf8").trim()}\n\`\`\`\n`;
 
 // dimension tables as data (the d.ts inlines some as literal types and only types others), for
 // api_reference lookups by table name, path (std.tables.bearings) or key ("6804")

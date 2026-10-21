@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadKernel } from "@parasocial/kernel";
 import { OpCache } from "@parasocial/naming";
-import { PartContext, runPart } from "../src/internal";
+import { PartContext, runPart, declareBuildSteps } from "../src/internal";
 import * as api from "../src";
 import { part, sketch, plane, box, cylinder, Solid, type Plane, type PartDef } from "../src";
 
@@ -131,6 +131,14 @@ test("every @example in the API docs runs", () => {
   for (const { file, code } of ex) {
     let r: ReturnType<typeof run>;
     try {
+      if (/export default buildSteps\(/.test(code)) {
+        // a build script: its steps declare against stand-in parts and assembly
+        const fixtures = Object.fromEntries(["body", "lid", "drawer", "base", "screw", "wheel"].map((n) => [n, part(n, () => box(1, 1, 1))]));
+        const names = [...apiNames, ...Object.keys(fixtures), "mechanism"];
+        const def = new Function(...names, code.replace(/^import .*$/gm, "").replace("export default", "return"))(...apiValues, ...Object.values(fixtures), api.assembly("Mechanism", () => {}));
+        if (!declareBuildSteps(def).length) failures.push(`${file}: ${code}\n  declares no steps`);
+        continue;
+      }
       if (/export default/.test(code)) {
         // a whole studio
         const def = new Function(...apiNames, code.replace(/^import .*$/gm, "").replace("export default", "return"))(...apiValues);

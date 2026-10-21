@@ -13,7 +13,7 @@ declare const POOL: { worker: string; init: Record<string, unknown>; timeoutMs: 
 const cfg = (globalThis as any).POOL as typeof POOL;
 
 /** Requests that run user script code: the watchdog covers them once the worker says "started". */
-const WATCHED = new Set(["regenerate", "regenerateSnapshot", "setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "evaluate"]);
+const WATCHED = new Set(["regenerate", "regenerateSnapshot", "setDocument", "setScript", "parts", "snapshotParts", "affected", "assemblies", "builds", "evaluate"]);
 const CRASH_WINDOW_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
 
@@ -58,7 +58,7 @@ function timeoutMessage(req: any, limitMs: number): string {
   const where = what === "loading the scripts" ? "a script may loop forever at its top level" : what === "evaluation" ? "the expression or the code it calls may loop forever" : "the script may loop forever";
   return `${head}: no geometry operation was running, so ${where}${done}`;
 }
-const READS = new Set(["parts", "assemblies", "measure", "interference", "interferencePairs", "overlapPairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
+const READS = new Set(["parts", "assemblies", "builds", "measure", "interference", "interferencePairs", "overlapPairs", "distancePairs", "interferences", "check", "query", "describe", "describeAll", "resolve", "resolveOne", "indexOfName", "names", "tangentChain", "loopOf", "opsAtLine", "fromOperation", "closestPoint", "bom", "drawing", "export", "evaluate"]);
 const POSED_READS = new Set(["measure", "interference", "interferencePairs", "overlapPairs", "distancePairs", "interferences", "export"]);
 const readCache = new Map<string, { value: any; bytes: number }>();
 let readBytes = 0, readRevision = 0, poses = "";

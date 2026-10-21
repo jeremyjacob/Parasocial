@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
-import { buildOrder, PAUSE, type OrderNode } from "./build";
+import { buildOrder, type OrderNode } from "./order";
 
 const box = (min: number[], max: number[]) => new THREE.Box3(new THREE.Vector3(...min), new THREE.Vector3(...max));
 const solid = (item: string, min: number[], max: number[]) => {
@@ -26,7 +26,7 @@ const button = solid("button", [20, -5, 26], [26, 1, 32]);
 describe("buildOrder", () => {
   test("internals land before the housing that encloses them", () => {
     const order = buildOrder({ pieces: [lower, upper, board, battery, sensor, button], kids: [] });
-    const at = (n: string) => order.findIndex((o) => o.item === n);
+    const at = (n: string) => order.indexOf(n);
     expect(at("board")).toBeLessThan(at("lower housing"));
     expect(at("battery")).toBeLessThan(at("lower housing"));
     expect(at("battery")).toBeLessThan(at("upper housing"));
@@ -37,36 +37,28 @@ describe("buildOrder", () => {
     expect(at("button")).toBeGreaterThan(at("upper housing"));
   });
 
-  test("pauses before the housings close up and before the last piece", () => {
-    const order = buildOrder({ pieces: [lower, upper, board, battery], kids: [] });
-    expect(order[0].pause).toBe(0);
-    expect(order[2].pause).toBe(PAUSE.cover);
-    expect(order[3].pause).toBeGreaterThanOrEqual(PAUSE.last);
-  });
-
-  test("a sub-assembly builds in one go, inside-out, then a beat before what follows", () => {
+  test("a sub-assembly builds in one go, inside-out", () => {
     const internals: OrderNode<string> = { pieces: [board, battery], kids: [] };
     const order = buildOrder({ pieces: [upper, lower], kids: [internals] });
-    expect(order.map((o) => o.item).slice(0, 2).sort()).toEqual(["battery", "board"]);
-    expect(order[2].pause).toBeGreaterThanOrEqual(PAUSE.group);
+    expect(order.slice(0, 2).sort()).toEqual(["battery", "board"]);
   });
 
   test("screws land after the solid part they fasten into", () => {
     const gear = solid("gear", [-20, -20, 0], [20, 20, 10]);
     const screws = solid("screw", [5, 5, 2], [8, 8, 10]);
-    expect(buildOrder({ pieces: [screws, gear], kids: [] }).map((o) => o.item)).toEqual(["gear", "screw"]);
+    expect(buildOrder({ pieces: [screws, gear], kids: [] })).toEqual(["gear", "screw"]);
   });
 
   test("a set of screws spread over its host is fastened on after it, even a hollow one", () => {
     const cup = shell("cup", [-30, -30, 0], [30, 30, 20]);
     const stator = solid("stator", [-20, -20, 2], [20, 20, 18]);
     const screws: OrderNode<string> = { pieces: [solid("s1", [-28, -28, 0], [-25, -25, 8]), solid("s2", [25, 25, 0], [28, 28, 8])], kids: [] };
-    const order = buildOrder({ pieces: [cup, stator], kids: [screws] }).map((o) => o.item);
+    const order = buildOrder({ pieces: [cup, stator], kids: [screws] });
     expect(order).toEqual(["stator", "cup", "s1", "s2"]);
   });
 
   test("nothing enclosed, equal reach: bottom-up", () => {
     const order = buildOrder({ pieces: [solid("top", [0, 0, 10], [10, 10, 20]), solid("bottom", [0, 0, 0], [10, 10, 10])], kids: [] });
-    expect(order.map((o) => o.item)).toEqual(["bottom", "top"]);
+    expect(order).toEqual(["bottom", "top"]);
   });
 });

@@ -44,7 +44,11 @@ export function keyGlyph(key: string): string {
 		up: '↑',
 		down: '↓',
 		left: '←',
-		right: '→'
+		right: '→',
+		arrowup: '↑',
+		arrowdown: '↓',
+		arrowleft: '←',
+		arrowright: '→'
 	};
 	return map[k] ?? (key.length === 1 ? key.toUpperCase() : key);
 }

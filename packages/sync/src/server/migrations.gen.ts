@@ -31,5 +31,9 @@ export const MIGRATIONS: readonly (readonly [name: string, sql: string])[] = [
  [
   "0008_share_links.sql",
   "-- View-only share links: anyone holding the token can open the document read-only (the model,\n-- its studios' code and configurations; not notes, history or who's in it), signed in or not.\n-- Null when link sharing is off; replacing the token revokes the old link.\nALTER TABLE documents ADD COLUMN share_token text UNIQUE;\n"
+ ],
+ [
+  "0009_builds.sql",
+  "-- builds/: build scripts (how an assembly goes together, step by step) live next to studios/ and\n-- lib/. Flat, like studios/.\nALTER TABLE scripts DROP CONSTRAINT scripts_path_check;\n\nALTER TABLE scripts ADD CONSTRAINT scripts_path_check\n  CHECK (path ~ '^(studios/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts|builds/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts|lib/([A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ts)$');\n"
  ]
 ];

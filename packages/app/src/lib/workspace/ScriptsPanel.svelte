@@ -4,6 +4,7 @@
 	let { ws, dirty = new Set<string>() }: { ws: WorkspaceState; dirty?: Set<string> } = $props();
 	const groups = $derived([
 		{ dir: 'studios', items: ws.scripts.filter((s) => s.path.startsWith('studios/')) },
+		{ dir: 'builds', items: ws.scripts.filter((s) => s.path.startsWith('builds/')) },
 		{ dir: 'lib', items: ws.scripts.filter((s) => s.path.startsWith('lib/')) }
 	]);
 	function open(path: string) {
@@ -17,7 +18,7 @@
 	{#each groups as g (g.dir)}
 		<div class="flex h-8 items-center gap-1.5 px-2 text-label text-fg-secondary"><Folder size={14} /> {g.dir}/</div>
 		{#each g.items as s (s.id)}
-			{@const err = ws.parts.some((p) => ws.scriptOf(p) === s.path && ws.results[p]?.problems.some((x) => x.severity === 'error'))}
+			{@const err = ws.parts.some((p) => ws.scriptOf(p) === s.path && ws.results[p]?.problems.some((x) => x.severity === 'error')) || ws.steps.builds.some((b) => b.file === s.path && b.problems.some((x) => x.severity === 'error'))}
 			<button
 				class="focus-ring flex h-8 w-full shrink-0 items-center gap-1.5 rounded-control pr-2 pl-7 text-left text-ui transition-colors-fast hover:bg-hover {ws.openScript === s.path && ws.mode === 'code' ? 'bg-active' : ''}"
 				onclick={() => open(s.path)}
@@ -31,7 +32,7 @@
 				</span>
 			</button>
 		{:else}
-			<p class="flex h-8 items-center pl-7 text-label text-fg-tertiary">No scripts</p>
+			<p class="flex h-8 items-center pl-7 text-label text-fg-tertiary">{g.dir === 'builds' ? 'No build steps' : 'No scripts'}</p>
 		{/each}
 	{/each}
 </div>

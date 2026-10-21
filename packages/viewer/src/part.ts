@@ -5,7 +5,6 @@ import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { withDepthBias } from "./depthbias";
 import { withScreenShading } from "./shading";
-import { findPieces, makeBuildUniforms, pieceVolumes, withBuild, writeBuild, type BuildPiece, type BuildUniforms } from "./build";
 
 export type EntityKind = "face" | "edge" | "vertex";
 export type EntityRef = { part: string; kind: EntityKind; index: number };
@@ -203,17 +202,12 @@ export class PartObject {
   private edgesVisibleBeforePick = true;
   /** Opacity the script asked for; display fades multiply into it. */
   readonly baseOpacity: number;
-  /** Build animation: each piece's bounds (part coordinates) and volume; see setBuild. */
-  buildBoxes: THREE.Box3[] = [];
-  buildVolumes: number[] = [];
-  private buildAttrs!: { verts: Int32Array; segs: Int32Array; mesh: Record<"a" | "b" | "c", THREE.BufferAttribute>; lines: Record<"a" | "b" | "c", THREE.BufferAttribute> };
 
   constructor(
     data: PartData,
     slot: number,
     private resolution: THREE.Vector2,
     pixelRatio: { value: number } = { value: 1 },
-    private buildUniforms: BuildUniforms = makeBuildUniforms(),
   ) {
     this.id = data.id;
     this.slot = slot;
@@ -290,22 +284,6 @@ export class PartObject {
       faceId.fill(f, lo, hi + 1);
     }
     geo.setAttribute("faceId", new THREE.BufferAttribute(faceId, 1));
-    // build animation: every vertex rides with its piece (filled in by setBuild)
-    const nEdges = m.edgeRanges.length / 2;
-    const pieces = findPieces(nFaces, nEdges, d.faceEdges);
-    this.buildBoxes = Array.from({ length: pieces.count }, () => new THREE.Box3());
-    const vertPiece = new Int32Array(nv);
-    const pt = new THREE.Vector3();
-    for (let f = 0; f < nFaces; f++) {
-      const lo = this.faceVerts[f * 2],
-        cnt = this.faceVerts[f * 2 + 1];
-      vertPiece.fill(pieces.faces[f], lo, lo + cnt);
-      for (let v = lo; v < lo + cnt; v++) this.buildBoxes[pieces.faces[f]].expandByPoint(pt.fromArray(m.positions, v * 3));
-    }
-    const meshBuild = { a: new THREE.BufferAttribute(new Float32Array(nv * 4), 4), b: new THREE.BufferAttribute(new Float32Array(nv * 4), 4), c: new THREE.BufferAttribute(new Float32Array(nv * 4), 4) };
-    geo.setAttribute("buildA", meshBuild.a);
-    geo.setAttribute("buildB", meshBuild.b);
-    geo.setAttribute("buildC", meshBuild.c);
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
     this.faceMesh = new THREE.Mesh(geo, this.faceMaterial);
@@ -334,8 +312,6 @@ export class PartObject {
     om.uniforms = { resolution: { value: this.resolution }, width: { value: 2 }, color: { value: new THREE.Color(0xff8a00) } };
     Object.assign(om, { depthTest: false, depthWrite: false, transparent: true, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.KeepStencilOp });
     this.outline = new THREE.Mesh(geo, om);
-    withBuild(this.faceMaterial, this.buildUniforms, "mesh");
-    withBuild(this.silMaterial, this.buildUniforms, "mesh");
     this.outline.renderOrder = 21;
     this.outlineMask.visible = this.outline.visible = false;
     this.pickFaces = new THREE.Mesh(geo, this.pickFaceMaterial);
@@ -345,17 +321,6 @@ export class PartObject {
     const segs = this.edgeSegments([...Array(m.edgeRanges.length / 2).keys()].filter((e) => !d.hiddenEdges?.has(e)));
     const eg = new LineSegmentsGeometry();
     eg.setPositions(segs.positions);
-    // each edge segment rides with its edge's piece
-    const nSeg = segs.edgeOfSegment.length;
-    const segPiece = Int32Array.from(segs.edgeOfSegment, (e) => pieces.edges[e]);
-    for (let s = 0; s < nSeg; s++) this.buildBoxes[segPiece[s]].expandByPoint(pt.fromArray(segs.positions, s * 6)).expandByPoint(pt.fromArray(segs.positions, s * 6 + 3));
-    const lineBuild = { a: new THREE.InstancedBufferAttribute(new Float32Array(nSeg * 4), 4), b: new THREE.InstancedBufferAttribute(new Float32Array(nSeg * 4), 4), c: new THREE.InstancedBufferAttribute(new Float32Array(nSeg * 4), 4) };
-    eg.setAttribute("buildA", lineBuild.a);
-    eg.setAttribute("buildB", lineBuild.b);
-    eg.setAttribute("buildC", lineBuild.c);
-    withBuild(this.edgeMaterial, this.buildUniforms, "line");
-    this.buildVolumes = pieceVolumes(m.positions, m.indices, vertPiece, this.buildBoxes);
-    this.buildAttrs = { verts: vertPiece, segs: segPiece, mesh: meshBuild, lines: lineBuild };
     this.edgeLines = new LineSegments2(eg, this.edgeMaterial);
     this.edgeLines.name = "edges";
     this.edgeLines.renderOrder = 1;
@@ -459,12 +424,6 @@ export class PartObject {
       o += count;
     }
     return { positions, edgeOfSegment };
-  }
-
-  /** Build animation: each piece's flight, indexed like buildBoxes. */
-  setBuild(pieces: BuildPiece[]) {
-    writeBuild(this.buildAttrs.mesh, this.buildAttrs.verts, pieces);
-    writeBuild(this.buildAttrs.lines, this.buildAttrs.segs, pieces);
   }
 
   setSlot(slot: number) {

@@ -7,3 +7,5 @@ export type { NavPreset, TrackpadScroll } from "./controls";
 export { LIGHT, DARK } from "./theme";
 export type { ViewerTheme } from "./theme";
 export { VIEW_DIRS } from "./viewcube";
+export { buildOrder } from "./order";
+export type { OrderNode } from "./order";

@@ -327,7 +327,8 @@ const checkName = (what: string, name: unknown) => {
   if (typeof name !== "string" || !name.trim() || /[/@]/.test(name)) throw new Error(`${what}: name must be a non-empty string without "/" or "@"`);
 };
 
-function instance(of: PartDef, name?: string, within?: SubAssembly): Instance {
+/** @internal A copy handle (insert, sub.part, a build step's copy()). */
+export function instance(of: PartDef, name?: string, within?: SubAssembly): Instance {
   const label = name ? `${of.name} "${name}"` : of.name;
   const inst: Instance = Object.freeze({
     __instance: true as const,
@@ -339,7 +340,8 @@ function instance(of: PartDef, name?: string, within?: SubAssembly): Instance {
   return inst;
 }
 
-function subAssembly(of: AssemblyDef, name?: string, within?: SubAssembly): SubAssembly {
+/** @internal A subassembly handle (insert, sub.assembly, a build step's sub()). */
+export function subAssembly(of: AssemblyDef, name?: string, within?: SubAssembly): SubAssembly {
   const sub: SubAssembly = Object.freeze({
     __subassembly: true as const,
     of,

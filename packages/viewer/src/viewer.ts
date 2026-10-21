@@ -15,7 +15,6 @@ import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { HaloPass } from "./halo";
 import { scaleAO, setupAO, sizeAO } from "./ao";
 import { screenShading } from "./shading";
-import { BUILD_HIT, BUILD_OFF, buildOrder, hash, makeBuildUniforms, type BuildPiece, type OrderNode } from "./build";
 
 /** A pencil stroke; with `part`, its points are in that part's coordinates and move with it. */
 export type MarkupStroke = { id: string; points: [number, number, number][]; color: string; width?: number; dim?: boolean; part?: string };
@@ -95,11 +94,10 @@ export class Viewer {
   private resolution = new THREE.Vector2(1, 1);
   /** device px per CSS px, shared with the parts (vertex dots are sized in CSS px) */
   private pixelRatio = { value: 1 };
-  /** Build animation progress (0..1), shared with the parts; null when off. */
-  private build: number | null = null;
-  private buildUniforms = makeBuildUniforms();
-  /** The build's length (ms) and its impacts (timeline time, strength 0..1), for the camera shake. */
-  private buildPlan: { ms: number; hits: { at: number; k: number }[] } | null = null;
+  /** Build steps: where parts are mid-step (world transforms over their poses), and those not brought in yet. */
+  private stepMotion = new Map<string, THREE.Matrix4>();
+  private stepHidden = new Set<string>();
+  private stepping = false;
   private pickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
   private pickBuf = new Float32Array(4 * 13 * 13);
   private facePickTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true });
@@ -300,12 +298,12 @@ export class Viewer {
       this.scene.remove(prev.group);
       prev.dispose();
     }
-    const p = new PartObject(d, slot, this.resolution, this.pixelRatio, this.buildUniforms);
+    const p = new PartObject(d, slot, this.resolution, this.pixelRatio);
     this.parts.set(d.id, p);
     this.colors.set(d.id, new THREE.Color(d.color));
     if (d.dim) this.dimmed.add(d.id);
     else this.dimmed.delete(d.id);
-    p.group.visible = !this.hidden.has(d.id);
+    p.group.visible = !this.hidden.has(d.id) && !this.stepHidden.has(d.id);
     this.placeGroup(p.group, d.id);
     this.scene.add(p.group);
     // drop highlights that no longer exist
@@ -316,8 +314,6 @@ export class Viewer {
     this.restyle(d.id);
     this.boundsCache = null;
     if (this.section) this.applyClip(p);
-    this.buildPlan = null;
-    if (this.build !== null) this.layoutBuild();
     this.updateGrid();
     this.requestRender();
   }
@@ -331,140 +327,51 @@ export class Viewer {
     this.slots[p.slot] = null;
     this.selection.refs = this.selection.refs.filter((r) => r.part !== id);
     this.boundsCache = null;
-    this.buildPlan = null;
-    if (this.build !== null) this.layoutBuild();
     this.requestRender();
   }
 
-  // ---------- build animation ----------
+  // ---------- build steps ----------
   /**
-   * Build animation: 0 = nothing built yet, 1 = everything in place; null turns it off. Each piece
-   * (connected solid) is thrown in and slams down, bottom-up (build.ts).
+   * The build steps view: on, overlap volumes hide (they don't travel with the parts); off, every
+   * part goes back in place and shows again.
    */
-  setBuild(t: number | null) {
-    if (t !== null && (this.build === null || !this.buildPlan)) this.layoutBuild();
-    this.build = t;
-    this.buildUniforms.buildT.value = t ?? BUILD_OFF;
-    // overlap volumes don't fly in with their parts: they show once everything's in place
-    this.overlaps.visible = t === null || t >= 1;
+  setStepping(on: boolean) {
+    if (on === this.stepping) return;
+    this.stepping = on;
+    if (!on) {
+      const ids = new Set([...this.stepMotion.keys(), ...this.stepHidden]);
+      this.stepMotion.clear();
+      this.stepHidden.clear();
+      for (const id of ids) this.applyStep(id);
+    }
+    this.syncOverlaps();
+    this.boundsCache = null;
     this.requestRender();
   }
 
-  /** How long the build animation runs, in ms. */
-  buildDuration() {
-    if (!this.buildPlan) this.layoutBuild();
-    return this.buildPlan!.ms;
-  }
-
   /**
-   * Choreograph the build. Order: inside-out through the assembly hierarchy (part ids are scope
-   * paths, `assembly/sub/part@name`), see buildOrder. Heft (volume, relative to the heaviest piece) sets
-   * how fast a piece is thrown, how little it rebounds and how hard it shakes the camera.
+   * Where a part is mid-step: a world transform applied over its assembly pose (null: in place),
+   * and whether it's hidden (its step hasn't come yet). Picking, pins and bounds follow.
    */
-  private layoutBuild() {
-    type Piece = { p: PartObject; k: number; box: THREE.Box3; vol: number };
-    type Node = OrderNode<Piece> & { named: Map<string, Node> };
-    const node = (): Node => ({ pieces: [], kids: [], named: new Map() });
-    const root = node();
-    const model = new THREE.Box3();
-    let n = 0;
-    for (const p of this.parts.values()) {
-      if (!p.group.visible) continue;
-      let at = root;
-      for (const seg of p.id.split("/")) {
-        if (!at.named.has(seg)) {
-          const kid = node();
-          at.named.set(seg, kid), at.kids.push(kid);
-        }
-        at = at.named.get(seg)!;
-      }
-      p.buildBoxes.forEach((b, k) => {
-        if (b.isEmpty()) return;
-        const q = { p, k, box: b.clone().applyMatrix4(p.group.matrix), vol: p.buildVolumes[k] };
-        at.pieces.push({ item: q, box: q.box, vol: q.vol });
-        model.union(q.box);
-        n++;
-      });
-    }
-    const ordered = buildOrder(root);
-    const order = ordered.map((o) => o.item);
-
-    const sphere = model.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : model.getBoundingSphere(new THREE.Sphere());
-    const R = Math.max(sphere.radius, 1e-6);
-    const vMax = Math.max(1e-12, ...order.map((q) => q.vol));
-    const up = new THREE.Vector3(0, 0, 1);
-    // seconds: impacts are spaced by heft (a heavy one gets a beat to ring out), launched so they land on time
-    const base = Math.min(0.3, Math.max(0.025, 5.5 / Math.max(1, n)));
-    const plan = order.map((q, i) => {
-      const h = Math.cbrt(q.vol / vMax);
-      const toHit = 0.55 - 0.27 * h;
-      return { q, i, h, toHit, dur: toHit / BUILD_HIT, gap: base * (0.5 + h) };
-    });
-    let hit = 0;
-    const hitAt = plan.map((_, i) => (i ? (hit += plan[i - 1].gap + ordered[i].pause) : 0));
-    // long builds are squeezed to ~12 s by tightening the spacing, not the flights
-    const span = hit + 0.55;
-    const squeeze = span > 11.5 ? Math.max(0.05, (11.5 - 0.55) / hit) : 1;
-    const launch = plan.map((x, i) => hitAt[i] * squeeze - x.toHit);
-    const first = Math.min(0, ...launch);
-    const times = launch.map((t) => t - first);
-    let total = 0;
-    plan.forEach((x, i) => (total = Math.max(total, times[i] + x.dur)));
-    total += 0.3;
-
-    const hits: { at: number; k: number }[] = [];
-    const flights = new Map<PartObject, BuildPiece[]>();
-    plan.forEach(({ q, i, h, toHit, dur }) => {
-      const r = q.box.getBoundingSphere(new THREE.Sphere()).radius;
-      // thrown from above, out past the model on the piece's own side
-      const mid = q.box.getCenter(new THREE.Vector3());
-      const out = mid.clone().sub(sphere.center).setZ(0);
-      if (out.lengthSq() < (R * 0.05) ** 2) out.set(Math.cos(hash(i) * 6.283), Math.sin(hash(i) * 6.283), 0);
-      out.normalize();
-      const dir = out.multiplyScalar(0.75).add(up).add(new THREE.Vector3(hash(i + 0.1) - 0.5, hash(i + 0.2) - 0.5, 0).multiplyScalar(0.5)).normalize();
-      const offset = dir.clone().multiplyScalar(R * 1.6 + r);
-      // tumbling about an axis across its path; light pieces flutter more
-      const spin = new THREE.Vector3().crossVectors(dir, up);
-      if (spin.lengthSq() < 1e-6) spin.set(1, 0, 0);
-      spin.normalize().multiplyScalar((hash(i + 0.3) < 0.5 ? -1 : 1) * (0.35 + 0.5 * hash(i + 0.4)) * (1.4 - 0.7 * h));
-      // into the part's coordinates (placements are rigid)
-      const inv = new THREE.Matrix4().copy(q.p.group.matrix).invert();
-      const rot = new THREE.Matrix3().setFromMatrix4(inv);
-      let list = flights.get(q.p);
-      if (!list) flights.set(q.p, (list = []));
-      list[q.k] = {
-        pivot: mid.clone().applyMatrix4(inv),
-        start: times[i] / total,
-        dur: dur / total,
-        offset: offset.applyMatrix3(rot),
-        spin: spin.applyMatrix3(rot),
-        bounce: Math.min(r * (0.2 - 0.15 * h), R * 0.04),
-      };
-      hits.push({ at: (times[i] + toHit) / total, k: Math.max(0.03, h ** 1.5) });
-    });
-    for (const [p, list] of flights) p.setBuild(list);
-    this.buildPlan = { ms: total * 1000, hits };
+  setStepPose(id: string, m: THREE.Matrix4 | null, hidden = false) {
+    const prev = this.stepMotion.get(id);
+    if (m) prev ? prev.copy(m) : this.stepMotion.set(id, m.clone());
+    else this.stepMotion.delete(id);
+    if (hidden) this.stepHidden.add(id);
+    else this.stepHidden.delete(id);
+    this.applyStep(id);
+    this.boundsCache = null;
+    this.requestRender();
   }
 
-  /** Camera offset from the build's impacts at progress `t`: a sharp jolt down, then a rattle. */
-  private buildShake(t: number) {
-    const plan = this.buildPlan;
-    if (!plan) return null;
-    const cam = this.camera;
-    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
-    const upv = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
-    let x = 0,
-      y = 0;
-    for (const h of plan.hits) {
-      const dt = ((t - h.at) * plan.ms) / 1000;
-      if (dt < 0 || dt > 0.6) continue;
-      const env = h.k * Math.exp(-dt * 11);
-      x += env * Math.sin(dt * 95 + h.at * 50) * 0.5;
-      y += env * (Math.cos(dt * 80) - 0.3);
+  private applyStep(id: string) {
+    const p = this.parts.get(id);
+    if (p) {
+      this.placeGroup(p.group, id);
+      p.group.visible = !this.hidden.has(id) && !this.stepHidden.has(id);
+      if (this.section) this.applyClip(p);
     }
-    if (!x && !y) return null;
-    const amp = this.modelSphere().radius * 0.018;
-    return right.multiplyScalar(x * amp).addScaledVector(upv, -y * amp);
+    for (const l of this.markup.children) if (l.userData.part === id) this.placeGroup(l, id);
   }
 
   /** The mesh currently shown for a part (e.g. to write derived-data caches). */
@@ -487,11 +394,20 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** Fade a part back toward the background (as a part that failed to regenerate shows). */
+  setDimmed(id: string, dim: boolean) {
+    if (dim === this.dimmed.has(id)) return;
+    if (dim) this.dimmed.add(id);
+    else this.dimmed.delete(id);
+    this.restyle(id);
+    this.requestRender();
+  }
+
   setVisible(id: string, visible: boolean) {
     if (visible) this.hidden.delete(id);
     else this.hidden.add(id);
     const p = this.parts.get(id);
-    if (p) p.group.visible = visible;
+    if (p) p.group.visible = visible && !this.stepHidden.has(id);
     this.syncOverlaps();
     this.boundsCache = null;
     this.requestRender();
@@ -499,7 +415,7 @@ export class Viewer {
 
   /** Show only these parts (empty = show all). */
   isolate(ids: string[]) {
-    for (const [id, p] of this.parts) p.group.visible = (!ids.length || ids.includes(id)) && !this.hidden.has(id);
+    for (const [id, p] of this.parts) p.group.visible = (!ids.length || ids.includes(id)) && !this.hidden.has(id) && !this.stepHidden.has(id);
     this.syncOverlaps();
     this.boundsCache = null;
     this.requestRender();
@@ -844,16 +760,23 @@ export class Viewer {
     return this.transforms.get(id)?.clone() ?? new THREE.Matrix4();
   }
 
-  /** Part coordinates -> world. */
+  /** Part coordinates -> world (mid-step parts included). */
   toWorld(part: string, v: THREE.Vector3): THREE.Vector3 {
-    const m = this.transforms.get(part);
+    const m = this.shownMatrix(part);
     return m ? v.clone().applyMatrix4(m) : v.clone();
   }
 
   /** World -> part coordinates. */
   toLocal(part: string, v: THREE.Vector3): THREE.Vector3 {
-    const m = this.transforms.get(part);
+    const m = this.shownMatrix(part);
     return m ? v.clone().applyMatrix4(m.clone().invert()) : v.clone();
+  }
+
+  /** Where a part is shown: its pose, moved by its step; undefined when in place. */
+  private shownMatrix(part: string): THREE.Matrix4 | undefined {
+    const m = this.transforms.get(part),
+      s = this.stepMotion.get(part);
+    return s ? (m ? m.clone().premultiply(s) : s) : m;
   }
 
   private placeGroup(o: THREE.Object3D, part: string) {
@@ -861,6 +784,9 @@ export class Viewer {
     o.matrixAutoUpdate = false;
     if (m) o.matrix.copy(m);
     else o.matrix.identity();
+    // mid-step: moved (in world) from where the assembly puts it
+    const s = this.stepMotion.get(part);
+    if (s) o.matrix.premultiply(s);
     o.matrixWorldNeedsUpdate = true;
   }
 
@@ -1041,7 +967,7 @@ export class Viewer {
   private syncOverlaps() {
     for (const o of this.overlaps.children) {
       const [a, b] = o.userData.pair as [string, string];
-      o.visible = !!this.parts.get(a)?.group.visible && !!this.parts.get(b)?.group.visible;
+      o.visible = !this.stepping && !!this.parts.get(a)?.group.visible && !!this.parts.get(b)?.group.visible;
       o.traverse((c: any) => {
         if (!c.material) return;
         if (c.userData.ghost) c.visible = this.overlapsOnTop;
@@ -1769,12 +1695,9 @@ export class Viewer {
     this.needsRender = false;
     this.viewCube?.update(this.camera);
     this.syncHelpers();
-    // mid-build the faces are moving: the AO pass would shade the finished shape
-    const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section && (this.build === null || this.build >= 1);
+    const useAO = this.ao && this.aoEnabledByDepth && this.parts.size > 0 && !this.section;
     const r = this.renderer, cam = this.camera;
     const layers = cam.layers.mask, autoClear = r.autoClear, bg = this.scene.background;
-    const shake = this.build !== null && this.build < 1 ? this.buildShake(this.build) : null;
-    if (shake) cam.position.add(shake), cam.updateMatrixWorld();
     try {
       // Paint the grid first, then depth-test axes and parts together over it.
       r.setRenderTarget(null);
@@ -1789,7 +1712,6 @@ export class Viewer {
       cam.layers.mask = layers;
       r.autoClear = autoClear;
       this.scene.background = bg;
-      if (shake) cam.position.sub(shake), cam.updateMatrixWorld();
     }
     this.stats.frames++;
     this.stats.lastFrameMs = performance.now() - t0;

@@ -240,7 +240,7 @@ export function loadModule(entry: string, o: LoadOptions): Record<string, any> {
     o.touched?.add(path);
     const hit = cache.get(path);
     if (hit) return hit.exports;
-    if (!/^(studios|lib)\//.test(path)) throw new ScriptError(`scripts must live under studios/ or lib/ (got ${path})`, path);
+    if (!/^(studios|lib|builds)\//.test(path)) throw new ScriptError(`scripts must live under studios/, lib/ or builds/ (got ${path})`, path);
     const src = o.scripts.get(path);
     if (src === undefined) throw new ScriptError(`no script at ${path}`, path);
     const code = transpile(path, src);

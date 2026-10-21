@@ -25,10 +25,10 @@ const script = (documentID: string, path: string) =>
   db.zql.run(zql.scripts.where("documentID", documentID).where("path", path).one());
 
 describe("paths", () => {
-  test("only studios/*.ts and lib/**/*.ts", () => {
-    for (const ok of ["studios/bracket.ts", "studios/lid-2.ts", "lib/gears.ts", "lib/a/b/holes.ts"])
+  test("only studios/*.ts, builds/*.ts and lib/**/*.ts", () => {
+    for (const ok of ["studios/bracket.ts", "studios/lid-2.ts", "builds/hinge.ts", "lib/gears.ts", "lib/a/b/holes.ts"])
       expect(validateScriptPath(ok)).toBeNull();
-    for (const bad of ["bracket.ts", "studios/a/b.ts", "studios/x.js", "lib/../x.ts", "/studios/x.ts", "studios/.hidden.ts", "src/x.ts", "lib//x.ts", "studios/"])
+    for (const bad of ["bracket.ts", "studios/a/b.ts", "studios/x.js", "lib/../x.ts", "/studios/x.ts", "studios/.hidden.ts", "src/x.ts", "lib//x.ts", "studios/", "builds/a/b.ts", "builds/"])
       expect(validateScriptPath(bad)).not.toBeNull();
   });
 

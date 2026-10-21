@@ -1,22 +1,25 @@
 /** Isomorphic helpers shared by client, server and MCP. */
 
 const STUDIO_RE = /^studios\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ts$/;
+const BUILD_RE = /^builds\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ts$/;
 const LIB_RE = /^lib\/([A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ts$/;
 
 /**
- * Script paths: `studios/<name>.ts` (one level; each studio exports one or more parts) or
- * `lib/**\/<name>.ts`. No `..`, no hidden segments, no absolute paths.
+ * Script paths: `studios/<name>.ts` (one level; each studio exports one or more parts),
+ * `builds/<name>.ts` (one level; build steps for an assembly) or `lib/**\/<name>.ts`. No `..`, no hidden segments, no absolute paths.
  * Mirrors the CHECK constraint on scripts.path.
  */
 export function validateScriptPath(path: string): string | null {
   if (typeof path !== "string" || path.length === 0) return "path is required";
   if (path.length > 256) return "path is too long (max 256 characters)";
   if (path.includes("..")) return "path must not contain '..'";
-  if (STUDIO_RE.test(path) || LIB_RE.test(path)) return null;
+  if (STUDIO_RE.test(path) || BUILD_RE.test(path) || LIB_RE.test(path)) return null;
   if (path.startsWith("studios/") && path.slice("studios/".length).includes("/"))
     return `"${path}": studios/ is flat (e.g. studios/bracket.ts)`;
+  if (path.startsWith("builds/") && path.slice("builds/".length).includes("/"))
+    return `"${path}": builds/ is flat (e.g. builds/gearbox.ts)`;
   if (!path.endsWith(".ts")) return `"${path}": scripts must be .ts files`;
-  return `"${path}": scripts must live under studios/ (studios/<name>.ts) or lib/ (lib/**/<name>.ts)`;
+  return `"${path}": scripts must live under studios/ (studios/<name>.ts), builds/ (builds/<name>.ts) or lib/ (lib/**/<name>.ts)`;
 }
 
 export function isValidScriptPath(path: string): boolean {

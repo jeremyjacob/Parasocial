@@ -4,7 +4,7 @@
 import { noteKernelFault, faultMessage, boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, edgeCenter, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, declareAssembly, bodyOf, parseStack, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, declareBuildSteps, bodyOf, parseStack, type BuildStepsDef, type StepTarget, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
 import { withinScope } from "./assembly-scope";
@@ -63,6 +63,36 @@ export type AssemblyInfo = {
  * standing for all their parts (`withinScope`).
  */
 export type AssemblyOverlap = { a: string; b: string; scope: string; reason?: string; source?: SourceRef };
+
+/**
+ * A build script (`builds/<name>.ts`, `export default buildSteps(assembly, ...)`): the order an
+ * assembly goes together in, as steps that each bring in some of its copies. `id` is the file stem
+ * (`stem:key` for a named export); `assembly` the assembly's id. Copies no step names make a last
+ * step (`auto`), with a warning.
+ */
+export type BuildInfo = { id: string; file: string; export: string; name: string; description?: string; assembly: string; steps: BuildStep[]; problems: Problem[] };
+
+/**
+ * One step: the copies it brings in (instance ids) and how they go in, in the assembly's
+ * coordinates. `from`: offsets from each copy's place it passes through, ending in place. `along`:
+ * slides in along an axis (a vector, or a connector: `owner` the copy it's on; none means each moving
+ * copy of `part` uses its own), starting `distance` out (auto when absent). `turn`: degrees about that
+ * axis on the way in. `group`: the copies move as one rigid body (a subassembly).
+ */
+export type BuildStep = {
+  title: string;
+  description?: string;
+  parts: string[];
+  from?: Vec3[];
+  along?: { axis: Vec3 } | ({ part: string; owner?: string } & ConnectorAt);
+  distance?: number;
+  turn?: number;
+  stagger?: number;
+  duration?: number;
+  group?: boolean;
+  auto?: boolean;
+  source?: SourceRef;
+};
 
 /**
  * Two joints' values tied together: b = ratio·a + offset, each in its own unit (degrees, mm).
@@ -218,6 +248,9 @@ export class Engine {
   private assemblyIdOf = new Map<AssemblyDef, string>();
   private partIdOf = new Map<PartDef, string>();
   private assemblyCache: AssemblyInfo[] | null = null;
+  /** Build scripts found by the last discovery (a load error instead of a def when the file failed). */
+  private buildDefs: { id: string; file: string; export: string; def?: BuildStepsDef; error?: Problem }[] = [];
+  private buildCache: BuildInfo[] | null = null;
   /** Dragged assembly positions: instance -> transform from its modeled pose. */
   private poses = new Map<string, PartPose>();
   /** Overlaps in part `a`'s own coordinates, by the two shapes and their relative pose. */
@@ -286,6 +319,16 @@ export class Engine {
         failed.add(f);
       }
     }
+    // build scripts import studios: same module cache, so their parts and assemblies are the ones discovered here
+    const buildFiles = [...this.scripts.keys()].filter((p) => BUILD_FILE.test(p)).sort();
+    const buildErrors = new Map<string, Problem>();
+    for (const f of buildFiles) {
+      try {
+        loadModule(f, { scripts: this.scripts, api: API_MODULE, seed: this.seed, cache, onLoaded: (path, exports) => loaded.push([path, exports]) });
+      } catch (e) {
+        buildErrors.set(f, scriptProblem(e, buildStem(f), f));
+      }
+    }
     const owner = new Map<PartDef, string>();
     for (const [path, exports] of loaded) if (STUDIO_FILE.test(path)) for (const [, v] of exportEntries(exports)) if (isPartDef(v) && !owner.has(v)) owner.set(v, path);
     const exportsOf = new Map(loaded);
@@ -294,6 +337,21 @@ export class Engine {
     this.assemblyIdOf = new Map();
     this.partIdOf = new Map();
     this.assemblyCache = null;
+    this.buildCache = null;
+    this.buildDefs = [];
+    for (const f of buildFiles) {
+      const stem = buildStem(f);
+      const exports = exportsOf.get(f);
+      const error = buildErrors.get(f);
+      if (error || !exports) {
+        this.buildDefs.push({ id: stem, file: f, export: "default", error: error ?? { severity: "error", kind: "runtime", message: `${f} didn't load`, part: stem, source: { file: f, line: 1 } } });
+        continue;
+      }
+      const entries = exportEntries(exports).filter(([, v]) => isBuildStepsDef(v));
+      for (const [key] of [...entries.filter(([k]) => k === "default"), ...entries.filter(([k]) => k !== "default")]) this.buildDefs.push({ id: key === "default" ? stem : `${stem}:${key}`, file: f, export: key, def: exports[key] });
+      if (!entries.length)
+        this.buildDefs.push({ id: stem, file: f, export: "default", error: { severity: "error", kind: "runtime", message: `${f} must export build steps: \`export default buildSteps(assembly, ({ step }) => ...)\` (${f.split("/").pop()}:1)`, part: stem, source: { file: f, line: 1 } } });
+    }
     for (const f of files) {
       const stem = studioStem(f);
       const exports = exportsOf.get(f);
@@ -519,6 +577,124 @@ export class Engine {
       for (const x of ids(o.a)) for (const y of bs) if (x !== y) (a.overlaps ??= []).push({ a: x, b: y, scope, ...(o.reason !== undefined && { reason: o.reason }), ...(source && { source }) });
     }
     return fixed[0] ?? a.joints[firstJoint]?.a ?? a.instances.find((i) => i.id.startsWith(`${scope}/`))?.id;
+  }
+
+  /**
+   * Every build script, its steps resolved to the copies of the assembly it builds. Runs the build
+   * bodies only (no geometry): connector axes are resolved where the copies are shown.
+   */
+  builds(): BuildInfo[] {
+    this.partInfos();
+    if (this.buildCache) return this.buildCache;
+    const asms = this.assemblies();
+    const out: BuildInfo[] = [];
+    for (const b of this.buildDefs) {
+      const info: BuildInfo = { id: b.id, file: b.file, export: b.export, name: b.def?.meta?.name ?? b.id, ...(b.def?.meta?.description && { description: b.def.meta.description }), assembly: "", steps: [], problems: [] };
+      out.push(info);
+      if (!b.def) {
+        info.problems.push(b.error!);
+        continue;
+      }
+      const problem = (message: string, source?: SourceRef, severity: "error" | "warning" = "error") =>
+        info.problems.push({ severity, kind: "runtime", message: source ? `${message} (${source.file.split("/").pop()}:${source.line})` : message, part: b.id, source: source ?? { file: b.file, line: exportLine(this.scripts.get(b.file) ?? "", b.export) } });
+      const asmId = this.assemblyIdOf.get(b.def.assembly);
+      const a = asmId === undefined ? undefined : asms.find((x) => x.id === asmId);
+      if (!a) {
+        problem(`buildSteps: the assembly "${b.def.assembly.name}" isn't exported by a studio; import it from the studio that exports it`);
+        continue;
+      }
+      info.assembly = a.id;
+      if (!b.def.meta?.name) info.name = a.name;
+      let decls;
+      try {
+        decls = declareBuildSteps(b.def);
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        problem(err.message, sourceOf(err.stack ?? ""));
+        continue;
+      }
+      const remaining = new Set(a.instances.map((i) => i.id));
+      const label = (id: string) => id.slice(a.id.length + 1);
+      for (const d of decls) {
+        const source = sourceOf(d.stack);
+        const ids: string[] = [];
+        let group = false;
+        for (const t of d.targets) {
+          const found = this.stepTargets(a, t);
+          if (typeof found === "string") {
+            problem(`step("${d.title}"): ${found}`, source);
+            continue;
+          }
+          const fresh = found.ids.filter((id) => remaining.has(id));
+          if (!fresh.length && found.ids.length) problem(`step("${d.title}"): ${found.what} came in at an earlier step`, source, "warning");
+          for (const id of fresh) remaining.delete(id), ids.push(id);
+          group ||= found.group && fresh.length > 1;
+        }
+        if (!ids.length) continue;
+        const step: BuildStep = { title: d.title, parts: ids, ...(source && { source }) };
+        if (group && d.targets.length === 1) step.group = true;
+        if (d.description) step.description = d.description;
+        if (d.from) step.from = d.from;
+        if (d.along) {
+          if ("axis" in d.along) step.along = { axis: d.along.axis };
+          else {
+            const c = d.along.connector;
+            const part = this.partIdOf.get(c.part);
+            if (!part) problem(`step("${d.title}"): along: the part "${c.part.name}" isn't exported by a studio`, source);
+            else {
+              // a connector of a named copy is on that copy; of a part, on each moving copy of it (else its direct copy)
+              let owner: string | undefined;
+              if (c.instance) {
+                const key = this.handleKey(c.instance);
+                if (typeof key === "string" && key.startsWith("!")) problem(`step("${d.title}"): along: ${key.slice(1)}`, source);
+                else owner = `${a.id}/${key}`;
+              } else if (!ids.some((id) => sourcePart(id) === part)) owner = a.instances.find((i) => i.part === part)?.id;
+              step.along = { part, connector: c.name, ...(c.index !== undefined && { index: c.index }), ...(owner && { owner }) };
+            }
+          }
+        }
+        for (const k of ["distance", "turn", "stagger", "duration"] as const) if (d[k] !== undefined) step[k] = d[k];
+        info.steps.push(step);
+      }
+      if (remaining.size) {
+        const left = [...remaining];
+        const names = left.slice(0, 4).map(label).join(", ") + (left.length > 4 ? ` and ${left.length - 4} more` : "");
+        problem(`${left.length === 1 ? "1 copy isn't" : `${left.length} copies aren't`} in any step (${names}); they come in last. Add them to a step`, undefined, "warning");
+        info.steps.push({ title: "Add the remaining parts", parts: left, auto: true });
+      }
+    }
+    return (this.buildCache = out);
+  }
+
+  /** A step target's key under its assembly ("box:lid@2", "corner@left/cart:wheel"), or "!" + what's wrong. */
+  private handleKey(h: StepTarget): string {
+    if (isPartDef(h)) return this.partIdOf.get(h) ?? `!the part "${h.name}" isn't exported by a studio`;
+    let base: string | undefined;
+    if ("__instance" in h) base = this.partIdOf.get(h.of);
+    else base = this.assemblyIdOf.get(h.of);
+    if (!base) return `!${"__instance" in h ? `the part "${h.of.name}"` : `the assembly "${h.of.name}"`} isn't exported by a studio`;
+    if (h.name !== undefined) base += `@${h.name}`;
+    if (!h.within) return base;
+    const w = this.handleKey(h.within);
+    return w.startsWith("!") ? w : `${w}/${base}`;
+  }
+
+  /** The copies of `a` a step target stands for, or what's wrong. `group`: a subassembly (moves as one). */
+  private stepTargets(a: AssemblyInfo, t: StepTarget): { ids: string[]; what: string; group: boolean } | string {
+    const key = this.handleKey(t);
+    if (key.startsWith("!")) return key.slice(1);
+    if (isPartDef(t)) {
+      // the assembly's own copies; only when it has none, those in its subassemblies
+      const all = a.instances.filter((i) => i.part === key);
+      const own = all.filter((i) => i.scope === a.id);
+      const ids = (own.length ? own : all).map((i) => i.id);
+      return ids.length ? { ids, what: `every copy of "${t.name}"`, group: false } : `"${t.name}" isn't in "${a.name}"`;
+    }
+    const id = `${a.id}/${key}`;
+    const what = `${t.of.name}${t.name === undefined ? "" : ` "${t.name}"`}`;
+    if ("__instance" in t) return a.instances.some((i) => i.id === id) ? { ids: [id], what: `"${what}"`, group: false } : `"${a.name}" has no copy ${what}${t.name === undefined ? " named directly (use copy(part, name) for an inserted one)" : ""}`;
+    const ids = a.instances.filter((i) => withinScope(i.id, id)).map((i) => i.id);
+    return ids.length ? { ids, what: `"${what}"`, group: true } : `"${a.name}" doesn't insert ${what}${t.name === undefined ? " without a name" : ""}`;
   }
 
   /**
@@ -1123,6 +1299,10 @@ export class Engine {
 }
 
 const STUDIO_FILE = /^studios\/[^/]+\.ts$/;
+const BUILD_FILE = /^builds\/[^/]+\.ts$/;
+
+/** `builds/hinge.ts` -> `hinge` (the build script's id). */
+export const buildStem = (file: string) => file.slice("builds/".length, -".ts".length);
 
 /** The part id shared params' overrides are stored under. */
 export const SHARED = "*";
@@ -1178,12 +1358,13 @@ function studioFolder(exports: Record<string, any>): string | undefined {
 
 const isPartDef = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;
 const isAssemblyDef = (v: unknown): v is AssemblyDef => !!v && typeof v === "object" && (v as any).__assembly === true;
+const isBuildStepsDef = (v: unknown): v is BuildStepsDef => !!v && typeof v === "object" && (v as any).__buildSteps === true;
 
 /** The first user-code frame of a stack, mapped to its script line. */
 function sourceOf(stack: string): SourceRef | undefined {
   for (const f of parseStack(stack)) {
     const m = mapScriptFrame(f);
-    if (m && /^(studios|lib)\//.test(m.file)) return { file: m.file, line: m.line, col: m.col };
+    if (m && /^(studios|lib|builds)\//.test(m.file)) return { file: m.file, line: m.line, col: m.col };
   }
   return undefined;
 }

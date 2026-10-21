@@ -23,8 +23,9 @@
 	type Props = {
 		display?: DisplayMode;
 		section?: boolean;
-		/** Build animation; the button shows only when bound. */
+		/** The Build view is open; the button shows only when this is given. */
 		build?: boolean;
+		onBuild?: () => void;
 		grid?: boolean;
 		origin?: boolean;
 		/** Assembly overlaps drawn through covering geometry (x-ray) or depth-tested; the menu item shows only when bound. */
@@ -38,7 +39,8 @@
 	let {
 		display = $bindable('shaded-edges'),
 		section = $bindable(false),
-		build = $bindable(),
+		build,
+		onBuild,
 		grid = $bindable(true),
 		origin = $bindable(true),
 		overlapsOnTop = $bindable(),
@@ -118,7 +120,7 @@
 		<Scissors />
 	</IconButton>
 	{#if build !== undefined}
-		<IconButton label="Build animation" shortcut={['A']} tooltipSide={tipSide} active={build} onclick={() => (build = !build)} class="rounded-md">
+		<IconButton label="Build steps" shortcut={['A']} tooltipSide={tipSide} active={build} onclick={() => onBuild?.()} class="rounded-md" data-testid="build-steps-button">
 			<Blocks />
 		</IconButton>
 	{/if}

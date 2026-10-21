@@ -11,6 +11,7 @@ import type { EngineClient } from '@parasocial/runtime/browser/client';
 import { partColorAt } from '$lib/styles/tokens';
 import { newID } from '$lib/zero';
 import { AssemblyController } from './assembly.svelte';
+import { StepsController } from './steps.svelte';
 
 type Mesh = NonNullable<ReturnType<Viewer['meshOf']>>;
 
@@ -49,6 +50,8 @@ export class WorkspaceState {
 	viewer: Viewer | null = null;
 	/** Assemblies: joints, dragging, saved positions, interference. */
 	readonly asm: AssemblyController = new AssemblyController(this);
+	/** The Build view (A): an assembly's build steps, played in the viewport. */
+	readonly steps: StepsController = new StepsController(this);
 
 	// ---- synced rows (set by the component from useQuery) ----
 	doc = $state.raw<DocRow | null>(null);
@@ -93,8 +96,6 @@ export class WorkspaceState {
 	/** Section view (S): axis, offset along it (mm), flipped. */
 	/** Axis-aligned section, or 'Face': through a planar face's plane (offset along its outward normal). */
 	section = $state<{ axis: 'X' | 'Y' | 'Z' | 'Face'; offset: number; flip: boolean; plane?: { origin: number[]; normal: number[] } } | null>(null);
-	/** Build animation (A): progress 0..1, playing, looping, playback speed (remembered per browser). Just for show. */
-	build = $state<{ t: number; playing: boolean; loop: boolean; speed: number } | null>(null);
 	/** Ground grid and origin triad (G, Shift+G); remembered per browser. */
 	showGrid = $state(pref('parasocial:grid', true));
 	showOrigin = $state(pref('parasocial:origin', true));
@@ -358,6 +359,7 @@ export class WorkspaceState {
 			this.setPartInfos(await engine.setDocument({ scripts, overrides, units: { length: this.doc?.units ?? 'mm', angle: 'deg' } }));
 			// before listing parts: a studio that only exports an assembly has none
 			await this.asm.refresh();
+			await this.steps.refresh();
 			for (const [k, v] of Object.entries(scripts)) this.sentScripts.set(k, v);
 			for (const p of ids) this.sentOverrides.set(p, JSON.stringify(overrides[p]));
 			parts = this.parts;
@@ -382,6 +384,7 @@ export class WorkspaceState {
 			const before = new Map(this.partInfos.map((p) => [p.id, JSON.stringify(p)]));
 			if (infos) this.setPartInfos(infos);
 			if (changed.length) await this.asm.refresh();
+			if (changed.length) await this.steps.refresh();
 			parts = this.parts;
 			if (changed.length) {
 				// only what reads a changed script (or looked for a missing one); the rest keep their results
@@ -993,7 +996,7 @@ export class WorkspaceState {
 	/** Start a section at a planar face, using an axis when its normal is aligned to one. */
 	sectionFromFace(plane: { origin: number[]; normal: number[] }) {
 		const k = plane.normal.findIndex((c) => Math.abs(c) > 1 - 1e-6);
-		this.build = null;
+		this.steps.close();
 		this.section = k < 0
 			? { axis: 'Face', offset: 0, flip: false, plane }
 			: { axis: (['X', 'Y', 'Z'] as const)[k], offset: plane.origin[k], flip: plane.normal[k] < 0 };
@@ -1002,7 +1005,7 @@ export class WorkspaceState {
 	/** Section on/off (S). Start at the selected planar face, otherwise restore the last settings. */
 	toggleSection(center = 0) {
 		if (this.section) return void (this.section = null);
-		this.build = null;
+		this.steps.close();
 		const plane = this.selection.length === 1 ? this.viewer?.facePlane(this.selection[0]) : null;
 		if (plane) return this.sectionFromFace(plane);
 		let last: any = null;
@@ -1010,24 +1013,6 @@ export class WorkspaceState {
 			last = JSON.parse(localStorage.getItem('parasocial:section') ?? 'null');
 		} catch {}
 		this.section = last && ['X', 'Y', 'Z'].includes(last.axis) && Number.isFinite(last.offset) ? { axis: last.axis, offset: last.offset, flip: !!last.flip } : { axis: 'Z', offset: center, flip: false };
-	}
-
-	/** Build animation on (playing from the start) or off. Takes the section's place. */
-	toggleBuild() {
-		if (this.build) return void (this.build = null);
-		this.section = null;
-		let speed = 1;
-		try {
-			speed = Number(localStorage.getItem('parasocial:buildSpeed')) || 1;
-		} catch {}
-		this.build = { t: 0, playing: true, loop: false, speed };
-	}
-
-	setBuildSpeed(speed: number) {
-		if (this.build) this.build = { ...this.build, speed };
-		try {
-			localStorage.setItem('parasocial:buildSpeed', String(speed));
-		} catch {}
 	}
 
 	/** Remember section settings (called whenever they change). */

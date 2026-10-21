@@ -38,6 +38,7 @@
  *   ops get ids (`sketch1`, `fillet2`) that shift when you insert ops of the same type earlier.
  * Appearance: s.color("#4a7bd0"), s.opacity(0.4), s.appearance({ roughness }), s.material("pla").
  * Assemblies: see topic "assembly"; intended overlaps (press fits, threads): expectOverlap(a, b, { reason }).
+ * Build steps: how an assembly goes together, in builds/<name>.ts: `export default buildSteps(mechanism, ({ step }) => step("Fit the lid", lid, { from: [0, 0, 30] }))`; see topic "steps".
  * @example
  * import { part, param, sketch, plane } from "parasocial";
  * export default part("Plate", () => {
@@ -52,6 +53,8 @@ export type { PartDef, PartTools, PartOptions, ParamOptions, ConnectorRef } from
 export { assembly } from "./assembly";
 export type { AssemblyDef, AssemblyOptions, AssemblyTools, JointAt, JointOpts, MateOpts, Range, Instance, SubAssembly, Body, InsertOpts, Placement, Joint, RelationOpts, OverlapOpts, OverlapSide } from "./assembly";
 export type { FrameSpec } from "./connector";
+export { buildSteps } from "./steps";
+export type { BuildStepsDef, BuildStepsOptions, BuildStepsTools, BuildStepsBody, StepTarget, StepMotion, StepOpts } from "./steps";
 export { sketch, Sketch, loft, pipe } from "./sketch";
 export type { P2, ExtrudeOpts, RevolveOpts } from "./sketch";
 export type { SweepOpts, PipeOpts } from "./sketch";
