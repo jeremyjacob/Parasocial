@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { ChevronLeft, ChevronRight, Pause, Play, X, ListOrdered, FileCode2, ChevronDown, Plus } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, Pause, Play, X, ListOrdered, FileCode2, ChevronDown, Plus, Boxes } from '@lucide/svelte';
 	import { Button, IconButton } from '$lib/components/ui/button';
 	import { Slider } from '$lib/components/ui/slider';
 	import { DropdownMenu, type MenuEntry } from '$lib/components/ui/menu';
@@ -21,6 +21,21 @@
 	const speedLabel = (s: number) => `${s < 1 ? s.toFixed(2).replace(/0$/, '').replace(/^0/, '') : s}×`;
 	const speedItems = $derived<MenuEntry[]>([{ type: 'label', label: 'Speed' }, ...SPEEDS.map((s) => ({ type: 'checkbox' as const, label: speedLabel(s), checked: st.speed === s, onCheckedChange: () => st.setSpeed(s) }))]);
 	const buildItems = $derived<MenuEntry[]>(st.options.map((b) => ({ type: 'checkbox' as const, label: b.name, checked: b.id === build?.id, onCheckedChange: () => st.choose(b.id) })));
+
+	/** Subassemblies built on their own, by id, and how deep each sits (a stage within a stage: 2). */
+	const stages = $derived(new Map((build?.stages ?? []).map((g) => [g.id, g])));
+	const within = (scope: string, parent: string) => scope === parent || scope.startsWith(`${parent}/`);
+	const depth = (stage: string | undefined) => (stage ? (build?.stages ?? []).filter((g) => within(stage, g.id)).length : 0);
+	/** Step `k` starts building a stage (from outside it): its header goes above. */
+	const opens = (k: number) => {
+		const s = st.steps[k].stage;
+		const prev = st.steps[k - 1]?.stage;
+		return s !== undefined && (prev === undefined || !within(prev, s));
+	};
+	const stageLabel = (id: string | undefined) => {
+		const g = id ? stages.get(id) : undefined;
+		return g ? `${g.name}${g.copies.length > 1 ? ` ×${g.copies.length}` : ''}` : '';
+	};
 
 	/** How far step `k` has played: 0 not started, 1 done. */
 	const progress = (k: number) => Math.max(0, Math.min(1, st.pos - k));
@@ -102,7 +117,13 @@
 				{@const p = progress(k)}
 				{@const on = k === current}
 				{@const done = p >= 1 && !on}
-				<li data-step={k} in:rise={{ y: 8, duration: 200, delay: Math.min(k, 8) * 30 }}>
+				{@const d = depth(s.stage)}
+				{#if opens(k)}
+					<li class="flex items-center gap-1.5 px-1 pt-1 text-label text-fg-secondary" style="margin-left:{(d - 1) * 10}px" data-testid="build-stage">
+						<Boxes size={12} class="shrink-0" /><span class="truncate">Build the {stageLabel(s.stage)} first</span>
+					</li>
+				{/if}
+				<li data-step={k} class={d ? 'border-l-2 border-line pl-2' : ''} style={d > 1 ? `margin-left:${(d - 1) * 10}px` : ''} in:rise={{ y: 8, duration: 200, delay: Math.min(k, 8) * 30 }}>
 					<button
 						class="focus-ring group/card relative flex w-full flex-col overflow-hidden rounded-[8px] text-left transition-[opacity,box-shadow,background-color] duration-[var(--duration-base)] ease-out {on ? 'bg-accent-subtle shadow-[inset_0_0_0_1.5px_var(--accent)]' : 'bg-input hover:bg-hover'} {p <= 0 && !on ? 'opacity-55 hover:opacity-90' : ''}"
 						onclick={() => st.go(k + 1)}
@@ -116,7 +137,7 @@
 								<div class="absolute inset-0 animate-pulse bg-hover"></div>
 							{/if}
 							<span class="absolute top-1.5 left-1.5 grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-caption font-medium tabular transition-colors duration-[var(--duration-base)] {on ? 'bg-accent text-fg-on-accent' : done ? 'bg-elevated text-fg' : 'bg-elevated text-fg-secondary'}">{k + 1}</span>
-							{#if s.parts.length > 1}<span class="absolute top-1.5 right-1.5 rounded-full bg-elevated px-1.5 text-caption text-fg-secondary tabular">×{s.parts.length}</span>{/if}
+							{#if s.moves.length > 1}<span class="absolute top-1.5 right-1.5 rounded-full bg-elevated px-1.5 text-caption text-fg-secondary tabular">×{s.moves.length}</span>{/if}
 						</div>
 						<div class="flex flex-col gap-0.5 px-2.5 pt-2 pb-2.5">
 							<span class="text-ui font-medium {s.auto ? 'text-fg-secondary italic' : ''}">{s.title}</span>
@@ -166,6 +187,7 @@
 	{#key current}
 		<div class="pointer-events-none absolute top-3 left-[calc(50%+122px)] z-10 -translate-x-1/2 rounded-full bg-elevated/90 px-3 py-1 text-ui shadow-toolbar backdrop-blur-sm" in:rise={{ y: -6, duration: 200 }} out:fadeOut>
 			<span class="text-fg-secondary tabular">Step {current + 1}</span>
+			{#if st.steps[current].stage}<span class="ml-1.5 text-fg-secondary">{stageLabel(st.steps[current].stage)} ·</span>{/if}
 			<span class="ml-1.5 font-medium">{st.steps[current].title}</span>
 		</div>
 	{/key}

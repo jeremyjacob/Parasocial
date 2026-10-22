@@ -4,7 +4,7 @@
 import { noteKernelFault, faultMessage, boundingBox, massProps, isValid, pointDistance, edgeTangent, isSmoothEdge, explore, exportSTEP, boolean as kBoolean, meshTolerances, tessellate, scoped, placed, topology, deleteTopology, writeBrep, readBrep, type Topology, type Shape, type EntityKind, type MeshData, type MeshQuality, type Vec3, distance as kDistance, compound } from "@parasocial/kernel";
 import { OpCache, edgeCenter, entityName, names, nameIndex, select, isSeamEdge, resolveTarget, disambiguate, faceOf, edgeOf, vertexOf, lineage, entityShape, type OpRecord, type AnchorTargetRef, type Resolution } from "@parasocial/naming";
 import * as api from "@parasocial/api";
-import { PartContext, runPart, declareAssembly, declareBuildSteps, bodyOf, parseStack, type BuildStepsDef, type StepTarget, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
+import { PartContext, runPart, declareAssembly, declareBuildSteps, bodyOf, parseStack, type BuildStepsDef, type StepDecl, type StepTarget, type Body, type SubAssembly, type PartDef, type PartRun, type Problem, type ParamDecl, type ColorSpec, type Appearance, type Material, type PartMeta, type AssemblyDef, type ConnectorFrame, type OpTiming, type JointType, type SourceRef, SI_DEFAULT, UNITS } from "@parasocial/api/internal";
 import { loadModule, mapScriptFrame, ScriptError } from "./loader";
 import { sourcePart } from "./protocol";
 import { withinScope } from "./assembly-scope";
@@ -68,16 +68,27 @@ export type AssemblyOverlap = { a: string; b: string; scope: string; reason?: st
  * A build script (`builds/<name>.ts`, `export default buildSteps(assembly, ...)`): the order an
  * assembly goes together in, as steps that each bring in some of its copies. `id` is the file stem
  * (`stem:key` for a named export); `assembly` the assembly's id. Copies no step names make a last
- * step (`auto`), with a warning.
+ * step (`auto`), with a warning. `stages`: the subassemblies built on their own before a step mounts
+ * them, in the order they start.
  */
-export type BuildInfo = { id: string; file: string; export: string; name: string; description?: string; assembly: string; steps: BuildStep[]; problems: Problem[] };
+export type BuildInfo = { id: string; file: string; export: string; name: string; description?: string; assembly: string; steps: BuildStep[]; stages: BuildStage[]; problems: Problem[] };
+
+/**
+ * A subassembly built on its own (a step's `build`): its steps (`stage: id`) come before the step
+ * that mounts it (`mount: id`), and play in its own coordinates. `id` is the copy built (its scope
+ * id), `copies` every copy the mount brings in, built the same way (the built one first);
+ * `assembly` the subassembly's assembly id.
+ */
+export type BuildStage = { id: string; assembly: string; name: string; copies: string[] };
 
 /**
  * One step: the copies it brings in (instance ids) and how they go in, in the assembly's
  * coordinates. `from`: offsets from each copy's place it passes through, ending in place. `along`:
  * slides in along an axis (a vector, or a connector: `owner` the copy it's on; none means each moving
  * copy of `part` uses its own), starting `distance` out (auto when absent). `turn`: degrees about that
- * axis on the way in. `group`: the copies move as one rigid body (a subassembly).
+ * axis on the way in. `units`: copies that move as one rigid body (a subassembly each; absent: each
+ * copy on its own). `stage`: the step builds that subassembly on its own (its coordinates, not the
+ * assembly's); `mount`: the step mounts the stage built before it.
  */
 export type BuildStep = {
   title: string;
@@ -89,7 +100,9 @@ export type BuildStep = {
   turn?: number;
   stagger?: number;
   duration?: number;
-  group?: boolean;
+  units?: string[][];
+  stage?: string;
+  mount?: string;
   auto?: boolean;
   source?: SourceRef;
 };
@@ -589,7 +602,7 @@ export class Engine {
     const asms = this.assemblies();
     const out: BuildInfo[] = [];
     for (const b of this.buildDefs) {
-      const info: BuildInfo = { id: b.id, file: b.file, export: b.export, name: b.def?.meta?.name ?? b.id, ...(b.def?.meta?.description && { description: b.def.meta.description }), assembly: "", steps: [], problems: [] };
+      const info: BuildInfo = { id: b.id, file: b.file, export: b.export, name: b.def?.meta?.name ?? b.id, ...(b.def?.meta?.description && { description: b.def.meta.description }), assembly: "", steps: [], stages: [], problems: [] };
       out.push(info);
       if (!b.def) {
         info.problems.push(b.error!);
@@ -605,63 +618,90 @@ export class Engine {
       }
       info.assembly = a.id;
       if (!b.def.meta?.name) info.name = a.name;
-      let decls;
-      try {
-        decls = declareBuildSteps(b.def);
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        problem(err.message, sourceOf(err.stack ?? ""));
-        continue;
-      }
-      const remaining = new Set(a.instances.map((i) => i.id));
-      const label = (id: string) => id.slice(a.id.length + 1);
-      for (const d of decls) {
-        const source = sourceOf(d.stack);
-        const ids: string[] = [];
-        let group = false;
-        for (const t of d.targets) {
-          const found = this.stepTargets(a, t);
-          if (typeof found === "string") {
-            problem(`step("${d.title}"): ${found}`, source);
-            continue;
-          }
-          const fresh = found.ids.filter((id) => remaining.has(id));
-          if (!fresh.length && found.ids.length) problem(`step("${d.title}"): ${found.what} came in at an earlier step`, source, "warning");
-          for (const id of fresh) remaining.delete(id), ids.push(id);
-          group ||= found.group && fresh.length > 1;
+      // each build body runs once (a stage's copies share its steps), its misuse said once
+      const declared = new Map<BuildStepsDef, StepDecl[] | undefined>();
+      const declare = (def: BuildStepsDef) => {
+        if (declared.has(def)) return declared.get(def);
+        let decls: StepDecl[] | undefined;
+        try {
+          decls = declareBuildSteps(def);
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          problem(err.message, sourceOf(err.stack ?? ""));
         }
-        if (!ids.length) continue;
-        const step: BuildStep = { title: d.title, parts: ids, ...(source && { source }) };
-        if (group && d.targets.length === 1) step.group = true;
-        if (d.description) step.description = d.description;
-        if (d.from) step.from = d.from;
-        if (d.along) {
-          if ("axis" in d.along) step.along = { axis: d.along.axis };
-          else {
-            const c = d.along.connector;
-            const part = this.partIdOf.get(c.part);
-            if (!part) problem(`step("${d.title}"): along: the part "${c.part.name}" isn't exported by a studio`, source);
+        declared.set(def, decls);
+        return decls;
+      };
+      const decls = declare(b.def);
+      if (!decls) continue;
+      // One level's steps: the assembly's own (scope: its id), or a subassembly's built on its own
+      // (scope: the copy's id, `stage` set). `remaining`: the level's copies no step has brought in.
+      // `quiet`: another copy of a stage already built, only its copies are worked out.
+      const resolve = (decls: StepDecl[], scope: string, name: string, remaining: Set<string>, stage: string | undefined, quiet: boolean, emit: (s: BuildStep) => void, where = "") => {
+        const say = quiet ? () => {} : problem;
+        for (const d of decls) {
+          const source = sourceOf(d.stack);
+          const units: string[][] = [];
+          const subs: { scope: string; ids: string[] }[] = [];
+          for (const t of d.targets) {
+            const found = this.stepTargets(a, t, scope, name);
+            if (typeof found === "string") {
+              say(`${where}step("${d.title}"): ${found}`, source);
+              continue;
+            }
+            const fresh = found.ids.filter((id) => remaining.has(id));
+            if (!fresh.length && found.ids.length) say(`${where}step("${d.title}"): ${found.what} came in at an earlier step`, source, "warning");
+            if (!fresh.length) continue;
+            for (const id of fresh) remaining.delete(id);
+            if (found.sub) units.push(fresh), subs.push({ scope: found.sub, ids: fresh });
+            else units.push(...fresh.map((id) => [id]));
+          }
+          if (!units.length) continue;
+          const ids = units.flat();
+          const step: BuildStep = { title: d.title, parts: ids, ...(source && { source }) };
+          if (units.some((u) => u.length > 1)) step.units = units;
+          if (stage) step.stage = stage;
+          if (d.description) step.description = d.description;
+          if (d.from) step.from = d.from;
+          if (d.along) {
+            if ("axis" in d.along) step.along = { axis: d.along.axis };
             else {
-              // a connector of a named copy is on that copy; of a part, on each moving copy of it (else its direct copy)
-              let owner: string | undefined;
-              if (c.instance) {
-                const key = this.handleKey(c.instance);
-                if (typeof key === "string" && key.startsWith("!")) problem(`step("${d.title}"): along: ${key.slice(1)}`, source);
-                else owner = `${a.id}/${key}`;
-              } else if (!ids.some((id) => sourcePart(id) === part)) owner = a.instances.find((i) => i.part === part)?.id;
-              step.along = { part, connector: c.name, ...(c.index !== undefined && { index: c.index }), ...(owner && { owner }) };
+              const c = d.along.connector;
+              const part = this.partIdOf.get(c.part);
+              if (!part) say(`${where}step("${d.title}"): along: the part "${c.part.name}" isn't exported by a studio`, source);
+              else {
+                // a connector of a named copy is on that copy; of a part, on each moving copy of it (else its direct copy)
+                let owner: string | undefined;
+                if (c.instance) {
+                  const key = this.handleKey(c.instance);
+                  if (typeof key === "string" && key.startsWith("!")) say(`${where}step("${d.title}"): along: ${key.slice(1)}`, source);
+                  else owner = `${scope}/${key}`;
+                } else if (!ids.some((id) => sourcePart(id) === part)) owner = a.instances.find((i) => i.part === part && withinScope(i.scope, scope))?.id;
+                step.along = { part, connector: c.name, ...(c.index !== undefined && { index: c.index }), ...(owner && { owner }) };
+              }
             }
           }
+          for (const k of ["distance", "turn", "stagger", "duration"] as const) if (d[k] !== undefined) step[k] = d[k];
+          // built on its own first: the first copy's steps play; the others go together the same way
+          const nested = d.build && subs.length ? declare(d.build) : undefined;
+          if (nested) {
+            const first = subs[0].scope;
+            const sub = a.subs.find((x) => x.id === first);
+            const subName = d.build!.assembly.name;
+            if (!quiet) info.stages.push({ id: first, assembly: sub?.assembly ?? "", name: subs.length === 1 && sub?.name !== undefined ? `${subName} "${sub.name}"` : subName, copies: subs.map((x) => x.scope) });
+            subs.forEach((x, i) => resolve(nested, x.scope, subName, new Set(x.ids), first, quiet || i > 0, quiet || i > 0 ? () => {} : emit, `${where}step("${d.title}"): build: `));
+            step.mount = first;
+          }
+          emit(step);
         }
-        for (const k of ["distance", "turn", "stagger", "duration"] as const) if (d[k] !== undefined) step[k] = d[k];
-        info.steps.push(step);
-      }
-      if (remaining.size) {
-        const left = [...remaining];
-        const names = left.slice(0, 4).map(label).join(", ") + (left.length > 4 ? ` and ${left.length - 4} more` : "");
-        problem(`${left.length === 1 ? "1 copy isn't" : `${left.length} copies aren't`} in any step (${names}); they come in last. Add them to a step`, undefined, "warning");
-        info.steps.push({ title: "Add the remaining parts", parts: left, auto: true });
-      }
+        if (remaining.size) {
+          const left = [...remaining];
+          const names = left.slice(0, 4).map((id) => id.slice(scope.length + 1)).join(", ") + (left.length > 4 ? ` and ${left.length - 4} more` : "");
+          say(`${where}${left.length === 1 ? "1 copy isn't" : `${left.length} copies aren't`} in any step (${names}); they come in last. Add them to a step`, undefined, "warning");
+          emit({ title: "Add the remaining parts", parts: left, auto: true, ...(stage && { stage }) });
+        }
+      };
+      resolve(decls, a.id, a.name, new Set(a.instances.map((i) => i.id)), undefined, false, (s) => info.steps.push(s));
     }
     return (this.buildCache = out);
   }
@@ -679,22 +719,26 @@ export class Engine {
     return w.startsWith("!") ? w : `${w}/${base}`;
   }
 
-  /** The copies of `a` a step target stands for, or what's wrong. `group`: a subassembly (moves as one). */
-  private stepTargets(a: AssemblyInfo, t: StepTarget): { ids: string[]; what: string; group: boolean } | string {
+  /**
+   * The copies a step target stands for within `scope` (the assembly, or a copy of a subassembly
+   * being built on its own, named `name`), or what's wrong. `sub`: a subassembly copy's scope id (it
+   * moves as one).
+   */
+  private stepTargets(a: AssemblyInfo, t: StepTarget, scope = a.id, name = a.name): { ids: string[]; what: string; sub?: string } | string {
     const key = this.handleKey(t);
     if (key.startsWith("!")) return key.slice(1);
     if (isPartDef(t)) {
-      // the assembly's own copies; only when it has none, those in its subassemblies
-      const all = a.instances.filter((i) => i.part === key);
-      const own = all.filter((i) => i.scope === a.id);
+      // the scope's own copies; only when it has none, those in its subassemblies
+      const all = a.instances.filter((i) => i.part === key && withinScope(i.scope, scope));
+      const own = all.filter((i) => i.scope === scope);
       const ids = (own.length ? own : all).map((i) => i.id);
-      return ids.length ? { ids, what: `every copy of "${t.name}"`, group: false } : `"${t.name}" isn't in "${a.name}"`;
+      return ids.length ? { ids, what: `every copy of "${t.name}"` } : `"${t.name}" isn't in "${name}"`;
     }
-    const id = `${a.id}/${key}`;
+    const id = `${scope}/${key}`;
     const what = `${t.of.name}${t.name === undefined ? "" : ` "${t.name}"`}`;
-    if ("__instance" in t) return a.instances.some((i) => i.id === id) ? { ids: [id], what: `"${what}"`, group: false } : `"${a.name}" has no copy ${what}${t.name === undefined ? " named directly (use copy(part, name) for an inserted one)" : ""}`;
+    if ("__instance" in t) return a.instances.some((i) => i.id === id) ? { ids: [id], what: `"${what}"` } : `"${name}" has no copy ${what}${t.name === undefined ? " named directly (use copy(part, name) for an inserted one)" : ""}`;
     const ids = a.instances.filter((i) => withinScope(i.id, id)).map((i) => i.id);
-    return ids.length ? { ids, what: `"${what}"`, group: true } : `"${a.name}" doesn't insert ${what}${t.name === undefined ? " without a name" : ""}`;
+    return ids.length ? { ids, what: `"${what}"`, sub: id } : `"${name}" doesn't insert ${what}${t.name === undefined ? " without a name" : ""}`;
   }
 
   /**

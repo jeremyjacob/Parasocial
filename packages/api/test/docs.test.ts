@@ -134,8 +134,8 @@ test("every @example in the API docs runs", () => {
       if (/export default buildSteps\(/.test(code)) {
         // a build script: its steps declare against stand-in parts and assembly
         const fixtures = Object.fromEntries(["body", "lid", "drawer", "base", "screw", "wheel"].map((n) => [n, part(n, () => box(1, 1, 1))]));
-        const names = [...apiNames, ...Object.keys(fixtures), "mechanism"];
-        const def = new Function(...names, code.replace(/^import .*$/gm, "").replace("export default", "return"))(...apiValues, ...Object.values(fixtures), api.assembly("Mechanism", () => {}));
+        const names = [...apiNames, ...Object.keys(fixtures), "mechanism", "axle"];
+        const def = new Function(...names, code.replace(/^import .*$/gm, "").replace("export default", "return"))(...apiValues, ...Object.values(fixtures), api.assembly("Mechanism", () => {}), api.assembly("Axle", () => {}));
         if (!declareBuildSteps(def).length) failures.push(`${file}: ${code}\n  declares no steps`);
         continue;
       }

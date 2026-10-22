@@ -24,6 +24,13 @@
  * `turn: 720` spins it about that axis as it goes (screws, threaded caps, bayonets).
  * `stagger: 0.2` brings a step's copies in one after another (seconds apart); `duration` is seconds
  * per copy (default 1.2). `description` says more in the step's card.
+ *
+ * Built on its own first: a step bringing in a subassembly takes `build`, the steps that put the
+ * subassembly together before it's mounted: its own build script (`import axleSteps from "./axle"`,
+ * `builds/axle.ts`) or a body like buildSteps' (`({ step }) => { ... }`). Those steps play first, the
+ * subassembly shown on its own in its own coordinates (their `from`/`along` are too); then the step
+ * mounts it, moving as one. Several copies of one subassembly in the step (`[sub(axle, "front"),
+ * sub(axle, "rear")]`) are built once and mounted together.
  * @example
  * import { buildSteps } from "parasocial";
  * import mechanism from "../studios/mechanism";
@@ -32,6 +39,21 @@
  *   step("Set down the body", body);
  *   step("Slide in the drawer", drawer, { along: drawer.at("rail"), distance: 45 });
  *   step("Fit the lid", lid, { from: [0, 30, 40], description: "Hook the hinge on first, then lower it" });
+ * });
+ * @example
+ * import { buildSteps } from "parasocial";
+ * import mechanism from "../studios/mechanism";
+ * import axle from "../studios/axle";
+ * import base, { wheel } from "../studios/parts";
+ * export default buildSteps(mechanism, ({ step, sub }) => {
+ *   step("Set down the base", base);
+ *   step("Mount the axle", sub(axle, "front"), {
+ *     from: [0, 0, 40],
+ *     build: ({ step }) => {
+ *       step("Set down the axle beam", base);
+ *       step("Slide on the wheels", wheel, { along: "X", stagger: 0.2 });
+ *     },
+ *   });
  * });
  */
 import type { Vec3 } from "@parasocial/kernel";
@@ -57,6 +79,11 @@ export type StepMotion = {
 export type StepOpts = StepMotion & {
   /** A sentence saying more, shown in the step's card. */
   description?: string;
+  /**
+   * The subassembly the step brings in is built on its own first, by these steps: its build script
+   * (`builds/axle.ts`, imported) or a body like buildSteps'. Then the step mounts it.
+   */
+  build?: BuildStepsDef | BuildStepsBody;
   /** Seconds between the starts of the step's copies (default 0: together). */
   stagger?: number;
   /** Seconds each copy takes to go in (default 1.2). */
@@ -123,12 +150,15 @@ export type StepDecl = {
   turn?: number;
   stagger?: number;
   duration?: number;
+  /** Built on its own first, by these steps (a body is wrapped with the subassembly's assembly). */
+  build?: BuildStepsDef;
   stack: string;
 };
 
 const isPart = (v: unknown): v is PartDef => !!v && typeof v === "object" && (v as any).__part === true;
 const isAssembly = (v: unknown): v is AssemblyDef => !!v && typeof v === "object" && (v as any).__assembly === true;
 const isTarget = (v: unknown): v is StepTarget => isPart(v) || (!!v && typeof v === "object" && ((v as any).__instance === true || (v as any).__subassembly === true));
+const isBuildStepsDef = (v: unknown): v is BuildStepsDef => !!v && typeof v === "object" && (v as any).__buildSteps === true;
 const isConnector = (v: unknown): v is ConnectorRef => !!v && typeof v === "object" && (v as any).__connector === true;
 const isVec3 = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && Number.isFinite(x));
 const checkName = (what: string, name: unknown) => {
@@ -139,7 +169,7 @@ const checkName = (what: string, name: unknown) => {
 /** @internal Run a build script's body and collect its steps. Throws (with the call's stack) on misuse. */
 export function declareBuildSteps(def: BuildStepsDef): StepDecl[] {
   const out: StepDecl[] = [];
-  const known = ["description", "stagger", "duration", "from", "along", "distance", "turn"];
+  const known = ["description", "stagger", "duration", "from", "along", "distance", "turn", "build"];
   const tools: BuildStepsTools = {
     step(title, parts, opts = {}) {
       const stack = new Error().stack ?? "";
@@ -180,6 +210,18 @@ export function declareBuildSteps(def: BuildStepsDef): StepDecl[] {
       }
       if (d.from && d.along) throw new Error(`${what}: give from (where it starts) or along (the axis it slides in on), not both`);
       if (d.distance !== undefined && !d.along) throw new Error(`${what}: distance goes with along (how far out along that axis it starts)`);
+      if (opts.build !== undefined) {
+        // one subassembly (or copies of one), built on its own first
+        const subs = list as SubAssembly[];
+        const of = subs[0] && (subs[0] as any).__subassembly === true ? subs[0].of : undefined;
+        if (!of || !subs.every((t) => (t as any).__subassembly === true && t.of === of)) throw new Error(`${what}: build goes with a subassembly, sub(assembly, name) (or copies of one assembly), not parts or copies`);
+        const b = opts.build as unknown;
+        if (isBuildStepsDef(b)) {
+          if (b.assembly !== of) throw new Error(`${what}: build: those steps build "${b.assembly.name}", not "${of.name}"`);
+          d.build = b;
+        } else if (typeof b === "function") d.build = buildSteps(of, b as BuildStepsBody);
+        else throw new Error(`${what}: build must be the subassembly's build steps (imported from its build script) or a body, ({ step }) => { ... }`);
+      }
       out.push(d);
     },
     copy(part, name) {

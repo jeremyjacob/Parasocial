@@ -1,18 +1,19 @@
 // A first build script for an assembly that has none: one step per part (its copies together) and
 // per subassembly, outward from the fixed part along the joints; parts as many joints away go in the
 // order their bounds suggest (inside-out: what a housing holds before the housing, screws after what
-// they fasten). Every step comes in from above; the script is the person's
-// (or the agent's) to refine.
+// they fasten). Every step comes in from above; a subassembly with build steps of its own is built
+// by them first. The script is the person's (or the agent's) to refine.
 import * as THREE from 'three';
 import { buildOrder, type OrderNode } from '@parasocial/viewer';
-import type { AssemblyInfo, PartInfo } from '@parasocial/runtime/protocol';
+import type { AssemblyInfo, BuildInfo, PartInfo } from '@parasocial/runtime/protocol';
 
 export type StarterScene = {
 	/** World bounds and volume of a copy (null: not regenerated yet). */
 	bounds(id: string): { box: THREE.Box3; vol: number } | null;
 };
 
-type Unit = { key: string; kind: 'part' | 'sub'; ids: string[]; name: string; ref: { file: string; export: string }; subName?: string };
+type Ref = { file: string; export: string };
+type Unit = { key: string; kind: 'part' | 'sub'; ids: string[]; name: string; ref: Ref; subName?: string; build?: Ref };
 
 const ident = (s: string) => {
 	const words = s.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
@@ -31,13 +32,15 @@ export function starterPath(assembly: AssemblyInfo, taken: Set<string>) {
 	return path;
 }
 
-export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assemblies: AssemblyInfo[]; scene: StarterScene; partName: (id: string) => string }): string {
+export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assemblies: AssemblyInfo[]; builds?: BuildInfo[]; scene: StarterScene; partName: (id: string) => string }): string {
 	const units: Unit[] = [];
 	for (const s of a.subs.filter((s) => s.parent === a.id)) {
 		const def = ctx.assemblies.find((x) => x.id === s.assembly);
 		if (!def) continue;
 		const ids = a.instances.filter((i) => i.id.startsWith(`${s.id}/`)).map((i) => i.id);
-		if (ids.length) units.push({ key: s.id, kind: 'sub', ids, name: s.name ? `${def.name} ${s.name}` : def.name, ref: { file: def.file, export: def.export }, subName: s.name });
+		// its own build steps (the first that work), to build it with before it's mounted
+		const own = ctx.builds?.find((b) => b.assembly === def.id && b.steps.length && !b.problems.some((p) => p.severity === 'error'));
+		if (ids.length) units.push({ key: s.id, kind: 'sub', ids, name: s.name ? `${def.name} ${s.name}` : def.name, ref: { file: def.file, export: def.export }, subName: s.name, ...(own && { build: { file: own.file, export: own.export } }) });
 	}
 	const byPart = new Map<string, string[]>();
 	for (const i of a.instances.filter((i) => i.scope === a.id)) byPart.set(i.part, [...(byPart.get(i.part) ?? []), i.id]);
@@ -88,6 +91,7 @@ export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assembl
 	};
 	const asmName = nameFor({ file: a.file, export: a.export }, a.name);
 	for (const u of ordered) nameFor(u.ref, u.kind === 'sub' ? ctx.assemblies.find((x) => x.file === u.ref.file && x.export === u.ref.export)?.name ?? u.name : u.name);
+	for (const u of ordered) if (u.build) nameFor(u.build, `${ctx.assemblies.find((x) => x.file === u.ref.file && x.export === u.ref.export)?.name ?? u.name} steps`);
 	const byFile = new Map<string, { def?: string; named: string[] }>();
 	for (const [key, n] of names) {
 		const [file, exp] = key.split('#');
@@ -100,7 +104,8 @@ export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assembl
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([file, e]) => {
 			const what = [e.def, e.named.length ? `{ ${e.named.join(', ')} }` : ''].filter(Boolean).join(', ');
-			return `import ${what} from "../${file.slice(0, -'.ts'.length)}";`;
+			const from = file.startsWith('builds/') ? `./${file.slice('builds/'.length, -'.ts'.length)}` : `../${file.slice(0, -'.ts'.length)}`;
+			return `import ${what} from "${from}";`;
 		});
 
 	const q = (s: string) => JSON.stringify(s);
@@ -109,7 +114,7 @@ export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assembl
 		const ref = names.get(`${u.ref.file}#${u.ref.export}`)!;
 		const target = u.kind === 'sub' ? `sub(${ref}${u.subName === undefined ? '' : `, ${q(u.subName)}`})` : ref;
 		const title = u.kind === 'sub' ? `Fit the ${lower(u.name)}` : i === 0 ? `Set down the ${lower(u.name)}` : `Add the ${lower(u.name)}${u.ids.length > 1 ? ` (${u.ids.length})` : ''}`;
-		const opts = u.ids.length > 1 && u.kind === 'part' ? ', { stagger: 0.15 }' : '';
+		const opts = u.ids.length > 1 && u.kind === 'part' ? ', { stagger: 0.15 }' : u.build ? `, { build: ${names.get(`${u.build.file}#${u.build.export}`)} }` : '';
 		return `  step(${q(title)}, ${target}${opts});`;
 	});
 	return [
@@ -118,7 +123,8 @@ export function starterScript(a: AssemblyInfo, ctx: { parts: PartInfo[]; assembl
 		'',
 		`// How ${a.name} goes together, one step at a time. Each step brings in parts and says how they go`,
 		'// in: from: [x, y, z] (where it starts, mm from its place), along: "Z" | part.at("connector") with',
-		'// distance (slides in along an axis), turn: degrees (screws). Play it with the build button (A).',
+		'// distance (slides in along an axis), turn: degrees (screws); a subassembly\'s build: its own steps',
+		'// (or ({ step }) => { ... }) put it together first. Play it with the build button (A).',
 		`export default buildSteps(${asmName}, ({ step${hasSub ? ', sub' : ''} }) => {`,
 		...lines,
 		'});',

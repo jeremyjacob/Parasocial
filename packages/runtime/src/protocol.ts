@@ -4,7 +4,7 @@
 import type { EntityKind, MeshQuality, Vec3 } from "@parasocial/kernel";
 import type { AnchorTargetRef } from "@parasocial/naming";
 import type { DrawingOptions } from "./drawing";
-import type { DocumentState, PartResult, PartInfo, EntityDescription, BuildInfo, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose } from "./engine";
+import type { DocumentState, PartResult, PartInfo, EntityDescription, BuildInfo, BuildStage, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose } from "./engine";
 
 export type EngineRequest =
   /** `quiet`: only restore state (a replay into a replacement worker); answers true instead of the part list. */
@@ -86,7 +86,7 @@ export type EngineMessage =
 
 export type RequestEnvelope = { id: number; req: EngineRequest };
 
-export type { PartResult, PartInfo, EntityDescription, DocumentState, BuildInfo, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose };
+export type { PartResult, PartInfo, EntityDescription, DocumentState, BuildInfo, BuildStage, BuildStep, AssemblyInfo, AssemblyInstance, AssemblyJoint, AssemblyRelation, AssemblySub, AssemblyOverlap, ConnectorAt, Interference, Overlap, PartPose };
 
 /**
  * The part an id's geometry comes from: itself, or an instance's source part. Instance ids are
@@ -164,17 +164,19 @@ export function validateAssemblies(v: unknown): AssemblyInfo[] | null {
 
 const optNum = (x: unknown) => x === undefined || isNum(x);
 
-/** The build scripts: steps naming instance ids, finite offsets and axes. */
+/** The build scripts: steps naming instance ids, finite offsets and axes, stages their subassembly copies. */
 export function validateBuilds(v: unknown): BuildInfo[] | null {
   if (!Array.isArray(v)) return null;
   for (const b of v) {
-    if (!isObj(b) || !isStr(b.id) || !isStr(b.file) || !isStr(b.export) || !isStr(b.name) || !optStr(b.description) || !isStr(b.assembly) || !Array.isArray(b.steps) || !Array.isArray(b.problems)) return null;
+    if (!isObj(b) || !isStr(b.id) || !isStr(b.file) || !isStr(b.export) || !isStr(b.name) || !optStr(b.description) || !isStr(b.assembly) || !Array.isArray(b.steps) || !Array.isArray(b.stages) || !Array.isArray(b.problems)) return null;
+    for (const g of b.stages) if (!isObj(g) || !isStr(g.id) || !isStr(g.assembly) || !isStr(g.name) || !Array.isArray(g.copies) || !g.copies.every(isStr)) return null;
     for (const p of b.problems) if (!isObj(p) || !isStr(p.message) || (p.severity !== "error" && p.severity !== "warning")) return null;
     for (const s of b.steps) {
       if (!isObj(s) || !isStr(s.title) || !optStr(s.description) || !Array.isArray(s.parts) || !s.parts.every(isStr)) return null;
       if (s.from !== undefined && !(Array.isArray(s.from) && s.from.every(isVec3))) return null;
       if (!optNum(s.distance) || !optNum(s.turn) || !optNum(s.stagger) || !optNum(s.duration)) return null;
-      if (s.group !== undefined && typeof s.group !== "boolean") return null;
+      if (s.units !== undefined && !(Array.isArray(s.units) && s.units.every((u: unknown) => Array.isArray(u) && u.every(isStr)))) return null;
+      if (!optStr(s.stage) || !optStr(s.mount)) return null;
       if (s.auto !== undefined && typeof s.auto !== "boolean") return null;
       const a = s.along;
       if (a !== undefined && !(isObj(a) && ("axis" in a ? isVec3(a.axis) : isStr(a.part) && isConnectorAt(a) && optStr(a.owner)))) return null;

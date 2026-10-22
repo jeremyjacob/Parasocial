@@ -59,7 +59,8 @@ export default buildSteps(box, ({ step, copy, sub }) => {
     expect(b.steps[2].from).toEqual([[0, 30, 40], [0, 0, 40]]);
     expect(b.steps[2].description).toBe("Lower it on");
     expect(b.steps[3]).toMatchObject({ along: { axis: [0, 0, 1] }, distance: 12, stagger: 0.2 });
-    expect(b.steps[5].group).toBe(true);
+    expect(b.steps[5].units).toEqual([["box/axle@front/parts:base", "box/axle@front/parts:wheel@right"]]);
+    expect(b.steps[3].units).toBeUndefined();
     expect(b.steps[4].source?.file).toBe("builds/box.ts");
   });
 
@@ -101,5 +102,90 @@ export default buildSteps(box, ({ step, copy }) => { step("Knob", knob); step("S
     expect(broken.builds()[0].problems[0].severity).toBe("error");
     // a broken build script never breaks the parts
     expect(broken.parts()).toEqual(["parts:base", "parts:lid", "parts:screw", "parts:wheel", "parts:knob"]);
+  });
+
+  test("a subassembly built on its own first: its steps, then the step that mounts it", () => {
+    const e = engine(`import { buildSteps } from "parasocial";
+import box from "../studios/box";
+import axle from "../studios/axle";
+import { base, lid, screw, wheel } from "../studios/parts";
+export default buildSteps(box, ({ step, sub }) => {
+  step("Set down the base", base);
+  step("Mount the axle", sub(axle, "front"), {
+    from: [0, 0, 30],
+    build: ({ step, copy }) => {
+      step("Axle beam", base);
+      step("Left wheel", copy(wheel, "left"), { along: "X", distance: 20 });
+    },
+  });
+  step("The rest", [lid, screw]);
+});`);
+    const [b] = e.builds();
+    expect(b.problems.map((p) => p.message)).toEqual([expect.stringContaining(`step("Mount the axle"): build: 1 copy isn't in any step (parts:wheel@right)`)]);
+    expect(b.stages).toEqual([{ id: "box/axle@front", assembly: "axle", name: 'Axle "front"', copies: ["box/axle@front"] }]);
+    expect(b.steps.map((s) => [s.title, s.parts, s.stage, s.mount])).toEqual([
+      ["Set down the base", ["box/parts:base"], undefined, undefined],
+      ["Axle beam", ["box/axle@front/parts:base"], "box/axle@front", undefined],
+      ["Left wheel", ["box/axle@front/parts:wheel@left"], "box/axle@front", undefined],
+      ["Add the remaining parts", ["box/axle@front/parts:wheel@right"], "box/axle@front", undefined],
+      ["Mount the axle", ["box/axle@front/parts:wheel@left", "box/axle@front/parts:base", "box/axle@front/parts:wheel@right"], undefined, "box/axle@front"],
+      ["The rest", ["box/parts:lid", "box/parts:screw@a", "box/parts:screw@b", "box/parts:screw@c"], undefined, undefined],
+    ]);
+    expect(b.steps[2]).toMatchObject({ along: { axis: [1, 0, 0] }, distance: 20 });
+    expect(b.steps[3].auto).toBe(true);
+    expect(b.steps[4]).toMatchObject({ from: [[0, 0, 30]], units: [b.steps[4].parts] });
+  });
+
+  test("a subassembly's own build script, reused; copies of it built once and mounted together", () => {
+    const axleBuild = `import { buildSteps } from "parasocial";
+import axle from "../studios/axle";
+import { base, wheel } from "../studios/parts";
+export default buildSteps(axle, ({ step }) => { step("Beam", base); step("Wheels", wheel, { stagger: 0.2 }); });`;
+    const cart = `import { assembly } from "parasocial";
+import { lid } from "./parts";
+import axle from "./axle";
+export default assembly("Cart", ({ insert, fix }) => { fix(lid); insert(axle, { name: "front" }); insert(axle, { name: "rear" }); });`;
+    const e = engine(
+      `import { buildSteps } from "parasocial";
+import cart from "../studios/cart";
+import axle from "../studios/axle";
+import axleSteps from "./axle";
+import { lid } from "../studios/parts";
+export default buildSteps(cart, ({ step, sub }) => {
+  step("Deck", lid);
+  step("Mount the axles", [sub(axle, "front"), sub(axle, "rear")], { from: [0, 0, -30], stagger: 0.3, build: axleSteps });
+});`,
+      { "builds/axle.ts": axleBuild, "studios/cart.ts": cart },
+    );
+    const builds = e.builds();
+    const axleOwn = builds.find((b) => b.id === "axle")!;
+    expect(axleOwn.steps.map((s) => s.title)).toEqual(["Beam", "Wheels"]);
+    const b = builds.find((b) => b.id === "box")!;
+    expect(b.problems).toEqual([]);
+    expect(b.stages).toEqual([{ id: "cart/axle@front", assembly: "axle", name: "Axle", copies: ["cart/axle@front", "cart/axle@rear"] }]);
+    expect(b.steps.map((s) => [s.title, s.parts.length, s.stage ?? null])).toEqual([
+      ["Deck", 1, null],
+      ["Beam", 1, "cart/axle@front"],
+      ["Wheels", 2, "cart/axle@front"],
+      ["Mount the axles", 6, null],
+    ]);
+    expect(b.steps[2].source?.file).toBe("builds/axle.ts");
+    expect(b.steps[3].units?.map((u) => u.length)).toEqual([3, 3]);
+    expect(b.steps[3].mount).toBe("cart/axle@front");
+  });
+
+  test("build goes with a subassembly, and with steps for that subassembly", () => {
+    const onPart = engine(`import { buildSteps } from "parasocial";
+import box from "../studios/box";
+import { base } from "../studios/parts";
+export default buildSteps(box, ({ step }) => { step("Base", base, { build: () => {} }); });`);
+    expect(onPart.builds()[0].problems[0].message).toContain("build goes with a subassembly");
+    const wrong = engine(`import { buildSteps } from "parasocial";
+import box from "../studios/box";
+import axle from "../studios/axle";
+import { base } from "../studios/parts";
+const other = buildSteps(box, ({ step }) => step("Base", base));
+export default buildSteps(box, ({ step, sub }) => { step("Axle", sub(axle, "front"), { build: other }); });`);
+    expect(wrong.builds().find((b) => b.export === "default")!.problems[0].message).toContain(`those steps build "Box", not "Axle"`);
   });
 });

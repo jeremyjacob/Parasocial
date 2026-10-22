@@ -2,12 +2,14 @@
 // time, with a film strip of the steps beside it. `pos` is where the playback is (0..steps, see
 // steps-motion.ts); it eases toward `at`, the step asked for, so stepping, scrubbing and jumping all
 // move the parts smoothly (far jumps run faster). Copies not brought in yet hide; the rest sit where
-// the assembly puts them.
+// the assembly puts them. A subassembly built on its own shows alone, where its own studio puts it,
+// the camera following it there and back.
 import * as THREE from 'three';
 import { sourcePart, type AssemblyInfo, type BuildInfo } from '@parasocial/runtime/protocol';
 import { Viewer } from '@parasocial/viewer';
 import { mutators } from '@parasocial/sync';
-import { planSteps, poseAt, type PlannedStep, type StepScene } from './steps-motion';
+import { toMatrix, type Pose } from '@parasocial/assembly';
+import { currentStep, levelAt, levelBox, planSteps, poseAt, type PlannedStep, type StepScene } from './steps-motion';
 import { starterPath, starterScript } from './steps-starter';
 import { viewerTheme } from './viewer-theme';
 import { prefersReducedMotion } from '$lib/styles/tokens';
@@ -45,6 +47,10 @@ export class StepsController {
 
 	private raf = 0;
 	private last = 0;
+	/** The level the camera is framed on: a stage's id, undefined for the assembly (null: none yet). */
+	private level: string | undefined | null = null;
+	/** The scene the steps were laid out in (stage frames worked out once per layout). */
+	private laidOut: StepScene | null = null;
 	private dwell = 0;
 	private thumbKey = '';
 	private thumbRun = 0;
@@ -93,9 +99,7 @@ export class StepsController {
 
 	/** The step whose card is current: the one playing, else the last one done. */
 	get current() {
-		const n = this.steps.length;
-		if (!n) return -1;
-		return Math.min(n - 1, Math.max(0, Math.ceil(this.pos - 1e-6) - 1));
+		return currentStep(this.steps.length, this.pos);
 	}
 
 	toggle() {
@@ -112,6 +116,7 @@ export class StepsController {
 		(document.activeElement as HTMLElement | null)?.closest?.('button')?.blur();
 		// framed on the finished assembly, before anything hides
 		this.frame(v);
+		this.level = undefined;
 		this.active = true;
 		v.setStepping(true);
 		this.pos = this.at = 0;
@@ -121,15 +126,25 @@ export class StepsController {
 		this.run();
 	}
 
-	/** Fit the camera to the assembly, centred in the part of the viewport the film strip leaves free. */
-	private frame(v: Viewer) {
-		const before = v.cameraState();
-		v.fit(v.bounds(), false);
-		const fit = v.cameraState();
-		v.setCameraState(before, false);
+	/** Fit the camera to the assembly (or `box`), centred in the part of the viewport the film strip leaves free. */
+	private frame(v: Viewer, box = v.bounds()) {
+		if (box.isEmpty()) return;
 		const w = v.container.clientWidth,
 			h = Math.max(1, v.container.clientHeight);
-		if (w < STRIP * 3) return v.setCameraState(fit);
+		const strip = w >= STRIP * 3;
+		// fit to the width the film strip leaves free, not the whole viewport
+		if (strip) {
+			const c = box.getCenter(new THREE.Vector3());
+			const k = w / (w - STRIP);
+			box = box.clone();
+			box.min.sub(c).multiplyScalar(k).add(c);
+			box.max.sub(c).multiplyScalar(k).add(c);
+		}
+		const before = v.cameraState();
+		v.fit(box, false);
+		const fit = v.cameraState();
+		v.setCameraState(before, false);
+		if (!strip) return v.setCameraState(fit);
 		const pos = new THREE.Vector3().fromArray(fit.position),
 			target = new THREE.Vector3().fromArray(fit.target);
 		// world units per CSS px at the target
@@ -145,6 +160,7 @@ export class StepsController {
 		if (!this.active) return;
 		this.active = false;
 		this.playing = false;
+		this.level = null;
 		cancelAnimationFrame(this.raf);
 		this.raf = 0;
 		clearTimeout(this.thumbTimer);
@@ -197,7 +213,8 @@ export class StepsController {
 			v = this.ws.viewer;
 		if (!this.active || !v) return;
 		const had = this.steps.length;
-		this.steps = b ? planSteps(b, this.scene(v), sourcePart) : [];
+		this.laidOut = this.scene(v);
+		this.steps = b ? planSteps(b, this.laidOut, sourcePart) : [];
 		const n = this.steps.length;
 		// steps just appeared (a new build script, or one fixed): play them from the top
 		if (!had && n) (this.pos = this.at = 0), (this.dwell = DWELL * 0.6), (this.playing = true), this.run();
@@ -228,6 +245,7 @@ export class StepsController {
 			const content = starterScript(a, {
 				parts: this.ws.partInfos,
 				assemblies: this.ws.asm.assemblies,
+				builds: this.builds,
 				partName: (id) => this.ws.results[id]?.name ?? this.ws.partInfos.find((p) => p.id === id)?.name ?? id,
 				scene: {
 					bounds: (id) => {
@@ -248,7 +266,25 @@ export class StepsController {
 
 	private scene(v: Viewer): StepScene {
 		const results = this.ws.results;
+		const build = this.build;
+		const poses = this.ws.asm.poses();
+		const frames = new Map<string, THREE.Matrix4>();
 		return {
+			// where its own studio puts the subassembly: its first copy's pose there, against its pose here
+			frame: (stage) => {
+				let f = frames.get(stage);
+				if (f) return f;
+				const g = build?.stages.find((x) => x.id === stage);
+				const anchor = build?.steps.find((s) => s.stage === stage)?.parts[0];
+				f = new THREE.Matrix4();
+				if (g && anchor) {
+					const own = poses[`${g.assembly}${anchor.slice(stage.length)}`];
+					if (own) f.fromArray(toMatrix(own as Pose));
+					f.multiply(v.partTransform(anchor).invert());
+				}
+				frames.set(stage, f);
+				return f;
+			},
 			pose: (id) => v.partTransform(id),
 			bbox: (id) => {
 				const b = (results[id] ?? results[sourcePart(id)])?.bbox;
@@ -266,6 +302,12 @@ export class StepsController {
 		const v = this.ws.viewer;
 		if (!v || !this.active) return;
 		poseAt(this.steps, this.pos, (id, m) => v.setStepPose(id, m && !isIdentity(m) ? m : null, m === null));
+		// into a stage or back out of one: the camera follows
+		const level = levelAt(this.steps, this.pos);
+		if (level !== this.level && this.level !== null && this.laidOut) {
+			this.level = level;
+			this.frame(v, levelBox(this.steps, level, this.laidOut));
+		}
 	}
 
 	private run() {
@@ -312,7 +354,7 @@ export class StepsController {
 		if (!v || !this.active || !steps.length) return void (this.thumbs = []);
 		const dark = document.documentElement.dataset.theme === 'dark';
 		const ids = steps.flatMap((s) => s.parts);
-		const key = JSON.stringify([steps.map((s) => s.parts), dark, ids.map((id) => [this.ws.results[sourcePart(id)]?.key, v.partTransform(id).elements.map((x) => +x.toFixed(4))])]);
+		const key = JSON.stringify([steps.map((s) => [s.parts, s.stage]), dark, ids.map((id) => [this.ws.results[sourcePart(id)]?.key, v.partTransform(id).elements.map((x) => +x.toFixed(4))])]);
 		if (key === this.thumbKey) return;
 		this.thumbKey = key;
 		const run = ++this.thumbRun;
@@ -330,21 +372,30 @@ export class StepsController {
 				const mesh = this.ws.meshOf(id);
 				if (!r || !mesh) continue;
 				t.setPart({ id, mesh, faceEdges: r.faceEdges, vertices: r.vertices, hiddenEdges: new Set(r.edges.flatMap((e, i) => (e.seam || e.smooth ? [i] : []))), color: this.ws.partColor(id, dark), appearance: r.appearance });
-				t.setPartTransform(id, v.partTransform(id).elements);
 			}
-			// the fit's bounding sphere is loose: frame a smaller box so the assembly fills the card
-			const box = t.bounds();
-			const c = box.getCenter(new THREE.Vector3());
-			box.min.sub(c).multiplyScalar(0.72).add(c);
-			box.max.sub(c).multiplyScalar(0.72).add(c);
 			const cam = v.cameraState();
 			const dir = new THREE.Vector3().fromArray(cam.position).sub(new THREE.Vector3().fromArray(cam.target));
 			t.setProjection(cam.ortho);
-			t.fit(box, false, dir);
+			let level: string | undefined | null = null;
 			for (let k = 0; k < steps.length; k++) {
-				const done = new Set(steps.slice(0, k + 1).flatMap((s) => s.parts));
+				// a card shows its level: a stage's copies on their own, else the assembly's
+				const at = steps.slice(0, k + 1).filter((s) => s.stage === steps[k].stage);
+				const done = new Set(at.flatMap((s) => s.parts));
 				const fresh = new Set(steps[k].parts);
-				for (const id of ids) t.setVisible(id, done.has(id)), t.setDimmed(id, !fresh.has(id));
+				const f = steps[k].frame;
+				for (const id of ids) {
+					t.setVisible(id, done.has(id)), t.setDimmed(id, !fresh.has(id));
+					if (done.has(id)) t.setPartTransform(id, (f ? f.clone().multiply(v.partTransform(id)) : v.partTransform(id)).elements);
+				}
+				if (steps[k].stage !== level && this.laidOut) {
+					level = steps[k].stage;
+					// the fit's bounding sphere is loose: frame a smaller box so the level fills the card
+					const box = levelBox(steps, level, this.laidOut);
+					const c = box.getCenter(new THREE.Vector3());
+					box.min.sub(c).multiplyScalar(0.72).add(c);
+					box.max.sub(c).multiplyScalar(0.72).add(c);
+					t.fit(box, false, dir);
+				}
 				const blob = await t.snapshot('image/webp', 0.85);
 				if (run !== this.thumbRun) return;
 				urls.push(URL.createObjectURL(blob));
