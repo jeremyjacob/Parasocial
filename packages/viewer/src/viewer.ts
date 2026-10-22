@@ -161,6 +161,9 @@ export class Viewer {
     try {
       const probe = document.createElement("canvas").getContext("webgl2");
       reversed = !!probe?.getExtension("EXT_clip_control");
+      // release it now: live contexts are capped per page (16 in Chrome), and past the cap the
+      // browser drops the oldest, the main viewport's
+      probe?.getExtension("WEBGL_lose_context")?.loseContext();
     } catch {}
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance", stencil: true, reversedDepthBuffer: reversed, logarithmicDepthBuffer: !reversed, preserveDrawingBuffer: o.preserveDrawingBuffer ?? false } as any);
     (this.renderer as any).__psReversed = reversed;
@@ -179,11 +182,15 @@ export class Viewer {
     this.ortho.position.copy(this.persp.position);
 
     // studio lighting: soft room environment + a key light
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environment = this.envTex;
+    this.makeEnv();
     this.scene.environmentIntensity = 0.85;
-    pmrem.dispose();
+    // a restored context comes back with every render target empty: three re-uploads geometry and
+    // textures, but the environment map was rendered, so without this the faces lose their fill
+    // light (dark, smeared shading) until a reload
+    canvas.addEventListener("webglcontextrestored", () => {
+      this.makeEnv();
+      this.requestRender();
+    });
     // camera-relative rig (Onshape-like): a strong key from upper left, a soft fill from lower
     // right, sky/ground bounce. Lights and their targets are camera children, so shading stays
     // consistent while orbiting.
@@ -244,6 +251,14 @@ export class Viewer {
     this.resize();
     this.applyTheme();
     this.requestRender();
+  }
+
+  private makeEnv() {
+    this.envTex?.dispose();
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environment = this.envTex;
+    pmrem.dispose();
   }
 
   // ---------- events ----------
@@ -1784,6 +1799,9 @@ export class Viewer {
     this.haloPass?.dispose();
     this.envTex?.dispose();
     this.renderer.dispose();
+    // dispose() leaves the context alive until GC; offscreen viewers (thumbnails, step cards) are
+    // made often enough to hit the browser's context cap and get the main viewport's dropped
+    this.renderer.forceContextLoss();
     this.canvas.remove();
   }
 }
