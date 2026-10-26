@@ -56,7 +56,7 @@
 		...a.subs.map((s) => ({ value: s.id, label: `${a.name} › ${ws.scopeLabel(s.id)} (subassembly)` }))
 	])]);
 
-	const nameOf = (p: string) => ws.results[p]?.name ?? ws.partInfos.find((i) => i.id === sourcePart(p))?.name ?? p;
+	const nameOf = (p: string) => ws.results[p]?.name ?? ws.partInfo(sourcePart(p))?.name ?? p;
 	/** File name base: the part's name for one part, the studio's when they all come from one studio, else the document's. */
 	function baseName(parts: string[]) {
 		if (scope.startsWith('assembly:')) return findAssemblyScope(ws.asm.assemblies, scope.slice('assembly:'.length))?.name ?? ws.doc?.name ?? 'parts';

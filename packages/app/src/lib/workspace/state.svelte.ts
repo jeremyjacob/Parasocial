@@ -148,6 +148,8 @@ export class WorkspaceState {
 	private presenceID = newID();
 	private presenceTimer: any = null;
 	private sentScripts = new Map<string, string>();
+	/** sentScripts as one object, rebuilt when it changes (cache keys hash it once per object). */
+	private sentScriptsRecord: Record<string, string> | null = null;
 	private sentOverrides = new Map<string, string>();
 	private docSent = false;
 	private cacheFirstDone = false;
@@ -166,9 +168,21 @@ export class WorkspaceState {
 	}
 
 	// ---------- derived ----------
+	// Memoized: panels read these once per row, and a big document has hundreds of rows and results.
+	#partTree = $derived.by(() => this.buildPartTree());
+	#parts = $derived.by(() => this.partTree.flatMap((g) => g.parts.map((p) => p.id)));
+	#studio = $derived.by(() => {
+		const tree = this.partTree;
+		return tree.find((g) => g.file === this.activeStudio) ?? tree[0] ?? null;
+	});
+	#shownSources = $derived.by(() => [...new Set(this.shownParts.map(sourcePart))]);
+	#instances = $derived.by(() => this.asm.assemblies.flatMap((a) => a.instances));
+	#instanceByID = $derived.by(() => new Map(this.instances.map((i) => [i.id, i])));
+	#partInfoByID = $derived.by(() => new Map(this.partInfos.map((p) => [p.id, p])));
+
 	/** Part ids in studio order. A studio the engine hasn't loaded yet counts as one part named after the file. */
 	get parts(): string[] {
-		return this.partTree.flatMap((g) => g.parts.map((p) => p.id));
+		return this.#parts;
 	}
 
 	/**
@@ -179,6 +193,10 @@ export class WorkspaceState {
 	 * shows while the studio is active: its parts, or its instances.
 	 */
 	get partTree(): { file: string; name: string; description?: string; folder?: string; parts: PartInfo[]; assemblies: AssemblyInfo[]; instances: AssemblyInstance[]; ids: string[] }[] {
+		return this.#partTree;
+	}
+
+	private buildPartTree() {
 		return this.scripts
 			.map((s) => s.path)
 			.filter((p) => /^studios\/[^/]+\.ts$/.test(p))
@@ -200,8 +218,7 @@ export class WorkspaceState {
 
 	/** The studio shown in the viewport (the remembered one, else the first). */
 	get studio() {
-		const tree = this.partTree;
-		return tree.find((g) => g.file === this.activeStudio) ?? tree[0] ?? null;
+		return this.#studio;
 	}
 
 	/** Ids in the viewport: the active studio's parts, or an assembly studio's instances. */
@@ -211,12 +228,22 @@ export class WorkspaceState {
 
 	/** The parts whose geometry is on screen (an instance counts as its source part). */
 	get shownSources(): string[] {
-		return [...new Set(this.shownParts.map(sourcePart))];
+		return this.#shownSources;
 	}
 
 	/** Every assembly instance in the document. */
 	get instances(): AssemblyInstance[] {
-		return this.asm.assemblies.flatMap((a) => a.instances);
+		return this.#instances;
+	}
+
+	/** An assembly instance by id. */
+	instance(id: string): AssemblyInstance | undefined {
+		return this.#instanceByID.get(id);
+	}
+
+	/** What the engine last said about a part. */
+	partInfo(id: string): PartInfo | undefined {
+		return this.#partInfoByID.get(id);
 	}
 
 	/** Every id something can be selected or pinned on: parts and assembly instances. */
@@ -243,6 +270,8 @@ export class WorkspaceState {
 		try {
 			localStorage.setItem(`parasocial:studio:${this.documentID}`, file);
 		} catch {}
+		// while the document is still regenerating, this studio's parts jump the queue
+		this.engine?.prioritize(this.shownSources).catch(() => {});
 		this.showStudio();
 	}
 
@@ -265,7 +294,7 @@ export class WorkspaceState {
 
 	/** The studio script a part comes from. */
 	scriptOf(part: string): string {
-		return this.partInfos.find((p) => p.id === part)?.file ?? `studios/${part.split(':')[0]}.ts`;
+		return this.partInfo(part)?.file ?? `studios/${part.split(':')[0]}.ts`;
 	}
 
 	private setPartInfos(infos: PartInfo[]) {
@@ -361,6 +390,7 @@ export class WorkspaceState {
 			await this.asm.refresh();
 			await this.steps.refresh();
 			for (const [k, v] of Object.entries(scripts)) this.sentScripts.set(k, v);
+			this.sentScriptsRecord = null;
 			for (const p of ids) this.sentOverrides.set(p, JSON.stringify(overrides[p]));
 			parts = this.parts;
 			parts.forEach((p) => toRegen.add(p));
@@ -370,6 +400,7 @@ export class WorkspaceState {
 			for (const [path, content] of Object.entries(scripts)) {
 				if (this.sentScripts.get(path) !== content) {
 					this.sentScripts.set(path, content);
+					this.sentScriptsRecord = null;
 					infos = await engine.setScript(path, content);
 					changed.push(path);
 				}
@@ -377,6 +408,7 @@ export class WorkspaceState {
 			for (const path of [...this.sentScripts.keys()]) {
 				if (!(path in scripts)) {
 					this.sentScripts.delete(path);
+					this.sentScriptsRecord = null;
 					infos = await engine.setScript(path, null);
 					changed.push(path);
 				}
@@ -415,7 +447,10 @@ export class WorkspaceState {
 		}
 		// progressive meshing: a settled fine pass after scrubbing ends
 		if (!this.scrubbing && !this.typing) for (const p of parts) if (this.results[p]?.quality === 'coarse') toRegen.add(p);
-		for (const p of toRegen) this.regenerate(p, quality);
+		// the engine starts parts in the order asked: what's on screen first, the rest of the document after
+		const shown = new Set(this.shownSources);
+		for (const p of toRegen) if (shown.has(p)) this.regenerate(p, quality);
+		for (const p of toRegen) if (!shown.has(p)) this.regenerate(p, quality);
 	}
 
 	/** Re-show the live geometry for every part (e.g. after viewing an old version). */
@@ -665,7 +700,7 @@ export class WorkspaceState {
 			const build = this.engineInfo?.build;
 			if (!build || !this.engine || typeof caches === 'undefined') return;
 			const names = await this.engine.names(r.part);
-			const scripts = Object.fromEntries(this.sentScripts);
+			const scripts = (this.sentScriptsRecord ??= Object.fromEntries(this.sentScripts));
 			const key = await derivedKey({ part: r.part, scripts, overrides: this.cacheOverrides(r.part), build });
 			const meta = this.results[r.part];
 			if (meta?.key === r.key) this.setMeta(r.part, { ...meta, names: { face: names.face, edge: names.edge } });

@@ -52,10 +52,22 @@ export function unpackResult(buf: ArrayBuffer): CachedPart | null {
 
 const align4 = (n: number) => (n + 3) & ~3;
 
-/** Cache key for a part's derived data. */
+const hex = (d: ArrayBuffer) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+/** Scripts digests by scripts object: every part's key hashes the same (possibly large) scripts once. */
+const scriptDigests = new WeakMap<Record<string, string>, Promise<string>>();
+
+function scriptsDigest(scripts: Record<string, string>): Promise<string> {
+  let d = scriptDigests.get(scripts);
+  if (!d) {
+    const text = JSON.stringify(Object.keys(scripts).sort().map((p) => [p, scripts[p]]));
+    d = crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(hex);
+    scriptDigests.set(scripts, d);
+  }
+  return d;
+}
+
+/** Cache key for a part's derived data. Pass the same `scripts` object for a set of parts to hash the scripts once. */
 export async function derivedKey(input: { part: string; scripts: Record<string, string>; overrides: Record<string, string | number>; build: string }): Promise<string> {
-  const paths = Object.keys(input.scripts).sort();
-  const text = JSON.stringify([input.build, input.part, paths.map((p) => [p, input.scripts[p]]), Object.entries(input.overrides).sort()]);
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const text = JSON.stringify([input.build, input.part, await scriptsDigest(input.scripts), Object.entries(input.overrides).sort()]);
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
 }

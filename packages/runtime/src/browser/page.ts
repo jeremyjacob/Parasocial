@@ -305,6 +305,14 @@ function send(m: { id: number; req: any }) {
     if (q) q.push(m);
     else waiting.set(part, [m]);
     dispatch();
+  } else if (op === "prioritize") {
+    // waiting is in dispatch order: move these parts to the front
+    const first = new Set<string>(req.parts.map(sourcePart));
+    const queued = [...waiting];
+    waiting.clear();
+    for (const [part, msgs] of queued) if (first.has(part)) waiting.set(part, msgs);
+    for (const [part, msgs] of queued) if (!first.has(part)) waiting.set(part, msgs);
+    port?.postMessage({ type: "result", id: m.id, ok: true, value: true });
   } else if (op === "affected") affected(m);
   else if (op === "measure" || op === "interference" || op === "interferencePairs" || op === "overlapPairs" || op === "distancePairs" || op === "interferences" || op === "export") {
     const parts: string[] = op === "measure" ? [req.a.part, req.b.part] : op === "interference" ? [req.a, req.b] : op === "interferencePairs" || op === "overlapPairs" || op === "distancePairs" ? [...new Set<string>(req.pairs.flat())] : op === "interferences" ? req.parts : (req.parts ?? (req.part ? [req.part] : []));

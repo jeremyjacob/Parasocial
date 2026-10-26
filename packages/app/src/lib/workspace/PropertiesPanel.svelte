@@ -78,7 +78,7 @@
 		cylindrical: [{ label: 'θ', unit: '°' }, { label: 'd', unit: 'mm' }],
 		planar: [{ label: 'X', unit: 'mm' }, { label: 'Y', unit: 'mm' }, { label: 'θ', unit: '°' }]
 	};
-	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? id;
+	const partName = (id: string) => ws.results[id]?.name ?? ws.partInfo(sourcePart(id))?.name ?? id;
 	// a joint named inside an inserted assembly is saved as "corner@left/spin": shown "Corner left › Spin"
 	const jointName = (j: AssemblyJoint) => {
 		if (!j.named) return `${partName(j.a)} – ${partName(j.b)}`;

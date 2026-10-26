@@ -32,8 +32,8 @@
 		ws.agents.some((a) => (a.status === 'working' || a.status === 'writing') && ([file, sourceFile].includes((a.detail as any)?.path) || ws.notes.find((n) => n.id === (a.detail as any)?.noteID)?.anchor.targets.some((t) => t.kind === 'studio' ? t.studio === file : t.part === id)));
 
 	const partName = (id: string) => {
-		const instance = ws.instances.find((i) => i.id === id);
-		const name = ws.results[sourcePart(id)]?.name ?? ws.partInfos.find((p) => p.id === sourcePart(id))?.name ?? ws.results[id]?.name ?? id;
+		const instance = ws.instance(id);
+		const name = ws.results[sourcePart(id)]?.name ?? ws.partInfo(sourcePart(id))?.name ?? ws.results[id]?.name ?? id;
 		return instance?.name === undefined ? name : `${name} ${instance.name}`;
 	};
 	type Row = { id: string; name: string; description?: string; status: Status; busy: boolean; kind: PartsNode['kind']; ids: string[]; children: Row[]; definition?: string };

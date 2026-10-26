@@ -132,6 +132,10 @@ export class EngineClient {
   regenerate(part: string, quality: MeshQuality = "fine", known?: string) {
     return this.call<PartResult | null>({ op: "regenerate", part, quality, known });
   }
+  /** Queued regenerations of these parts start before the rest (the parts on screen). */
+  prioritize(parts: string[]) {
+    return this.call<boolean>({ op: "prioritize", parts });
+  }
   /** Parts a change to these script paths can affect (the rest can keep their results). */
   affected(paths: string[]) {
     return this.call<string[]>({ op: "affected", paths });

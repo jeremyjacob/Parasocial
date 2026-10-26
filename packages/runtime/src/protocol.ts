@@ -63,6 +63,8 @@ export type EngineRequest =
   /** Engine page internal (multi-worker): a part's shown shape as B-rep, and taking one from another worker. */
   | { op: "shapeOf"; part: string }
   | { op: "adopt"; part: string; key: string; brep: string }
+  /** Engine page: regenerations of these parts that no worker has started go first (the parts on screen). */
+  | { op: "prioritize"; parts: string[] }
   | { op: "ping" };
 
 export type MeasureRef = { part: string; kind: EntityKind | "part"; index?: number };
