@@ -1,3 +1,6 @@
+import { toast } from '$lib/components/ui/toast';
+
+
 /** Desktop slicers that open a downloadable file from a `<scheme>://open?file=<url>` link. */
 export const SLICERS = [
 	{ value: 'orcaslicer', label: 'OrcaSlicer' },
@@ -30,4 +33,16 @@ export async function openInSlicer(bytes: Uint8Array, name: string, slicer: Slic
 	const a = document.createElement('a');
 	a.href = `${slicer}://open?file=${encodeURIComponent(url)}`;
 	a.click();
+}
+
+/** The parts as one 3MF, opened in the slicer from Preferences; `name` is the file's. */
+export async function sliceParts(engine: { exportParts(parts: string[], format: '3mf'): Promise<Uint8Array> }, parts: string[], name: string) {
+	const slicer = getSlicer();
+	try {
+		const bytes = await engine.exportParts(parts, '3mf');
+		await openInSlicer(bytes, name.replace(/[^\w .()-]+/g, '-').replace(/\s+/g, ' ').trim() || 'parts', slicer);
+	} catch (e) {
+		console.error('open in slicer failed', e);
+		toast.error(`Couldn't open in ${slicerLabel(slicer)}. Try again.`);
+	}
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle, Focus, Folder } from '@lucide/svelte';
+	import { Plus, Code2, Copy, Trash2, ChevronRight, Download, Box, Boxes, MessageCircle, Focus, Folder, Printer } from '@lucide/svelte';
 	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { ContextMenu, type MenuEntry } from '$lib/components/ui/menu';
 	import { toast } from '$lib/components/ui/toast';
@@ -15,6 +15,7 @@
 	import { tick, untrack } from 'svelte';
 	import type { WorkspaceState } from './state.svelte';
 	import { assemblyTree, type PartsNode } from './parts-tree';
+	import { getSlicer, sliceParts, slicerLabel } from './slicer';
 
 	let { ws, onAddStudio, onExport, onAddNote, onAddStudioNote }: { ws: WorkspaceState; onAddStudio: () => void; onExport: (parts: string[]) => void; onAddNote: (parts: string[]) => void; onAddStudioNote: (file: string) => void } = $props();
 	let filter = $state('');
@@ -183,6 +184,15 @@
 		ws.mutate(mutators.script.delete({ documentID: ws.documentID, path, baseVersion: sc.version, message: `Delete ${label}` } as any), `Delete ${label}`);
 	}
 
+	/** The parts as a 3MF in the slicer from Preferences. */
+	const sliceItem = (ids: () => string[], name: () => string): MenuEntry => ({
+		label: `Open in ${slicerLabel(getSlicer())}`,
+		icon: Printer,
+		disabled: !ws.kernelReady,
+		onSelect: () => void sliceParts(ws.engine!, ids(), name())
+	});
+	const selectionName = (name: string) => (selectedPart.size > 1 ? (ws.doc?.name ?? 'parts') : name);
+
 	/** Isolate the parts (the menu's row selects first), or leave isolation (Shift+H). */
 	const isolateItem = (ids: () => string[]): MenuEntry =>
 		ws.isolated ? { label: 'Exit isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.exitIsolate() } : { label: 'Isolate', icon: Focus, shortcut: ['shift', 'H'], onSelect: () => ws.isolate(ids()) };
@@ -195,6 +205,7 @@
 				isolateItem(() => [...selectedPart]),
 				{ type: 'separator' },
 				{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
+				sliceItem(() => [...selectedPart], () => selectionName(name)),
 				{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
 				{ label: 'Open code', icon: Code2, onSelect: () => openScript(ws.scriptOf(sourcePart(id))) }
 			];
@@ -203,6 +214,7 @@
 			{ type: 'separator' },
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote([id]) },
 			{ label: 'Export…', icon: Download, onSelect: () => onExport([...selectedPart]) },
+			sliceItem(() => [...selectedPart], () => selectionName(name)),
 			{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(name).then(() => toast('Copied')) },
 			...(instance ? ([{ label: 'Open part code', icon: Code2, onSelect: () => openScript(ws.scriptOf(sourcePart(id))) }] as MenuEntry[]) : []),
 			// a part that shares its studio with others is removed by editing the studio
@@ -214,12 +226,14 @@
 		if (ws.readOnly)
 			return [
 				{ label: 'Open code', icon: Code2, onSelect: () => openScript(file) },
-				{ label: 'Export…', icon: Download, onSelect: () => onExport(ids) }
+				{ label: 'Export…', icon: Download, onSelect: () => onExport(ids) },
+				sliceItem(() => ids, () => name)
 			];
 		return [
 			{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddStudioNote(file) },
 			{ label: 'Open code', icon: Code2, onSelect: () => openScript(file) },
 			{ label: 'Export…', icon: Download, onSelect: () => onExport(ids) },
+			sliceItem(() => ids, () => name),
 			{ type: 'separator' },
 			{ label: 'Delete studio', icon: Trash2, destructive: true, onSelect: () => deleteStudio(file, name) }
 		];
@@ -234,7 +248,7 @@
 		return [
 			...(r.ids.length ? [isolateItem(() => r.ids), { type: 'separator' } as MenuEntry] : []),
 			...(!ws.readOnly && r.ids.length ? [{ label: 'Add note', icon: MessageCircle, onSelect: () => onAddNote(r.ids) }] : []),
-			...(r.ids.length ? [{ label: 'Export…', icon: Download, onSelect: () => onExport(r.ids) }] : []),
+			...(r.ids.length ? [{ label: 'Export…', icon: Download, onSelect: () => onExport(r.ids) }, sliceItem(() => r.ids, () => r.name)] : []),
 			{ label: 'Open assembly code', icon: Code2, onSelect: () => openScript(ws.asm.assemblies.find((a) => a.id === r.definition)?.file ?? `studios/${r.definition?.split(':')[0]}.ts`) },
 			{ label: 'Copy name', icon: Copy, onSelect: () => navigator.clipboard.writeText(r.name).then(() => toast('Copied')) }
 		];
