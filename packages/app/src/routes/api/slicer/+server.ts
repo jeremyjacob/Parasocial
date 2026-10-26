@@ -5,7 +5,7 @@ import { putSlicerFile } from "$lib/server/slicer";
 export const POST = async ({ request, url }) => {
   const token = putSlicerFile(new Uint8Array(await request.arrayBuffer()));
   if (!token) error(413, "File too large");
-  const name = (url.searchParams.get("name") || "parts").replace(/[^\w .()-]+/g, "-");
+  const name = (url.searchParams.get("name") || "parts").replace(/[^\w .()-]+/g, "-").replace(/\s+/g, "_"); // slicers name the download from the raw URL path, so no %20
   const origin = (await platform()).config.appOrigin;
   return json({ url: `${origin}/api/slicer/${token}/${encodeURIComponent(name)}.3mf` });
 };
