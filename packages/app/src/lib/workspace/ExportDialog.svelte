@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Download, LoaderCircle } from '@lucide/svelte';
+	import { Download, LoaderCircle, Printer } from '@lucide/svelte';
 	import { Dialog } from '$lib/components/ui/dialog';
 	import { Button } from '$lib/components/ui/button';
 	import { Select } from '$lib/components/ui/select';
@@ -9,6 +9,7 @@
 	import { sourcePart } from '@parasocial/runtime/protocol';
 	import { findAssemblyScope } from '@parasocial/runtime/assembly-scope';
 	import { bomToCSV, bomToMarkdown } from '@parasocial/runtime/bom';
+	import { getSlicer, openInSlicer, slicerLabel } from './slicer';
 
 	/** `target`: the parts to export when the dialog opens (a part, a studio's parts, the selection); empty = the studio in the viewport. */
 	let { ws, open = $bindable(false), target = [], onZip }: { ws: WorkspaceState; open?: boolean; target?: string[]; /** Whole-document zip; members only. */ onZip?: () => Promise<void> } = $props();
@@ -31,6 +32,9 @@
 		} catch {}
 	});
 	let busy = $state(false);
+	let slicing = $state(false);
+	// read on each opening, so a change in Preferences shows up
+	let slicer = $state(getSlicer());
 
 	// drawing: one part, its views, an optional section through the middle
 	let drawPartID = $state('');
@@ -82,6 +86,7 @@
 	let wasOpen = false;
 	$effect(() => {
 		if (open && !wasOpen) {
+			slicer = getSlicer();
 			const t = (target.length ? target : ws.shownParts).filter((p) => ws.allParts.includes(p));
 			const group = ws.selectedAssemblyScope;
 			const groupScope = group && scopes.find((s) => s.value === `assembly:${group.id}` && sameSet(s.parts, t));
@@ -105,10 +110,26 @@
 		setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 	}
 
+	const fileName = (s: string) => s.replace(/[^\w .()-]+/g, '-').replace(/\s+/g, ' ').trim() || 'parts';
+
+	/** The chosen parts as a 3MF, opened in the slicer from Preferences. */
+	async function slice() {
+		slicing = true;
+		try {
+			const bytes = await ws.engine!.exportParts($state.snapshot(chosen), '3mf');
+			await openInSlicer(bytes, fileName(baseName(chosen)), slicer);
+			open = false;
+		} catch (e) {
+			console.error('open in slicer failed', e);
+			toast.error(`Couldn't open in ${slicerLabel(slicer)}. Try again.`);
+		} finally {
+			slicing = false;
+		}
+	}
+
 	async function go() {
 		busy = true;
 		try {
-			const fileName = (s: string) => s.replace(/[^\w .()-]+/g, '-').replace(/\s+/g, ' ').trim() || 'parts';
 			if (what === 'document') await onZip?.();
 			else if (what === 'drawing') {
 				const version = ws.versions[0];
@@ -170,6 +191,9 @@
 	</div>
 	{#snippet footer()}
 		<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-		<Button variant="primary" onclick={go} disabled={busy || (what !== 'document' && !ws.kernelReady) || (what === 'parts' && !chosen.length) || (what === 'drawing' && !drawPartID)} data-testid="export-go">{#if busy}<LoaderCircle size={14} class="animate-spin" />{:else}<Download size={14} />{/if} Export</Button>
+		{#if what === 'parts'}
+			<Button onclick={slice} disabled={slicing || busy || !ws.kernelReady || !chosen.length} data-testid="export-slicer">{#if slicing}<LoaderCircle size={14} class="animate-spin" />{:else}<Printer size={14} />{/if} Open in {slicerLabel(slicer)}</Button>
+		{/if}
+		<Button variant="primary" onclick={go} disabled={busy || slicing || (what !== 'document' && !ws.kernelReady) || (what === 'parts' && !chosen.length) || (what === 'drawing' && !drawPartID)} data-testid="export-go">{#if busy}<LoaderCircle size={14} class="animate-spin" />{:else}<Download size={14} />{/if} Export</Button>
 	{/snippet}
 </Dialog>

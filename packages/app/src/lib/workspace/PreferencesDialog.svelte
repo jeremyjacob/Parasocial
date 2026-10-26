@@ -4,6 +4,7 @@
 	import { Select } from '$lib/components/ui/select';
 	import { Kbd } from '$lib/components/ui/kbd';
 	import { IconButton } from '$lib/components/ui/button';
+	import { SLICERS, getSlicer, setSlicer, type Slicer } from './slicer';
 	import { comboOf, comboOfKeys, RESERVED, saveCustomKeys, type Command } from './commands';
 
 	let {
@@ -15,6 +16,7 @@
 		additiveSelection = $bindable(false)
 	}: { open?: boolean; commands: Command[]; custom?: Record<string, string[]>; nav?: string; scroll?: string; additiveSelection?: boolean } = $props();
 
+	let slicer = $state(getSlicer());
 	let recording = $state<string | null>(null);
 	let error = $state('');
 	const keyOf = (c: Command) => custom[c.id] ?? c.keys;
@@ -86,6 +88,10 @@
 				class="w-56"
 				aria-label="Selection behavior"
 			/>
+		</div>
+		<div class="flex items-center gap-3 text-ui">
+			<span class="w-28 text-fg-secondary">Slicer</span>
+			<Select bind:value={slicer} onValueChange={(value) => setSlicer(value as Slicer)} items={[...SLICERS]} class="w-56" aria-label="Slicer" />
 		</div>
 		<div class="flex flex-col">
 			<div class="mb-1 text-ui text-fg-secondary">Shortcuts</div>
