@@ -20,8 +20,11 @@
  *   .threePointArc .tangentArcTo .splineTo .spline .close .offset(d, { join: "sharp" }) (d < 0 insets)
  *   .mirror("y") → .extrude(d, { tag, symmetric, mode, target }) .revolve(deg, { axis: "Z" | { origin,
  *   direction } }) .sweep(path3d | helix | sketch) · loft([a, b]) · thicken(faces, t)
- * Primitives: box(w, d, h, { center: true | "xy" }) (corner at the origin by default), cylinder(r, h, { at, axis, center }).
- * Booleans: a.union(b, c), a.subtract(b) (alias cut), a.intersect(b), then optional { tag }.
+ * Primitives: box(w, d, h, { center: true | "xy" }) (corner at the origin by default), cylinder(r, h, { at, axis, center }),
+ *   gear({ teeth, module, width, helix, herringbone, bore, phase }) (involute spur / helical / herringbone, one op;
+ *   gear.centerDistance(a, b), gear.meshPhase(a, b, angle) mesh a pair; topic "gear").
+ * Booleans: a.union(b, c), a.subtract(b) (alias cut), a.intersect(b), then optional { tag }. Solids that only
+ *   touch (a boss on a face, gear on its hub, mirrored halves): a.union(b, { glue: true }) is much faster.
  * Finishing: s.fillet(edges, r), s.chamfer(edges, d), s.shell(openFaces, t), s.draft(faces, deg),
  *   s.hole(points, d, { depth, counterbore, countersink }), s.split(plane | solid).
  * Transforms: s.translate([x, y, z]), s.rotate(deg, { axis, origin }), s.mirror("YZ", { union: true }),
@@ -61,6 +64,8 @@ export type { SweepOpts, PipeOpts } from "./sketch";
 export { path3d, helix, Path3d } from "./path3d";
 export type { HelixOpts } from "./path3d";
 export { Solid, box, cylinder, thicken, MATERIALS } from "./solid";
+export { gear } from "./gear";
+export type { GearOpts } from "./gear";
 export { std } from "./std";
 export type { HoleSpec, NutTrapOpts, PlaceOpts, MetricSize, HeadStandard, InsertSize, BearingSize, CirclipStandard, MgnRailSize, MgnCarriageSize } from "./std";
 export { measure, check } from "./measure";

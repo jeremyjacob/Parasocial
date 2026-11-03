@@ -192,6 +192,16 @@ export function massProps(shape: Shape): MassProps {
   });
 }
 
+/** Volume only (cheaper than massProps). */
+export function volume(shape: Shape): number {
+  const O = oc();
+  return scoped(() => {
+    const vp = tmp(new O.GProp_GProps());
+    O.BRepGProp.VolumeProperties(shape, vp, false, false, false);
+    return vp.Mass();
+  });
+}
+
 /** Total length and length-weighted centroid of the edges in `shape`. */
 export function linearProps(shape: Shape): { length: number; centroid: Vec3 } {
   const O = oc();

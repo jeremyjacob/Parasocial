@@ -26,6 +26,8 @@ export type OpRecord = {
   explicit?: Roles;
   /** Op parameters, for describe / "created by" display. */
   params?: Record<string, unknown>;
+  /** Warnings the op raised while building (e.g. a glue union that fell back); re-reported on cache hits. */
+  warnings?: string[];
   /** Lazily built names (see names.ts). */
   _names?: Partial<Record<EntityKind, EntityName[]>>;
   /** Refcount-ish liveness for the cache. */
@@ -57,6 +59,8 @@ export type RecordInit = {
   roles?: (rec: { topo: Topology; history: EntityHistory }) => Roles;
   explicit?: Roles;
   params?: Record<string, unknown>;
+  /** Warnings to report at the op's call site, now and on every cache hit. */
+  warnings?: () => string[] | undefined;
   callSite?: SourceLoc;
   callChain?: SourceLoc[];
 };
@@ -79,6 +83,7 @@ export function createRecord(init: RecordInit): OpRecord {
     roles,
     explicit: init.explicit,
     params: init.params,
+    warnings: init.warnings?.(),
     callSite: init.callSite,
     callChain: init.callChain,
   };

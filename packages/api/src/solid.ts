@@ -1,5 +1,5 @@
 // Solids: finishing, booleans, transforms, patterns, inspection (PLAN §5 v1 surface).
-import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, identityHistory, collectHistory, faceInfo, type EntityHistory, type Origin, type Topology, type Vec3, type KernelError, type BBox, type EntityKind } from "@parasocial/kernel";
+import { fillet as kFillet, booleanMany as kBooleanMany, shell as kShell, draft as kDraft, split as kSplit, thicken as kThicken, planeFace, chamfer as kChamfer, boolean as kBoolean, transform as kTransform, box as kBox, cylinder as kCylinder, compound, massProps as kMass, boundingBox as kBBox, isValid as kValid, countSolids, volume as kVolume, glueSewn as kGlueSewn, glueOverlap as kGlueOverlap, identityHistory, collectHistory, faceInfo, type EntityHistory, type Origin, type Topology, type Vec3, type KernelError, type BBox, type EntityKind, type Built, type Shape } from "@parasocial/kernel";
 import { entityShape, entityName, faceOf, edgeOf, vertexOf, type OpRecord } from "@parasocial/naming";
 import { runOp, userError, warn } from "./op";
 import { EntitySet, type OpRef } from "./selection";
@@ -9,6 +9,7 @@ import type { Appearance, ColorSpec, Material } from "./types";
 import { toFrame, transformFrame, type ConnectorFrame, type FrameSpec } from "./connector";
 import { resolveHole, nutTrapTools, freeTag, type HoleSpec, type NutTrapOpts } from "./std/holes";
 import { num, optNum, positive, int, vec3 } from "./check";
+import type { GearInfo } from "./gear";
 
 type EdgesArg = EntitySet | EntitySet[] | string;
 type FacesArg = EntitySet | EntitySet[] | string;
@@ -23,7 +24,7 @@ type OpOpts = { tag?: string };
  */
 export class Solid {
   /** @internal */ readonly record: OpRecord;
-  /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame[]> };
+  /** @internal */ readonly meta: { color?: ColorSpec; appearance?: Appearance; material?: Material; connectors?: Record<string, ConnectorFrame[]>; gear?: GearInfo };
 
   /** @internal */
   constructor(record: OpRecord, meta: Solid["meta"] = {}) {
@@ -125,11 +126,20 @@ export class Solid {
 
   // ---------- booleans ----------
   /**
-   * Fuse one or more solids into this one; an options object `{ tag }` may come last. With no
+   * Fuse one or more solids into this one; an options object `{ tag, glue }` may come last. With no
    * solids (`a.union(...[])`) it returns this solid unchanged.
+   *
+   * `glue: true` promises the solids only touch on shared faces or edges and never overlap in volume
+   * (a boss standing on a plate, two halves meeting at a plane, a gear on its hub's face). The kernel
+   * then sews the touching faces instead of intersecting every surface pair: far faster on parts
+   * with many curved faces (gear teeth, threads). A face may cover only part of the other. The result
+   * is checked (valid solid, volume = sum of the inputs); if the promise was wrong it falls back to
+   * a normal union with a warning, so glue never gives bad geometry, only lost time. Names are the
+   * same as a normal union's.
    * @example body.union(boss, rib, { tag: "joined" })
+   * @example plate.union(peg.translate([10, 10, 5]), { glue: true, tag: "pegOnPlate" }) // the peg stands on the plate's top
    */
-  union(...others: (Solid | OpOpts)[]): Solid {
+  union(...others: (Solid | UnionOpts)[]): Solid {
     return booleanOp("union", this, ...splitOpts(others));
   }
   /**
@@ -177,13 +187,16 @@ export class Solid {
   }
   /**
    * Mirror across a plane: a `Plane`, or "XY" (z → −z), "XZ" (y → −y), "YZ" (x → −x) through the
-   * origin. `union: true` keeps the original and fuses the mirror image to it.
+   * origin. `union: true` keeps the original and fuses the mirror image to it; add `glue: true` when
+   * the half only touches the mirror plane (see `union`'s glue).
    * @example half.mirror("YZ", { union: true }) // symmetric about x = 0
+   * @example half.mirror("YZ", { union: true, glue: true }) // the half ends flat on x = 0
    */
-  mirror(p: Plane | "XY" | "XZ" | "YZ", opts: OpOpts & { union?: boolean } = {}): Solid {
+  mirror(p: Plane | "XY" | "XZ" | "YZ", opts: OpOpts & { union?: boolean; glue?: boolean } = {}): Solid {
     const pl = typeof p === "string" ? ({ XY: new Plane([0, 0, 0], [0, 0, 1]), XZ: new Plane([0, 0, 0], [0, 1, 0]), YZ: new Plane([0, 0, 0], [1, 0, 0]) } as const)[p] : p;
     const m = transformOp(this, "mirror", { mirror: { origin: pl.origin, normal: pl.normal } }, opts.union ? {} : opts, "mirrored");
-    return opts.union ? booleanOp("union", this, [m], { tag: opts.tag }) : m;
+    if (opts.glue && !opts.union) userError("mirror: glue applies only with union: true");
+    return opts.union ? booleanOp("union", this, [m], { tag: opts.tag, glue: opts.glue }) : m;
   }
   /**
    * `count` copies (including this one) spaced `spacing` mm along `direction`, fused (instance 0 keeps its names; others get `#k`).
@@ -476,29 +489,120 @@ function checkKind(s: EntitySet, kind: EntityKind, what: string) {
   return s;
 }
 
-function splitOpts(args: (Solid | OpOpts)[]): [Solid[], OpOpts] {
+/** Options of `union`: `{ tag }`, and `glue: true` when the solids only touch (see `Solid.union`). */
+export type UnionOpts = OpOpts & { glue?: boolean };
+
+function splitOpts(args: (Solid | UnionOpts)[]): [Solid[], UnionOpts] {
   const solids = args.filter((a): a is Solid => a instanceof Solid);
   const rest = args.filter((a) => !(a instanceof Solid));
   for (const a of rest) if (typeof a !== "object" || a === null || Array.isArray(a)) userError(`booleans take solids and an optional { tag } (got ${Array.isArray(a) ? "an array: spread it with ..." : JSON.stringify(a)})`);
-  return [solids, (rest[0] as OpOpts) ?? {}];
+  return [solids, (rest[0] as UnionOpts) ?? {}];
 }
 
+/**
+ * How much a glue union's volume may fall short of the sum of its inputs and still count as "the
+ * inputs only touched": 1e-6 of the total (integration noise) plus a film `GLUE_FILM` mm thick over
+ * the smaller side's surface. Touching faces of swept or approximated surfaces sit within the
+ * boolean tolerance of each other (~1e-4 mm), so a real model "overlaps" by a fraction of a micron
+ * over the whole contact; a real overlap is far thicker than a few microns.
+ */
+export const GLUE_VOLUME_TOLERANCE = 1e-6;
+/** mm; see GLUE_VOLUME_TOLERANCE. Also covers OCCT's volume integration, off by ~1e-3 mm × area on curved B-spline faces. */
+export const GLUE_FILM = 2e-3;
+
 /** @internal */
-export function booleanOp(kind: "union" | "subtract" | "intersect", a: Solid, others: Solid[], opts: OpOpts): Solid {
+export function booleanOp(kind: "union" | "subtract" | "intersect", a: Solid, others: Solid[], opts: UnionOpts): Solid {
   for (const b of others) if (!(b instanceof Solid)) userError(`${kind} expects solids`);
+  if (opts.glue !== undefined && typeof opts.glue !== "boolean") userError(`${kind} glue must be true or false (got ${JSON.stringify(opts.glue)})`);
+  if (opts.glue && kind !== "union") userError(`glue applies only to union (got ${kind})`);
   // nothing to fuse, cut or intersect with: the solid as it is (`a.subtract(...holes)` with no holes)
   if (!others.length) return a;
   const A = a.record;
   const tools = others.map((o) => o.record);
+  const glue = !!opts.glue;
+  let warnings: string[] | undefined;
   const rec = runOp({
     type: kind,
     tag: opts.tag,
-    params: {},
+    params: glue ? { glue } : {},
     inputs: [A, ...tools],
-    build: () => ({ built: kBooleanMany(kind, A.shape, tools.map((t) => t.shape)), historyOptions: { generatedFrom: ["edge"] } }),
+    build: () => {
+      const historyOptions = { generatedFrom: ["edge" as const] };
+      const shapes = tools.map((t) => t.shape);
+      if (glue) {
+        const g = glueUnion(A.shape, shapes);
+        if (g.built) return { built: g.built, historyOptions };
+        warnings = [`glue fell back to a normal union: ${g.why}`];
+      }
+      return { built: kBooleanMany(kind, A.shape, shapes), historyOptions, warnings: () => warnings };
+    },
   });
   return new Solid(rec, a.meta);
 }
+
+/**
+ * A glue union, accepted only if the promise held; otherwise no result and why (the caller then
+ * runs a normal union).
+ *
+ * First the promise itself: no input may reach inside another (sampled points, `glueOverlap`). Glue
+ * never intersects faces, so an overlap comes out with the inputs' total volume either way: the
+ * volume can't reveal it.
+ * 1. Sewn (kernel `glueSewn`): the touching plane, cylinder and sphere faces are imprinted on each
+ *    other alone and the rest sewn back on; coincident faces must face opposite ways, the result
+ *    must close up and be valid.
+ * 2. OCCT's glue, "full" (identical touching faces) then "shift" (partial): the result must be
+ *    valid, one solid for "full", and hold the inputs' total volume (see GLUE_VOLUME_TOLERANCE).
+ */
+function glueUnion(a: Shape, tools: Shape[]): { built?: Built; why?: string } {
+  const overlap = kGlueOverlap([a, ...tools]);
+  if (overlap) return { why: `inputs overlap: ${overlap}` };
+  let why = "";
+  try {
+    const built = kGlueSewn(a, tools);
+    if (kValid(built.shape)) return { built };
+    built.maker?.delete?.();
+    why = "the glued result is not a valid solid";
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    // a broken promise: OCCT's glue won't do better
+    if (m.startsWith("inputs overlap")) return { why: m };
+    why = m;
+  }
+  const props = [a, ...tools].map((x) => kMass(x));
+  const sum = props.reduce((s, p) => s + Math.abs(p.volume), 0);
+  const area = Math.min(props[0].area, props.slice(1).reduce((s, p) => s + p.area, 0));
+  const tol = GLUE_VOLUME_TOLERANCE * sum + GLUE_FILM * area;
+  for (const mode of ["full", "shift"] as const) {
+    let built: Built;
+    try {
+      built = kBooleanMany("union", a, tools, { glue: mode });
+    } catch (e) {
+      why = `the glue fuse failed (${e instanceof Error ? e.message : String(e)})`;
+      continue;
+    }
+    const reject = (w: string) => {
+      built.maker?.delete?.();
+      why = w;
+    };
+    const diff = sum - Math.abs(kVolume(built.shape));
+    if (Math.abs(diff) > tol) {
+      reject(diff > 0 ? `inputs overlap (${fmtVol(diff)} mm³)` : `the glued result has ${fmtVol(-diff)} mm³ more than its inputs`);
+      continue;
+    }
+    if (mode === "full" && countSolids(built.shape) !== 1) {
+      reject("the touching faces don't coincide exactly");
+      continue;
+    }
+    if (!kValid(built.shape)) {
+      reject("the glued result is not a valid solid");
+      continue;
+    }
+    return { built };
+  }
+  return { why };
+}
+
+const fmtVol = (v: number) => (Math.abs(v) >= 0.01 ? v.toFixed(2) : v.toPrecision(2));
 
 function transformOp(s: Solid, type: string, t: Parameters<typeof kTransform>[1], opts: OpOpts, role?: string): Solid {
   const input = s.record;

@@ -90,6 +90,7 @@ export function runOp(spec: OpSpec): OpRecord {
     rec.callChain = callChain;
   }
   c.ops.push(rec!);
+  for (const w of rec!.warnings ?? []) warn(w, "operation");
   return rec!;
 }
 

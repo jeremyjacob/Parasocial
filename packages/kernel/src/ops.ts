@@ -331,11 +331,22 @@ export function boolean(kind: BooleanKind, a: Shape, b: Shape): Built {
  */
 export const BOOLEAN_FUZZY = 1e-4;
 
+export type BooleanOpts = {
+  /**
+   * Union only: the inputs touch on shared faces or edges but never overlap in volume, so OCCT's glue
+   * mode can sew the coincident faces instead of intersecting surfaces. "full": touching faces
+   * coincide exactly (same outline); "shift": a face may cover only part of the other. A wrong
+   * promise gives wrong geometry: the caller must validate the result (see the API's glue union).
+   */
+  glue?: "full" | "shift";
+};
+
 /** Boolean of `a` with one or several tools at once (one history for all). */
-export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[]): Built {
+export function booleanMany(kind: BooleanKind, a: Shape, tools: Shape[], opts: BooleanOpts = {}): Built {
   const O = oc();
   return guard(kind, () => scoped(() => {
     const mk = kind === "union" ? new O.BRepAlgoAPI_Fuse() : kind === "subtract" ? new O.BRepAlgoAPI_Cut() : new O.BRepAlgoAPI_Common();
+    if (opts.glue && kind === "union") mk.SetGlue(opts.glue === "full" ? O.BOPAlgo_GlueEnum.BOPAlgo_GlueFull : O.BOPAlgo_GlueEnum.BOPAlgo_GlueShift);
     const args = tmp(new O.NCollection_List_TopoDS_Shape());
     args.Append(a);
     const tl = tmp(new O.NCollection_List_TopoDS_Shape());
@@ -873,4 +884,12 @@ export function planeFace(origin: Vec3, normal: Vec3, size: number): Shape {
     const pl = tmp(new O.gp_Pln(pnt(origin), dir(normal)));
     return tmp(new O.BRepBuilderAPI_MakeFace(pl, -size, size, -size, size)).Face();
   });
+}
+
+/** Number of solids in a shape. */
+export function countSolids(shape: Shape): number {
+  const s = explore(shape, "solid");
+  const n = s.items.length;
+  s.delete();
+  return n;
 }

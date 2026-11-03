@@ -5,5 +5,7 @@ export * from "./geom";
 export * from "./mesh";
 export * from "./history";
 export * from "./ops";
+export * from "./gear";
+export * from "./glue";
 export * from "./io";
 export * from "./projection";

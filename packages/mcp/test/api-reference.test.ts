@@ -119,7 +119,7 @@ test("lookups return the d.ts declarations verbatim, with their docs and example
   expect(miss.isError).toBe(true);
   expect(apiReference({ symbol: "Plane.off" }).text).toContain("Plane.offset");
   // the index is compact
-  expect(apiIndex().length).toBeLessThan(3500);
+  expect(apiIndex().length).toBeLessThan(3600); // +gear topic (its options are the index entry)
 });
 
 test("dimension tables: keyof typeof keys inline, lookups by table, path and key", () => {
